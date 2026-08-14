@@ -76,6 +76,8 @@ if not exist "dist\punishment-manager\punishment-manager.exe" (
     type pyinstaller.log
     exit /b 1
 )
+echo     PyInstaller output: dist\punishment-manager\
+dir /s /b dist\punishment-manager 2>nul
 
 echo ==^> Building NSIS installer
 REM The Install NSIS step in the workflow sets a MAKENSIS_PATH
