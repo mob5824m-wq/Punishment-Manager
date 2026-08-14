@@ -1,136 +1,169 @@
 # Fixes needed for the CI workflows
 
-The release and build workflows are running, but two of the three
-platform jobs are failing because of toolchain issues that depend
-on which Ubuntu / Windows runner image GitHub has shipped. These
-fixes need to be applied by a maintainer with the `workflows`
-permission (the agent's GitHub App token can't push to
-`.github/workflows/`).
+The build workflow is failing on Linux and Windows. The two
+helper scripts in `.github/scripts/` are now in place — what's
+left is to update `.github/workflows/build.yml` to call them.
 
-## What's failing
+**Why this is a full-file replacement, not a paste-in-place edit:**
 
-The latest CI run showed:
-- **macOS .dmg** job: passed
-- **Linux .deb** job: failed on "Install build dependencies"
-- **Windows .exe** job: failed on "Install NSIS"
-
-Both failures are environment issues, not logic bugs in the workflows.
-
-## Strategy: put scripts in their own files
-
-The previous fix attempt had you paste multi-line `run: |` blocks
-into the GitHub web editor. The web editor strips leading
-whitespace on paste, which silently breaks YAML literal block
-scalars. The result was confusing parse errors like
+The previous fix attempts had you paste multi-line `run: |`
+blocks into the GitHub web editor. The web editor strips
+leading whitespace on paste, which silently breaks YAML literal
+block scalars and produces confusing errors like
 "Unexpected value" or "StringToken was expected".
 
-**The fix for the fix**: put all the multi-line logic into separate
-files under `.github/scripts/`, and have the workflow invoke them
-with a single-line `run:`. This commit adds those scripts; you
-just need to update `build.yml` to call them.
+The simplest, most reliable fix is to **replace the entire
+`build.yml` file** in one go. A full file replacement in the
+GitHub web editor is one click — open the file, select all,
+paste the contents below, commit. There's no leading indentation
+to lose because the file's contents are the new file's contents.
 
-Two new files have been added to the branch:
-- `.github/scripts/install-linux-deps.sh` (the apt-get install logic)
-- `.github/scripts/install-nsis.ps1` (a more robust NSIS installer)
+## What to do
 
-Both files are already in this commit.
+1. Go to https://github.com/mob5824m-wq/Punishment-Manager/blob/arena/019ffe80-punishment-manager/.github/workflows/build.yml
+2. Click the pencil icon to edit.
+3. Press `Ctrl+A` / `Cmd+A` to select all, then `Delete` to clear.
+4. Paste the entire file content from the "Full replacement"
+   section below.
+5. Scroll down, commit with the message "Update build.yml to use
+   the helper scripts".
 
-## Fix 1 — Update `.github/workflows/build.yml`
+The release workflow (`release.yml`) doesn't need any changes —
+it has the same failing pattern, but those runs are also failing
+on the same steps and the same fix applies. **You can apply the
+identical replacement to `release.yml` too** if you want both
+workflows fixed. See the note at the end.
 
-In `.github/workflows/build.yml`, find the "Install build
-dependencies" step in the linux job. It currently looks like:
-
-```yaml
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libpython3.11 fakeroot dpkg lintian
-```
-
-**Replace it** with this single-line `run:` (no block scalar, no
-indentation to lose on paste):
+## Full replacement for `build.yml`
 
 ```yaml
+name: build
+
+# Sanity-check the build on every push and pull request, on all
+# three platforms. This catches build-script regressions early
+# without producing any releases - the actual release builds live
+# in release.yml and only run on v* tags.
+#
+# Every multi-step block (apt-get install, NSIS download) lives
+# in its own file under .github/scripts/ and is invoked as a
+# single command here. This avoids the YAML literal-block
+# scalar (run: |) parse issues that come from pasting into the
+# GitHub web editor with the indentation stripped.
+
+on:
+  push:
+    branches: [main, 'arena/**']
+  pull_request:
+    branches: [main']
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: linux (.deb)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
       - name: Install build dependencies
         run: bash $GITHUB_WORKSPACE/.github/scripts/install-linux-deps.sh
-```
-
-Then find the "Install Python dependencies" step in the same job
-and replace it with a single-line run too. The current version:
-
-```yaml
-      - name: Install Python dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pyinstaller
-```
-
-becomes:
-
-```yaml
       - name: Install Python dependencies
         run: bash -c "python -m pip install --upgrade pip && pip install -r requirements.txt && pip install pyinstaller"
-```
+      - name: Smoke-test imports
+        run: python -c "import bot, installer; print('imports OK')"
+      - name: Build .deb
+        run: bash build/build_linux.sh
+      - name: Verify .deb
+        run: bash -c "ls -lh dist/ && dpkg-deb -I dist/*.deb"
+      - name: Upload .deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: punishment-manager-linux
+          path: dist/*.deb
+          if-no-files-found: error
+          retention-days: 3
 
-Same for "Verify .deb" (currently `run: | ls -lh dist/ dpkg-deb -I
-dist/*.deb`) which becomes
-`run: bash -c "ls -lh dist/ && dpkg-deb -I dist/*.deb"`.
+  macos:
+    name: macos (.dmg)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install Python dependencies
+        run: bash -c "python -m pip install --upgrade pip && pip install -r requirements.txt && pip install pyinstaller"
+      - name: Install create-dmg
+        run: brew install create-dmg
+      - name: Build .dmg
+        run: bash build/build_macos.sh
+      - name: Verify .dmg
+        run: bash -c "ls -lh dist/ && (hdiutil verify dist/*.dmg || true)"
+      - name: Upload .dmg
+        uses: actions/upload-artifact@v4
+        with:
+          name: punishment-manager-macos
+          path: dist/*.dmg
+          if-no-files-found: error
+          retention-days: 3
 
-## Fix 2 — Update the Windows NSIS install path
-
-The current build.yml calls the old install-nsis.ps1 at
-`.github/workflows/install-nsis.ps1`. That file uses a single
-SourceForge URL and is failing. The new one is at
-`.github/scripts/install-nsis.ps1` and has retry logic plus
-three fallback sources.
-
-**Two changes** are needed in the windows job's "Install NSIS" step:
-
-1. Change the path from `.github/workflows/install-nsis.ps1` to
-   `.github/scripts/install-nsis.ps1`.
-2. Change `shell: pwsh` to `run: pwsh -File ...`.
-
-Current:
-```yaml
-      - name: Install NSIS
-        shell: pwsh
-        run: ./.github/workflows/install-nsis.ps1
-```
-
-Replace with:
-```yaml
+  windows:
+    name: windows (.exe)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install Python dependencies
+        run: python -m pip install --upgrade pip && pip install -r requirements.txt && pip install pyinstaller
       - name: Install NSIS
         run: pwsh -File .github/scripts/install-nsis.ps1
+      - name: Build .exe
+        run: build\build_windows.bat
+        shell: cmd
+      - name: Verify .exe
+        run: dir dist\*.exe
+      - name: Upload .exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: punishment-manager-windows
+          path: dist/*.exe
+          if-no-files-found: error
+          retention-days: 3
 ```
 
-(No `shell:` line — the `pwsh` in the `run:` is the executable,
-so the default shell doesn't need to be set.)
+## Validation
 
-## Optional — delete the old `install-nsis.ps1`
+The exact YAML above parses cleanly with PyYAML, and every `run:`
+in it is a single line (no `|` block scalar). Bash syntax of the
+referenced scripts has been verified with `bash -n`.
 
-The old `.github/workflows/install-nsis.ps1` is no longer
-referenced after applying fix 2. You can delete it via the web UI
-to keep the repo tidy.
+## Optional — also replace `release.yml`
 
-## How to apply all changes
+The release workflow has the same multi-line `run: |` patterns
+in its matrix jobs and the same `libpython3.11` install line.
+If you want the release workflow to also work, apply the same
+treatment:
 
-Two files to edit, one file to delete:
+1. Replace `.github/workflows/install-nsis.ps1` calls in
+   `release.yml` with `pwsh -File .github/scripts/install-nsis.ps1`.
+2. Replace the Linux "Install build tools" and "Install Python
+   dependencies" runs in `release.yml` with the same
+   single-line `bash -c "..."` form.
 
-1. **Edit `.github/workflows/build.yml`**:
-   - Replace the linux "Install build dependencies" run block.
-   - Replace the linux "Install Python dependencies" run block.
-   - Replace the linux "Verify .deb" run block.
-   - Replace the windows "Install NSIS" step (path + syntax).
-2. **Edit `.github/workflows/build.yml`** to use single-line
-   runs in the macos job too (optional but recommended):
-   - "Install Python dependencies" run block.
-   - "Verify .dmg" run block.
-3. **Delete `.github/workflows/install-nsis.ps1`** (optional).
-
-Each edit is a single click + paste in the GitHub web editor. If
-any paste gets mangled, just retry — the new scripts on disk are
-self-contained and the workflow just needs to call them.
+I deliberately did NOT include a full replacement for
+`release.yml` here because that file's structure is more complex
+(matrix with per-OS shell) and a smaller surgical edit is less
+risky. If you want the full content too, open an issue or
+re-run me and I'll generate it.
 
 ## After the fix lands
 
