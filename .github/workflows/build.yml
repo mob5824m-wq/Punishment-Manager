@@ -26,14 +26,9 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
       - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libpython3.11 fakeroot dpkg lintian
+        run: bash $GITHUB_WORKSPACE/.github/scripts/install-linux-deps.sh
       - name: Install Python dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pyinstaller
+        run: bash -c "python -m pip install --upgrade pip && pip install -r requirements.txt && pip install pyinstaller"
       - name: Smoke-test imports
         run: |
           python -c "import bot, installer; print('imports OK')"
