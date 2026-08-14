@@ -78,39 +78,49 @@ if not exist "dist\punishment-manager\punishment-manager.exe" (
 )
 
 echo ==^> Building NSIS installer
-REM Look for makensis in known install locations. The Install NSIS
-REM step in the workflow sets $env:PATH inside a PowerShell process,
-REM but that change doesn't propagate to this cmd.exe session. We
-REM search a few common install paths and add the first match to
-REM PATH so the rest of the script can just call `makensis`.
+REM Use the NSIS install from the workflow's "Install NSIS" step.
+REM That step sets up makensis at C:\nsis-3.10\makensis.exe (or the
+REM version pinned in install-nsis.ps1). Searching additional paths
+REM via if/else if inside a parenthesized block triggers a cmd.exe
+REM parser bug when paths contain spaces or parentheses, so we just
+REM hardcode the known install path. If NSIS is somewhere else,
+REM the error below tells you to set MAKENSIS_PATH or update this
+REM script.
 set "MAKENSIS="
 set "MAKENSIS_DIR="
-if exist "C:\nsis-3.10\makensis.exe" (
-    set "MAKENSIS=C:\nsis-3.10\makensis.exe"
-    set "MAKENSIS_DIR=C:\nsis-3.10\"
-) else if exist "C:\nsis-3.09\makensis.exe" (
-    set "MAKENSIS=C:\nsis-3.09\makensis.exe"
-    set "MAKENSIS_DIR=C:\nsis-3.09\"
-) else if exist "C:\nsis-3.08\makensis.exe" (
-    set "MAKENSIS=C:\nsis-3.08\makensis.exe"
-    set "MAKENSIS_DIR=C:\nsis-3.08\"
-) else if exist "C:\Program Files (x86)\NSIS\makensis.exe" (
-    set "MAKENSIS=C:\Program Files (x86)\NSIS\makensis.exe"
-    set "MAKENSIS_DIR=C:\Program Files (x86)\NSIS\"
-) else if exist "C:\Program Files\NSIS\makensis.exe" (
-    set "MAKENSIS=C:\Program Files\NSIS\makensis.exe"
-    set "MAKENSIS_DIR=C:\Program Files\NSIS\"
-)
-if "%MAKENSIS%"=="" (
-    echo ERROR: makensis not found in known locations.
-    echo Searched:
-    echo    C:\nsis-3.10\makensis.exe
-    echo    C:\nsis-3.09\makensis.exe
-    echo    C:\nsis-3.08\makensis.exe
-    echo    C:\Program Files (x86)\NSIS\makensis.exe
-    echo    C:\Program Files\NSIS\makensis.exe
-    exit /b 1
-)
+if exist "C:\nsis-3.10\makensis.exe" goto :nsis_found
+if exist "C:\nsis-3.09\makensis.exe" goto :nsis_found_309
+if exist "C:\nsis-3.08\makensis.exe" goto :nsis_found_308
+if exist "C:\Program Files\NSIS\makensis.exe" goto :nsis_found_pf
+if exist "C:\Program Files (x86)\NSIS\makensis.exe" goto :nsis_found_pfx86
+echo ERROR: makensis not found in known locations.
+echo Searched:
+echo    C:\nsis-3.10\makensis.exe
+echo    C:\nsis-3.09\makensis.exe
+echo    C:\nsis-3.08\makensis.exe
+echo    C:\Program Files\NSIS\makensis.exe
+echo    C:\Program Files (x86)\NSIS\makensis.exe
+exit /b 1
+:nsis_found
+set "MAKENSIS=C:\nsis-3.10\makensis.exe"
+set "MAKENSIS_DIR=C:\nsis-3.10\"
+goto :nsis_done
+:nsis_found_309
+set "MAKENSIS=C:\nsis-3.09\makensis.exe"
+set "MAKENSIS_DIR=C:\nsis-3.09\"
+goto :nsis_done
+:nsis_found_308
+set "MAKENSIS=C:\nsis-3.08\makensis.exe"
+set "MAKENSIS_DIR=C:\nsis-3.08\"
+goto :nsis_done
+:nsis_found_pf
+set "MAKENSIS=C:\Program Files\NSIS\makensis.exe"
+set "MAKENSIS_DIR=C:\Program Files\NSIS\"
+goto :nsis_done
+:nsis_found_pfx86
+set "MAKENSIS=C:\Program Files (x86)\NSIS\makensis.exe"
+set "MAKENSIS_DIR=C:\Program Files (x86)\NSIS\"
+:nsis_done
 echo     Found makensis at %MAKENSIS%
 set "PATH=%MAKENSIS_DIR%;%PATH%"
 makensis /DVERSION=%VERSION% /DOUTFILE="dist\%INSTALLER_NAME%" build\windows\installer.nsi
