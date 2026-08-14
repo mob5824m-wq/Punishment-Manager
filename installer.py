@@ -4,9 +4,10 @@ Punishment Manager - interactive installer.
 Asks the user for:
   - bot_token          (the Discord bot token)
   - server_id          (the single server this bot will run in)
-  - normal_role_id     (the role users normally have)
   - punish_role_id     (the role given during punishment)
   - post_role_id       (the role given after the timer expires)
+  - staff_role_id      (optional; users with this role cannot be punished;
+                        admins and mods are always protected)
   - staff_channel_id   (optional; where staff get embed notifications)
   - dm_user            (whether to DM the punished user an embed)
 
@@ -125,6 +126,8 @@ How to find the values:
                       (enable Developer Mode in Settings -> Advanced first)
   - role ids:         right-click the role -> Copy Role ID
   - staff_channel_id: right-click the channel -> Copy Channel ID
+  - staff_role_id:    role given to staff; members with it cannot be
+                      punished (admins and mods are always protected)
   - press Enter on a prompt to keep the existing value
 """
 
@@ -185,9 +188,8 @@ def run_installer() -> int:
     if parsed is not None:
         cfg["server_id"] = parsed
 
-    # 3-5. role ids -------------------------------------------------- #
+    # 3-4. punish + post role ids ---------------------------------- #
     for key, label in [
-        ("normal_role_id", "Normal role ID (users normally have this)"),
         ("punish_role_id", "Punish role ID (given during punishment)"),
         ("post_role_id",   "Post-punish role ID (given after the timer)"),
     ]:
@@ -199,6 +201,16 @@ def run_installer() -> int:
         parsed = _parse_snowflake(key, val) if val else None
         if parsed is not None:
             cfg[key] = parsed
+
+    # 5. staff role (optional) ------------------------------------- #
+    cur = cfg.get("staff_role_id")
+    val = _prompt(
+        "Staff role ID (members with this role cannot be punished, optional)",
+        default=_show_current("staff_role_id", cur) if cur else None,
+    )
+    parsed = _parse_snowflake("staff_role_id", val) if val else None
+    if parsed is not None:
+        cfg["staff_role_id"] = parsed
 
     # 6. staff channel --------------------------------------------- #
     cur = cfg.get("staff_channel_id") or cfg.get("log_channel_id")
@@ -223,12 +235,13 @@ def run_installer() -> int:
 
     # ---- summary ---- #
     print("\nNew configuration:")
+    summary_keys = (
+        "bot_token", "server_id",
+        "punish_role_id", "post_role_id", "staff_role_id",
+        "staff_channel_id", "dm_user",
+    )
     print(json.dumps(
-        {k: cfg[k] for k in (
-            "bot_token", "server_id",
-            "normal_role_id", "punish_role_id", "post_role_id",
-            "staff_channel_id", "dm_user",
-        ) if k in cfg},
+        {k: cfg[k] for k in summary_keys if k in cfg},
         indent=2,
     ))
 

@@ -53,6 +53,11 @@ logger.addHandler(stream_handler)
 # --------------------------------------------------------------------------- #
 # Persistence (SQLite)
 # --------------------------------------------------------------------------- #
+# Note: `normal_role_id` is kept as a nullable column for back-compat with
+# older databases. New code no longer uses it - the bot no longer manages a
+# "normal" role. Users who were being punished simply have the punish role
+# added on top of whatever roles they already have; when pardoned, the
+# punish / post role is removed and they go back to whatever they had.
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS punishments (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -61,7 +66,7 @@ CREATE TABLE IF NOT EXISTS punishments (
     moderator_id    INTEGER NOT NULL,
     reason          TEXT,
     punish_role_id  INTEGER NOT NULL,
-    normal_role_id  INTEGER NOT NULL,
+    normal_role_id  INTEGER,  -- legacy, unused by new code
     post_role_id    INTEGER NOT NULL,
     started_at      TEXT NOT NULL,
     expires_at      TEXT NOT NULL,
@@ -91,9 +96,50 @@ CREATE INDEX IF NOT EXISTS idx_punishment_history_user
 
 
 def init_db() -> None:
-    """Create the SQLite database and tables if they don't exist."""
+    """Create the SQLite database and tables if they don't exist.
+
+    Also performs a runtime migration on older databases that may have
+    the `normal_role_id` column marked NOT NULL. New code does not use
+    that column, but writes NULL to it, so we need it nullable.
+    """
     with closing(sqlite3.connect(DB_PATH)) as conn:
         conn.executescript(SCHEMA)
+        # Best-effort: drop NOT NULL on normal_role_id if it exists.
+        # SQLite has no ALTER COLUMN, so we have to rebuild the table.
+        try:
+            cols = conn.execute("PRAGMA table_info(punishments)").fetchall()
+            for col in cols:
+                if col[1] == "normal_role_id" and col[3] == 1:  # notnull=1
+                    logger.info("Migrating punishments table: making normal_role_id nullable.")
+                    conn.executescript("""
+                        CREATE TABLE punishments_new (
+                            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                            guild_id        INTEGER NOT NULL,
+                            user_id         INTEGER NOT NULL,
+                            moderator_id    INTEGER NOT NULL,
+                            reason          TEXT,
+                            punish_role_id  INTEGER NOT NULL,
+                            normal_role_id  INTEGER,
+                            post_role_id    INTEGER NOT NULL,
+                            started_at      TEXT NOT NULL,
+                            expires_at      TEXT NOT NULL,
+                            stage           TEXT NOT NULL DEFAULT 'punished'
+                        );
+                        INSERT INTO punishments_new
+                            SELECT id, guild_id, user_id, moderator_id, reason,
+                                   punish_role_id, normal_role_id, post_role_id,
+                                   started_at, expires_at, stage
+                            FROM punishments;
+                        DROP TABLE punishments;
+                        ALTER TABLE punishments_new RENAME TO punishments;
+                        CREATE INDEX IF NOT EXISTS idx_punishments_expiry
+                            ON punishments (expires_at);
+                        CREATE INDEX IF NOT EXISTS idx_punishments_user
+                            ON punishments (guild_id, user_id);
+                    """)
+                    break
+        except sqlite3.Error as exc:
+            logger.warning("DB migration step failed (continuing): %s", exc)
         conn.commit()
     logger.info("Database initialised at %s", DB_PATH)
 
@@ -160,9 +206,9 @@ DEFAULT_CONFIG: dict = {
     # --- NEW shape (preferred) ---
     "bot_token": "",
     "server_id": None,
-    "normal_role_id": None,
     "punish_role_id": None,
     "post_role_id": None,
+    "staff_role_id": None,    # protected from punishment
     "staff_channel_id": None,
     "dm_user": True,
     # --- legacy / shared ---
@@ -197,14 +243,31 @@ def get_guild_config(cfg: dict, guild_id: int) -> Optional[dict]:
     shape (server_id == guild_id) and falls back to the legacy
     `guilds` map so existing setups keep working.
     """
-    # New shape: only applies if server_id is set AND matches.
     if cfg.get("server_id") and int(cfg["server_id"]) == int(guild_id):
         return {
-            "normal_role_id": cfg.get("normal_role_id"),
             "punish_role_id": cfg.get("punish_role_id"),
             "post_role_id": cfg.get("post_role_id"),
+            "staff_role_id": cfg.get("staff_role_id"),
         }
-    return cfg.get("guilds", {}).get(str(guild_id))
+    legacy = cfg.get("guilds", {}).get(str(guild_id))
+    if legacy is not None:
+        # Drop the legacy normal_role_id key from the in-memory view so
+        # callers don't trip over it.
+        legacy = {k: v for k, v in legacy.items() if k != "normal_role_id"}
+        # If a staff_role_id is set at the top level, fall through to that.
+        if "staff_role_id" not in legacy and cfg.get("staff_role_id"):
+            legacy["staff_role_id"] = cfg.get("staff_role_id")
+    return legacy
+
+
+def get_staff_role_id(cfg: dict) -> Optional[int]:
+    """The id of the role that marks a user as 'staff' (protected from
+    punishment). Returns None if not configured.
+    """
+    val = cfg.get("staff_role_id")
+    if val:
+        return int(val)
+    return None
 
 
 def get_staff_channel_id(cfg: dict) -> Optional[int]:
@@ -215,6 +278,35 @@ def get_staff_channel_id(cfg: dict) -> Optional[int]:
     if val:
         return int(val)
     return cfg.get("log_channel_id")
+
+
+def is_protected_member(
+    member: discord.Member, cfg: dict, *, guild: discord.Guild
+) -> Optional[str]:
+    """Return None if `member` can be punished, or a string reason if
+    they cannot. Used to refuse `/punish apply` for admins, mods, and
+    anyone holding the configured staff role.
+    """
+    if member.bot:
+        return "Bots cannot be punished."
+    if member.id == guild.me.id:
+        return "I can't punish myself."
+    # Administrator or any mod-like permission.
+    perms = member.guild_permissions
+    if perms.administrator:
+        return "That user is a server administrator."
+    if perms.moderate_members or perms.manage_guild or perms.kick_members or perms.ban_members:
+        return "That user has moderation permissions and is protected."
+    # Holding the configured staff role.
+    staff_role_id = get_staff_role_id(cfg)
+    if staff_role_id is not None:
+        staff_role = guild.get_role(staff_role_id)
+        if staff_role and staff_role in member.roles:
+            return f"That user has the {staff_role.mention} role and is protected."
+    # Top-role hierarchy check.
+    if member.top_role >= guild.me.top_role:
+        return "That user has a role equal to or higher than mine."
+    return None
 
 
 def should_dm_user(cfg: dict) -> bool:
@@ -559,8 +651,8 @@ class PunishmentBot(commands.Bot):
         e = discord.Embed(
             title=f"Your punishment in {guild_name} has been lifted",
             description=(
-                "A moderator has ended your punishment early. Your normal "
-                "roles have been restored."
+                "A moderator has ended your punishment early. The punish "
+                "role has been removed and your access is restored."
             ),
             color=discord.Color.green(),
             timestamp=datetime.now(timezone.utc),
@@ -650,19 +742,18 @@ class PunishmentBot(commands.Bot):
         reason: str,
         cfg: dict,
     ) -> Optional[dict]:
-        normal_role = guild.get_role(cfg["normal_role_id"])
+        # No more "normal role" - the bot only manages the punish and
+        # post-punish roles. The user keeps whatever roles they had.
         punish_role = guild.get_role(cfg["punish_role_id"])
         post_role = guild.get_role(cfg["post_role_id"])
 
-        if not (normal_role and punish_role and post_role):
+        if not (punish_role and post_role):
             return None
 
         if punish_role >= guild.me.top_role:
             return {"error": "The punish role is higher than (or equal to) my top role."}
         if post_role >= guild.me.top_role:
             return {"error": "The post-punish role is higher than (or equal to) my top role."}
-        if normal_role >= guild.me.top_role:
-            return {"error": "The normal role is higher than (or equal to) my top role."}
 
         now = datetime.now(timezone.utc)
         expires = now + timedelta(seconds=duration_seconds)
@@ -674,7 +765,7 @@ class PunishmentBot(commands.Bot):
                     (guild_id, user_id, moderator_id, reason,
                      punish_role_id, normal_role_id, post_role_id,
                      started_at, expires_at, stage)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'punished')
+                VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, 'punished')
                 """,
                 (
                     guild.id,
@@ -682,7 +773,6 @@ class PunishmentBot(commands.Bot):
                     moderator.id,
                     reason,
                     punish_role.id,
-                    normal_role.id,
                     post_role.id,
                     now.isoformat(),
                     expires.isoformat(),
@@ -693,8 +783,6 @@ class PunishmentBot(commands.Bot):
             return {"error": "Database error; punishment not recorded."}
 
         try:
-            if normal_role in member.roles:
-                await member.remove_roles(normal_role, reason=f"Punished: {reason}")
             if punish_role not in member.roles:
                 await member.add_roles(punish_role, reason=f"Punished: {reason}")
         except discord.Forbidden:
@@ -805,30 +893,30 @@ class PunishmentCog(commands.Cog):
     # ---- /setup lives at the top level, admin-only --------------------- #
     @app_commands.command(
         name="setup",
-        description="Configure this server's normal / punish / post-punish roles, "
+        description="Configure this server's punish / post-punish / staff roles, "
                     "staff channel, and DM behavior.",
     )
     @app_commands.describe(
-        normal_role="The role users normally have.",
         punish_role="The role given during punishment.",
         post_role="The role given after the timer expires.",
+        staff_role="Optional role that marks a user as staff (protected from punishment).",
         staff_channel="Optional channel where staff get embed notifications.",
         dm_user="Whether to DM the punished user an embed about their punishment.",
     )
     async def setup_cmd(
         self,
         interaction: discord.Interaction,
-        normal_role: discord.Role,
         punish_role: discord.Role,
         post_role: discord.Role,
+        staff_role: Optional[discord.Role] = None,
         staff_channel: Optional[discord.TextChannel] = None,
         dm_user: Optional[bool] = None,
     ) -> None:
         await self._handle_setup(
             interaction,
-            normal_role,
             punish_role,
             post_role,
+            staff_role,
             staff_channel,
             dm_user,
         )
@@ -861,21 +949,16 @@ class PunishmentCog(commands.Cog):
             )
             return
 
-        if user.bot:
-            await self._safe_followup(interaction, "You can't punish a bot.")
-            return
         if user.id == interaction.user.id:
             await self._safe_followup(interaction, "You can't punish yourself.")
             return
-        if user.top_role >= interaction.guild.me.top_role:
-            await self._safe_followup(
-                interaction, "That user has a role equal to or higher than mine."
-            )
-            return
-        if user.guild_permissions.administrator:
-            await self._safe_followup(
-                interaction, "Refusing to punish a server administrator."
-            )
+
+        # Refuse to punish admins, mods, and anyone with the staff role.
+        protected_reason = is_protected_member(
+            user, self.bot.config, guild=interaction.guild
+        )
+        if protected_reason is not None:
+            await self._safe_followup(interaction, protected_reason)
             return
 
         seconds = parse_duration(duration)
@@ -980,10 +1063,6 @@ class PunishmentCog(commands.Cog):
 
         punish_role = interaction.guild.get_role(record["punish_role_id"])
         post_role = interaction.guild.get_role(record["post_role_id"])
-        normal_role = (
-            interaction.guild.get_role(record["normal_role_id"])
-            or interaction.guild.get_role(cfg["normal_role_id"])
-        )
 
         try:
             if punish_role and punish_role in user.roles:
@@ -993,10 +1072,6 @@ class PunishmentCog(commands.Cog):
             if post_role and post_role in user.roles:
                 await user.remove_roles(
                     post_role, reason=f"Pardoned by {interaction.user}"
-                )
-            if normal_role and normal_role not in user.roles:
-                await user.add_roles(
-                    normal_role, reason=f"Pardoned by {interaction.user}"
                 )
         except discord.Forbidden:
             await self._safe_followup(
@@ -1008,7 +1083,7 @@ class PunishmentCog(commands.Cog):
         archive_punishment(dict(record), ended_reason="pardoned")
         await self._safe_followup(
             interaction,
-            f"Pardoned {user.mention}. Their normal role has been restored.",
+            f"Pardoned {user.mention}. The punish role has been removed.",
         )
         # Staff embed.
         staff_embed = self.bot._build_pardon_staff_embed(
@@ -1029,23 +1104,27 @@ class PunishmentCog(commands.Cog):
     async def _handle_setup(
         self,
         interaction: discord.Interaction,
-        normal_role: discord.Role,
         punish_role: discord.Role,
         post_role: discord.Role,
+        staff_role: Optional[discord.Role],
         staff_channel: Optional[discord.TextChannel],
         dm_user: Optional[bool],
     ) -> None:
-        if len({normal_role.id, punish_role.id, post_role.id}) != 3:
+        if staff_role is not None:
+            role_ids = {punish_role.id, post_role.id, staff_role.id}
+        else:
+            role_ids = {punish_role.id, post_role.id}
+        # All roles must be distinct.
+        if len(role_ids) != (3 if staff_role is not None else 2):
             await interaction.response.send_message(
-                "The three roles must all be different.", ephemeral=True
+                "All configured roles must be different from each other.",
+                ephemeral=True,
             )
             return
 
-        # Always write to the legacy per-guild map so multi-server setups
-        # still work. If the user has configured a single server_id, mirror
-        # the values into the new top-level fields too.
+        # Mirror to both the legacy per-guild map (for multi-server setups)
+        # and the new top-level fields (for single-server setups).
         self.bot.config.setdefault("guilds", {})[str(interaction.guild_id)] = {
-            "normal_role_id": normal_role.id,
             "punish_role_id": punish_role.id,
             "post_role_id": post_role.id,
         }
@@ -1053,9 +1132,14 @@ class PunishmentCog(commands.Cog):
             self.bot.config.get("server_id")
             and int(self.bot.config["server_id"]) == int(interaction.guild_id)
         ):
-            self.bot.config["normal_role_id"] = normal_role.id
             self.bot.config["punish_role_id"] = punish_role.id
             self.bot.config["post_role_id"] = post_role.id
+        if staff_role is not None:
+            self.bot.config["staff_role_id"] = staff_role.id
+            # Also store per-guild so multi-server setups respect it.
+            self.bot.config["guilds"][str(interaction.guild_id)]["staff_role_id"] = (
+                staff_role.id
+            )
 
         if staff_channel is not None:
             self.bot.config["staff_channel_id"] = staff_channel.id
@@ -1066,10 +1150,11 @@ class PunishmentCog(commands.Cog):
         save_config(self.bot.config)
         lines = [
             "Saved configuration for this server:",
-            f"- Normal role: {normal_role.mention}",
             f"- Punish role: {punish_role.mention}",
             f"- Post-punish role: {post_role.mention}",
         ]
+        if staff_role is not None:
+            lines.append(f"- Staff role (protected): {staff_role.mention}")
         if staff_channel is not None:
             lines.append(f"- Staff channel: {staff_channel.mention}")
         if dm_user is not None:
@@ -1091,9 +1176,12 @@ class PunishmentCog(commands.Cog):
                 ephemeral=True,
             )
             return
-        normal = interaction.guild.get_role(cfg["normal_role_id"])
         punish = interaction.guild.get_role(cfg["punish_role_id"])
         post = interaction.guild.get_role(cfg["post_role_id"])
+        staff_role_id = get_staff_role_id(self.bot.config)
+        staff_role = (
+            interaction.guild.get_role(staff_role_id) if staff_role_id else None
+        )
 
         if user is not None:
             await self._status_for_user(interaction, cfg, user)
@@ -1107,9 +1195,9 @@ class PunishmentCog(commands.Cog):
         )
         lines = [
             "**Server configuration**",
-            f"- Normal role: {normal.mention if normal else '(missing)'}",
             f"- Punish role: {punish.mention if punish else '(missing)'}",
             f"- Post-punish role: {post.mention if post else '(missing)'}",
+            f"- Staff role (protected): {staff_role.mention if staff_role else '(not set)'}",
             "",
             f"**Active punishments:** {len(active)}",
         ]

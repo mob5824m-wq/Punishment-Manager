@@ -7,17 +7,33 @@ punished user.
 **Role flow**
 
 ```
-Normal role  ──/punish apply──▶  Punish role  ──timer──▶  Post-punish role
+(any roles) ──/punish apply──▶  Punish role  ──timer──▶  Post-punish role
 ```
 
-* When a moderator runs `/punish apply`, the bot **removes the user's
-  normal role** and **adds the punish role**.
+* When a moderator runs `/punish apply`, the bot **adds the punish
+  role** on top of whatever the user already has. The user keeps all
+  their other roles.
 * The bot posts a **staff embed** in the configured staff channel and
   **DMs the punished user an embed** with the same info.
 * When the timer expires, the bot **removes the punish role** and
   **adds the post-punish role**, and posts a final staff embed.
-* `/punish pardon` ends the punishment early and posts a final
-  "pardon" embed to staff and a DM to the user.
+* `/punish pardon` ends the punishment early by removing the punish /
+  post-punish role and posts a final "pardon" embed to staff and a
+  DM to the user.
+
+**Protected users**
+
+The bot refuses to punish:
+* bots
+* the bot itself
+* users with the **Administrator** permission
+* users with any **moderation permission** (`Moderate Members`,
+  `Manage Guild`, `Kick Members`, `Ban Members`)
+* users whose top role is equal to or higher than the bot's top role
+* users holding the configured **staff role**
+
+These checks run in `/punish apply` before any role change is made, so
+even if a mod mis-clicks, nothing happens.
 
 All active punishments are stored in a local SQLite database, so timers
 survive a bot restart.
@@ -63,9 +79,9 @@ It prompts for:
 |-------------------|-------------------------------------------------------|
 | `bot_token`       | Discord Developer Portal -> your app -> Bot -> Token  |
 | `server_id`       | Right-click the server icon -> Copy Server ID         |
-| `normal_role_id`  | Right-click the role -> Copy Role ID                  |
-| `punish_role_id`  | "                                                    |
+| `punish_role_id`  | Right-click the role -> Copy Role ID                  |
 | `post_role_id`    | "                                                    |
+| `staff_role_id`   | Optional. Members with this role (and any user with admin/moderator permissions) cannot be punished. |
 | `staff_channel_id`| Right-click the channel -> Copy Channel ID (optional) |
 | `dm_user`         | y / n (default y)                                    |
 
@@ -108,16 +124,18 @@ This writes `config.json` with everything the bot needs.
 
 ### Option B — in-Discord `/setup` (easiest to change roles later)
 
-1. Create three roles in your server, e.g. `Member`, `Punished`, `Suspended`.
-2. Create a "staff-logs" text channel and make sure the bot can post in it.
-3. As a server administrator, run:
+1. Create the punish and post-punish roles in your server, e.g. `Punished`, `Suspended`.
+2. (Optional) Create a `Staff` role - anyone with this role will be protected from punishment.
+3. Create a "staff-logs" text channel and make sure the bot can post in it.
+4. As a server administrator, run:
 
    ```
-   /setup normal_role:@Member punish_role:@Punished post_role:@Suspended
-              staff_channel:#staff-logs dm_user:true
+   /setup punish_role:@Punished post_role:@Suspended
+              staff_role:@Staff staff_channel:#staff-logs dm_user:true
    ```
 
-   All five parameters are optional except the three roles.
+   `staff_role`, `staff_channel`, and `dm_user` are optional; the two
+   role arguments are required.
 
 ### Option C — edit `config.json` directly
 
@@ -125,15 +143,15 @@ This writes `config.json` with everything the bot needs.
 {
   "bot_token":        "YOUR-BOT-TOKEN",
   "server_id":        987654321098765432,
-  "normal_role_id":   111111111111111111,
   "punish_role_id":   222222222222222222,
   "post_role_id":     333333333333333333,
+  "staff_role_id":    555555555555555555,
   "staff_channel_id": 444444444444444444,
   "dm_user":          true
 }
 ```
 
-The `bot_token`, `server_id`, and the three role ids go at the top level
+The `bot_token`, `server_id`, and the role ids go at the top level
 (single-server shape). The `guilds` / `token` / `log_channel_id` keys
 below them are a legacy multi-server shape and are still respected for
 backwards compatibility.
