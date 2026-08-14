@@ -33,9 +33,10 @@ echo     Active Python has python3.lib; no install needed.
 goto :have_install
 :need_install
 echo     Active Python lacks python3.lib; running install helper...
-pwsh -NoProfile -ExecutionPolicy Bypass -File .github\scripts\install-windows-deps.ps1
+pwsh -NoProfile -ExecutionPolicy Bypass -File .github\scripts\install-windows-deps.ps1 > windows-deps.log 2>&1
 if errorlevel 1 (
-    echo ERROR: install-windows-deps.ps1 failed.
+    echo ERROR: install-windows-deps.ps1 failed. Log:
+    powershell -NoProfile -Command "Get-Content windows-deps.log"
     exit /b 1
 )
 :have_install
@@ -49,14 +50,17 @@ if errorlevel 1 (
 )
 
 echo ==^> Building binary with PyInstaller
-pyinstaller --noconfirm --clean build\pyinstaller.spec
+REM Verbose + log to file so we can see what failed if it fails.
+pyinstaller --noconfirm --clean --log-level DEBUG build\pyinstaller.spec > pyinstaller.log 2>&1
 if errorlevel 1 (
-    echo PyInstaller failed.
+    echo PyInstaller failed. Last 40 lines of log:
+    powershell -NoProfile -Command "Get-Content pyinstaller.log -Tail 40"
     exit /b 1
 )
 
 if not exist "dist\punishment-manager\punishment-manager.exe" (
     echo ERROR: PyInstaller did not produce the expected binary.
+    powershell -NoProfile -Command "Get-Content pyinstaller.log -Tail 40"
     exit /b 1
 )
 
