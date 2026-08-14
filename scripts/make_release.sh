@@ -40,9 +40,11 @@ fi
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 if [ "$BRANCH" != "main" ]; then
     echo "WARNING: you're on branch '$BRANCH', not 'main'."
-    if ! gh_input "Continue anyway?" N; then
-        exit 1
-    fi
+    read -r -p "Continue anyway? [y/N] " ans
+    case "$ans" in
+        [yY]|[yY][eE][sS]) ;;
+        *) echo "Aborted."; exit 1 ;;
+    esac
 fi
 
 # Confirm the tag doesn't already exist.

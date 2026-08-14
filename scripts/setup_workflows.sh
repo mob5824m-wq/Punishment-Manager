@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Print the contents of every GitHub Actions workflow file with a
 # clear header, so you can copy-paste them into the GitHub web UI
-# without having to open each file individually.
+# if you ever need to recreate them on a fresh fork.
 #
 # Usage:
 #   ./scripts/setup_workflows.sh
@@ -21,28 +21,36 @@
 #
 #   ...
 #
-# Copy each section into the GitHub "Create new file" editor at
-# https://github.com/mob5824m-wq/Punishment-Manager (one file per
-# commit). See .github/SETUP_WORKFLOWS.md for full instructions.
+# The three files that matter:
+#   - .github/workflows/release.yml       (release builds on v* tags)
+#   - .github/workflows/build.yml         (CI sanity build on push/PR)
+#   - .github/scripts/install-nsis.ps1    (NSIS install helper for Win)
+#
+# Plus the helper scripts under .github/scripts/ which the workflows
+# call into. To regenerate everything, run this script and follow the
+# upload instructions in .github/SETUP_WORKFLOWS.md.
 set -euo pipefail
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 PROJECT_ROOT="$( cd "$SCRIPT_DIR/.." && pwd )"
-WF_DIR="$PROJECT_ROOT/.github/workflows"
 
-if [ ! -d "$WF_DIR" ]; then
-    echo "ERROR: $WF_DIR does not exist. Are you in the Punishment-Manager repo?" >&2
+if [ ! -d "$PROJECT_ROOT/.github" ]; then
+    echo "ERROR: $PROJECT_ROOT/.github does not exist. Are you in the Punishment-Manager repo?" >&2
     exit 1
 fi
 
+# Print the workflow files, then the helper scripts. These are the
+# files that the workflows depend on.
 files=(
-    "release.yml"
-    "build.yml"
-    "install-nsis.ps1"
+    ".github/workflows/release.yml"
+    ".github/workflows/build.yml"
+    ".github/scripts/install-nsis.ps1"
+    ".github/scripts/install-linux-deps.sh"
+    ".github/scripts/install-windows-deps.ps1"
 )
 
-for f in "${files[@]}"; do
-    path="$WF_DIR/$f"
+for rel in "${files[@]}"; do
+    path="$PROJECT_ROOT/$rel"
     if [ ! -f "$path" ]; then
         echo "WARNING: missing $path, skipping." >&2
         continue
@@ -50,7 +58,7 @@ for f in "${files[@]}"; do
     sep="============================================================"
     echo
     echo "$sep"
-    echo "FILE: .github/workflows/$f"
+    echo "FILE: $rel"
     echo "Lines: $(wc -l < "$path")"
     echo "$sep"
     echo
