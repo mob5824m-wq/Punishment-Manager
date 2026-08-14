@@ -90,24 +90,32 @@ REM where our installer always puts it. If you need to support
 REM a different install location, set MAKENSIS_PATH in the
 REM workflow's env before calling this script.
 set "MAKENSIS_DIR="
-if not "%MAKENSIS_PATH%"=="" (
-    if exist "%MAKENSIS_PATH%\makensis.exe" (
-        set "MAKENSIS_DIR=%MAKENSIS_PATH%"
-        goto :nsis_done
-    )
-)
-if exist "C:\nsis-3.10\makensis.exe" (
-    set "MAKENSIS_DIR=C:\nsis-3.10"
-    goto :nsis_done
-)
-if exist "C:\nsis-3.09\makensis.exe" (
-    set "MAKENSIS_DIR=C:\nsis-3.09"
-    goto :nsis_done
-)
-if exist "C:\nsis-3.08\makensis.exe" (
-    set "MAKENSIS_DIR=C:\nsis-3.08"
-    goto :nsis_done
-)
+REM The MAKENSIS_PATH env var is checked first; if set, that takes
+REM precedence. We use 'if defined' rather than 'if not ""=="'
+REM because the latter expands the variable inside a parens-block
+REM in a way that confuses cmd.exe's parser when the variable
+REM is empty (it produces a leading-backslash path).
+if defined MAKENSIS_PATH goto :nsis_check_env
+goto :nsis_check_default
+:nsis_check_env
+if not exist "%MAKENSIS_PATH%\makensis.exe" goto :nsis_check_default
+set "MAKENSIS_DIR=%MAKENSIS_PATH%"
+goto :nsis_done
+:nsis_check_default
+if exist "C:\nsis-3.10\makensis.exe" goto :nsis_default_310
+if exist "C:\nsis-3.09\makensis.exe" goto :nsis_default_309
+if exist "C:\nsis-3.08\makensis.exe" goto :nsis_default_308
+goto :nsis_not_found
+:nsis_default_310
+set "MAKENSIS_DIR=C:\nsis-3.10"
+goto :nsis_done
+:nsis_default_309
+set "MAKENSIS_DIR=C:\nsis-3.09"
+goto :nsis_done
+:nsis_default_308
+set "MAKENSIS_DIR=C:\nsis-3.08"
+goto :nsis_done
+:nsis_not_found
 echo ERROR: makensis not found in known locations.
 echo Searched:
 echo    C:\nsis-3.10\makensis.exe
