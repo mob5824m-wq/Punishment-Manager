@@ -78,23 +78,51 @@ if not exist "dist\punishment-manager\punishment-manager.exe" (
 )
 
 echo ==^> Building NSIS installer
-REM The Install NSIS step in the workflow installs NSIS to
-REM C:\nsis-3.10\ via install-nsis.ps1. Just use that path
-REM directly.
+REM The Install NSIS step in the workflow sets a MAKENSIS_PATH
+REM environment variable to the absolute path of makensis.exe.
+REM Use that if set. The variable is set in the PowerShell
+REM process and then propagated to the process environment
+REM so a subsequent cmd.exe can read it via %MAKENSIS_PATH%.
+if defined MAKENSIS_PATH goto :nsis_use_env
+goto :nsis_check_default
+:nsis_use_env
+if exist "%MAKENSIS_PATH%" goto :nsis_use_env_found
+echo WARNING: MAKENSIS_PATH is set to '%MAKENSIS_PATH%' but
+echo          that file does not exist. Falling back to default.
+:nsis_check_default
+if exist "C:\nsis-3.10\makensis.exe" goto :nsis_default_310
+if exist "C:\nsis-3.09\makensis.exe" goto :nsis_default_309
+if exist "C:\nsis-3.08\makensis.exe" goto :nsis_default_308
+goto :nsis_not_found
+:nsis_default_310
 set "MAKENSIS=C:\nsis-3.10\makensis.exe"
-if not exist "%MAKENSIS%" goto :nsis_missing
-set "MAKENSIS_DIR=C:\nsis-3.10"
-set "PATH=%MAKENSIS_DIR%;%PATH%"
+goto :nsis_done
+:nsis_default_309
+set "MAKENSIS=C:\nsis-3.09\makensis.exe"
+goto :nsis_done
+:nsis_default_308
+set "MAKENSIS=C:\nsis-3.08\makensis.exe"
+goto :nsis_done
+:nsis_use_env_found
+set "MAKENSIS=%MAKENSIS_PATH%"
+goto :nsis_done
+:nsis_not_found
+echo ERROR: makensis not found in known locations.
+echo Searched:
+echo    %%MAKENSIS_PATH%%
+echo    C:\nsis-3.10\makensis.exe
+echo    C:\nsis-3.09\makensis.exe
+echo    C:\nsis-3.08\makensis.exe
+echo The Install NSIS step in the workflow should have set
+echo MAKENSIS_PATH. Check that step's log.
+exit /b 1
+:nsis_done
+set "MAKENSIS_DIR="
+for %%I in ("%MAKENSIS%") do set "MAKENSIS_DIR=%%~dpI"
 echo     Found makensis at %MAKENSIS%
+set "PATH=%MAKENSIS_DIR%;%PATH%"
 makensis /DVERSION=%VERSION% /DOUTFILE="dist\%INSTALLER_NAME%" build\windows\installer.nsi
 if errorlevel 1 exit /b 1
-goto :nsis_end
-:nsis_missing
-echo ERROR: makensis not found at %MAKENSIS%.
-echo The Install NSIS step in the workflow should have
-echo installed NSIS there. Check that step's log.
-exit /b 1
-:nsis_end
 
 REM Optional: sign with signtool if a cert is available.
 REM signtool sign /fd SHA256 /tr http://timestamp.digicert.com ^
