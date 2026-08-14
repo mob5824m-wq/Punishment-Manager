@@ -54,13 +54,13 @@ REM Verbose + log to file so we can see what failed if it fails.
 pyinstaller --noconfirm --clean --log-level DEBUG build\pyinstaller.spec > pyinstaller.log 2>&1
 if errorlevel 1 (
     echo PyInstaller failed. Last 40 lines of log:
-    powershell -NoProfile -Command "Get-Content pyinstaller.log -Tail 40"
+    type pyinstaller.log
     exit /b 1
 )
 
 if not exist "dist\punishment-manager\punishment-manager.exe" (
     echo ERROR: PyInstaller did not produce the expected binary.
-    powershell -NoProfile -Command "Get-Content pyinstaller.log -Tail 40"
+    type pyinstaller.log
     exit /b 1
 )
 
