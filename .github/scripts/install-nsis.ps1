@@ -13,9 +13,6 @@
 # script also sets a `MAKENSIS_PATH` environment variable in
 # the current process so a subsequent cmd.exe can read it via
 # %MAKENSIS_PATH% without parsing stdout.
-[CmdletBinding()]
-param()
-
 $ErrorActionPreference = 'Stop'
 
 # `3.10` is the source-archive version we use for portable downloads
@@ -25,8 +22,9 @@ $ErrorActionPreference = 'Stop'
 $nsisVersion      = '3.10'
 $nsisChocoVersion = '3.10.0'
 
-function Set-MakensisPath {
-    param([string]$Path)
+# Helper: set MAKENSIS_PATH and print the path on stdout (the
+# last line of stdout is what the caller captures).
+function Set-MakensisPath($Path) {
     [Environment]::SetEnvironmentVariable('MAKENSIS_PATH', $Path, 'Process')
     if ($env:GITHUB_ENV) {
         "MAKENSIS_PATH=$Path" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
@@ -36,15 +34,11 @@ function Set-MakensisPath {
     Write-Output $Path
 }
 
-function Get-ProgramFilesX86 {
-    $x86 = [System.Environment]::GetEnvironmentVariable('ProgramFiles(x86)')
-    if ($x86) { return $x86 }
-    return 'C:\Program Files (x86)'
-}
-
-function Test-MakensisExists {
-    $pf86 = Get-ProgramFilesX86
-    $pf   = [System.Environment]::GetEnvironmentVariable('ProgramFiles')
+# Look for makensis in the well-known install locations.
+function Find-Makensis {
+    $pf86 = [System.Environment]::GetEnvironmentVariable('ProgramFiles(x86)')
+    if (-not $pf86) { $pf86 = 'C:\Program Files (x86)' }
+    $pf = [System.Environment]::GetEnvironmentVariable('ProgramFiles')
     $candidates = @(
         "C:\nsis-$nsisVersion\makensis.exe",
         "C:\nsis-3.09\makensis.exe",
@@ -58,15 +52,10 @@ function Test-MakensisExists {
     return $null
 }
 
-function Write-Log {
-    param([string]$Message)
-    Write-Host $Message
-}
-
 # If makensis is already installed, just emit its path and exit.
-$existing = Test-MakensisExists
+$existing = Find-Makensis
 if ($existing) {
-    Write-Log "NSIS already installed at $existing"
+    Write-Host "NSIS already installed at $existing"
     Set-MakensisPath $existing
     return
 }
@@ -75,28 +64,22 @@ if ($existing) {
 # Use the full version (`3.10.0`) - the public chocolatey.org package
 # for `nsis` only has the three-part version.
 if (Get-Command choco -ErrorAction SilentlyContinue) {
-    Write-Log "Installing NSIS via Chocolatey (version $nsisChocoVersion)"
-    $chocoLog = & choco install nsis --version=$nsisChocoVersion -y --no-progress 2>&1
-    $chocoExit = $LASTEXITCODE
-    if ($chocoLog) {
-        foreach ($line in $chocoLog) { Write-Log "  choco: $line" }
-    }
-    if ($chocoExit -ne 0) {
-        Write-Log "Chocolatey install returned exit code $chocoExit; falling back to portable."
-    }
-    $existing = Test-MakensisExists
+    Write-Host "Installing NSIS via Chocolatey (version $nsisChocoVersion)"
+    choco install nsis --version=$nsisChocoVersion -y --no-progress 2>&1 |
+        ForEach-Object { Write-Host "  choco: $_" }
+    $existing = Find-Makensis
     if ($existing) {
-        Write-Log "NSIS installed via Chocolatey at $existing"
+        Write-Host "NSIS installed via Chocolatey at $existing"
         Set-MakensisPath $existing
         return
     }
-    Write-Log "Chocolatey install did not produce a working makensis; falling back to portable download."
+    Write-Host "Chocolatey install did not produce a working makensis; falling back to portable download."
 }
 
 # Try portable downloads in order. Each download is retried up to
 # three times; if all downloads fail, the script throws.
 function Install-NsisPortable($url, $label) {
-    Write-Log "Downloading NSIS $nsisVersion from $url ($label)"
+    Write-Host "Downloading NSIS $nsisVersion from $url ($label)"
     $downloadDir = "$env:TEMP\nsis-install"
     $zipPath     = "$downloadDir\nsis.zip"
     if (-not (Test-Path $downloadDir)) {
@@ -105,19 +88,19 @@ function Install-NsisPortable($url, $label) {
     $maxAttempts = 3
     for ($i = 1; $i -le $maxAttempts; $i++) {
         try {
-            Write-Log "  attempt $i of $maxAttempts"
+            Write-Host "  attempt $i of $maxAttempts"
             Invoke-WebRequest -Uri $url -OutFile $zipPath -UseBasicParsing -TimeoutSec 120
             if (Test-Path $zipPath) {
                 $size = (Get-Item $zipPath).Length
                 if ($size -gt 100000) {
-                    Write-Log "  downloaded $size bytes"
+                    Write-Host "  downloaded $size bytes"
                     break
                 }
-                Write-Log "  file too small ($size bytes); retrying"
+                Write-Host "  file too small ($size bytes); retrying"
                 Remove-Item -Force $zipPath -ErrorAction SilentlyContinue
             }
         } catch {
-            Write-Log "  attempt $i failed: $($_.Exception.Message)"
+            Write-Host "  attempt $i failed: $($_.Exception.Message)"
         }
         if ($i -eq $maxAttempts) {
             throw "All $maxAttempts download attempts failed for $url"
@@ -132,7 +115,7 @@ function Install-NsisPortable($url, $label) {
     if (-not (Test-Path "$installDir\makensis.exe")) {
         throw "Extracted zip but $installDir\makensis.exe not found"
     }
-    Write-Log "NSIS installed at: $installDir"
+    Write-Host "NSIS installed at: $installDir"
     Set-MakensisPath "$installDir\makensis.exe"
 }
 
@@ -147,7 +130,7 @@ for ($i = 0; $i -lt $urls.Length; $i++) {
         Install-NsisPortable $urls[$i] $labels[$i]
         return
     } catch {
-        Write-Log "Failed via $($labels[$i]): $($_.Exception.Message)"
+        Write-Host "Failed via $($labels[$i]): $($_.Exception.Message)"
     }
 }
 
