@@ -10,15 +10,15 @@ permission (the agent's GitHub App token can't push to
 ## What's failing
 
 The latest CI run showed:
-- **macOS .dmg** job: ✅ passed
-- **Linux .deb** job: ❌ failed on "Install build dependencies"
-- **Windows .exe** job: ❌ failed on "Install NSIS"
+- **macOS .dmg** job: passed
+- **Linux .deb** job: failed on "Install build dependencies"
+- **Windows .exe** job: failed on "Install NSIS"
 
 Both failures are environment issues, not logic bugs in the workflows.
 
 ## Fix 1 — Linux apt-get package name
 
-In `.github/workflows/build.yml`, the linux job runs:
+In `.github/workflows/build.yml`, the linux job has this step:
 
 ```yaml
 - name: Install build dependencies
@@ -32,25 +32,21 @@ GitHub's `ubuntu-latest` runner cycles through newer versions
 (24.04, then 25.04) where the lib moved to `libpython3.11-dev`. The
 install fails with `E: Unable to locate package libpython3.11`.
 
-**Replace** the run block with:
+**Replace** that step with this. It runs three short commands
+(one per line, no backslashes, no comments inside the run block,
+which avoids YAML literal-block parsing issues):
 
 ```yaml
 - name: Install build dependencies
   run: |
     sudo apt-get update
-    # libpython3.11 is in the -dev package on newer Ubuntu; the
-    # standalone name only exists on 22.04. Try the bare package
-    # first and fall back to -dev.
-    sudo apt-get install -y fakeroot dpkg lintian \
-        libpython3.11 || sudo apt-get install -y libpython3.11-dev
-    # Also install the static lib so PyInstaller's bootloader
-    # can link if needed.
-    sudo apt-get install -y libpython3.11-dev || true
+    sudo apt-get install -y fakeroot dpkg lintian
+    sudo bash -c "apt-get install -y libpython3.11 2>/dev/null || apt-get install -y libpython3.11-dev"
 ```
 
-This tries the bare package first (works on 22.04) and falls back
-to `-dev` (works on 24.04+). Either way, PyInstaller finds what it
-needs.
+The third line tries the bare package first (works on 22.04) and
+falls back to the dev package (works on 24.04+). Either way,
+PyInstaller finds what it needs.
 
 ## Fix 2 — Windows NSIS install
 
@@ -63,10 +59,6 @@ sources in order with retries:
 
 ```powershell
 # install-nsis.ps1
-# Downloads and installs a portable copy of NSIS 3.x for the build
-# workflow on Windows. Tries Chocolatey first, then a portable zip
-# download, then a GitHub release mirror.
-#
 $ErrorActionPreference = 'Stop'
 
 $nsisVersion = '3.10'
@@ -105,7 +97,6 @@ function Install-NsisPortable($url, $label) {
     Write-Host "NSIS installed at: $installDir"
 }
 
-# Try Chocolatey first (preinstalled on GitHub-hosted Windows runners).
 if (Get-Command choco -ErrorAction SilentlyContinue) {
     Write-Host "Installing NSIS via Chocolatey"
     choco install nsis --version $nsisVersion -y --no-progress 2>&1 | Out-Null
@@ -117,7 +108,6 @@ if (Get-Command choco -ErrorAction SilentlyContinue) {
     }
 }
 
-# Try portable downloads in order.
 $urls = @(
     "https://sourceforge.net/projects/nsis/files/NSIS%203/${nsisVersion}/nsis-${nsisVersion}.zip/download"
     "https://github.com/lordmulder/nsis/releases/download/v${nsisVersion}/nsis-${nsisVersion}.zip"
@@ -142,7 +132,7 @@ exit 1
 1. Open `.github/workflows/build.yml` on the branch in the GitHub
    web UI.
 2. Click the pencil icon, find the "Install build dependencies"
-   step, paste the new run block in.
+   step, paste the new YAML in.
 3. Commit with message "Fix Linux apt-get libpython3.11 fallback".
 4. Open `.github/workflows/install-nsis.ps1` similarly and replace
    the entire file.
@@ -162,24 +152,3 @@ The release workflow will then be able to build installers on every
 
 The resulting `.dmg`, `.deb`, and `.exe` will be uploaded to
 `https://github.com/mob5824m-wq/Punishment-Manager/releases/tag/v1.0.0`.
-
-The full, ready-to-apply patch is also attached below for reference.
-
-```diff
-diff --git a/.github/workflows/build.yml b/.github/workflows/build.yml
---- a/.github/workflows/build.yml
-+++ b/.github/workflows/build.yml
-@@ -28,7 +28,14 @@ jobs:
-       - name: Install build dependencies
-         run: |
-           sudo apt-get update
--          sudo apt-get install -y libpython3.11 fakeroot dpkg lintian
-+          # libpython3.11 is in the -dev package on newer Ubuntu; the
-+          # standalone name only exists on 22.04. Try the bare package
-+          # first and fall back to -dev.
-+          sudo apt-get install -y fakeroot dpkg lintian \
-+              libpython3.11 || sudo apt-get install -y libpython3.11-dev
-+          # Also install the static lib so PyInstaller's bootloader
-+          # can link if needed.
-+          sudo apt-get install -y libpython3.11-dev || true
-```
