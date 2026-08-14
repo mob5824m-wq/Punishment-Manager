@@ -16,130 +16,121 @@ The latest CI run showed:
 
 Both failures are environment issues, not logic bugs in the workflows.
 
-## Fix 1 — Linux apt-get package name
+## Strategy: put scripts in their own files
 
-In `.github/workflows/build.yml`, the linux job has this step:
+The previous fix attempt had you paste multi-line `run: |` blocks
+into the GitHub web editor. The web editor strips leading
+whitespace on paste, which silently breaks YAML literal block
+scalars. The result was confusing parse errors like
+"Unexpected value" or "StringToken was expected".
+
+**The fix for the fix**: put all the multi-line logic into separate
+files under `.github/scripts/`, and have the workflow invoke them
+with a single-line `run:`. This commit adds those scripts; you
+just need to update `build.yml` to call them.
+
+Two new files have been added to the branch:
+- `.github/scripts/install-linux-deps.sh` (the apt-get install logic)
+- `.github/scripts/install-nsis.ps1` (a more robust NSIS installer)
+
+Both files are already in this commit.
+
+## Fix 1 — Update `.github/workflows/build.yml`
+
+In `.github/workflows/build.yml`, find the "Install build
+dependencies" step in the linux job. It currently looks like:
 
 ```yaml
-- name: Install build dependencies
-  run: |
-    sudo apt-get update
-    sudo apt-get install -y libpython3.11 fakeroot dpkg lintian
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpython3.11 fakeroot dpkg lintian
 ```
 
-`libpython3.11` is the bare package name on **Ubuntu 22.04** but
-GitHub's `ubuntu-latest` runner cycles through newer versions
-(24.04, then 25.04) where the lib moved to `libpython3.11-dev`. The
-install fails with `E: Unable to locate package libpython3.11`.
-
-**Replace** that step with this. It runs three short commands
-(one per line, no backslashes, no comments inside the run block,
-which avoids YAML literal-block parsing issues):
+**Replace it** with this single-line `run:` (no block scalar, no
+indentation to lose on paste):
 
 ```yaml
-- name: Install build dependencies
-  run: |
-    sudo apt-get update
-    sudo apt-get install -y fakeroot dpkg lintian
-    sudo bash -c "apt-get install -y libpython3.11 2>/dev/null || apt-get install -y libpython3.11-dev"
+      - name: Install build dependencies
+        run: bash $GITHUB_WORKSPACE/.github/scripts/install-linux-deps.sh
 ```
 
-The third line tries the bare package first (works on 22.04) and
-falls back to the dev package (works on 24.04+). Either way,
-PyInstaller finds what it needs.
+Then find the "Install Python dependencies" step in the same job
+and replace it with a single-line run too. The current version:
 
-## Fix 2 — Windows NSIS install
-
-`.github/workflows/install-nsis.ps1` only downloads from SourceForge,
-which has been rate-limiting CI traffic. Some runs succeed, some
-fail with HTTP 503 or 429.
-
-**Replace the entire file** with this version, which tries three
-sources in order with retries:
-
-```powershell
-# install-nsis.ps1
-$ErrorActionPreference = 'Stop'
-
-$nsisVersion = '3.10'
-$installDir  = "C:\nsis-${nsisVersion}"
-
-if (Test-Path "$installDir\makensis.exe") {
-    Write-Host "NSIS already installed at $installDir"
-    $env:PATH = "${installDir};${env:PATH}"
-    exit 0
-}
-
-function Install-NsisPortable($url, $label) {
-    Write-Host "Downloading NSIS $nsisVersion from $url ($label)"
-    $downloadDir = "$env:TEMP\nsis-install"
-    $zipPath     = "$downloadDir\nsis.zip"
-    if (-not (Test-Path $downloadDir)) {
-        New-Item -ItemType Directory -Path $downloadDir -Force | Out-Null
-    }
-    $maxAttempts = 3
-    for ($i = 1; $i -le $maxAttempts; $i++) {
-        try {
-            Invoke-WebRequest -Uri $url -OutFile $zipPath -UseBasicParsing -TimeoutSec 60
-            break
-        } catch {
-            Write-Host "Attempt $i of $maxAttempts failed: $($_.Exception.Message)"
-            if ($i -eq $maxAttempts) { throw }
-            Start-Sleep -Seconds 5
-        }
-    }
-    if (Test-Path $installDir) {
-        Remove-Item -Recurse -Force $installDir
-    }
-    Expand-Archive -Path $zipPath -DestinationPath 'C:\' -Force
-    $env:PATH = "${installDir};${env:PATH}"
-    & "${installDir}\makensis.exe" /VERSION
-    Write-Host "NSIS installed at: $installDir"
-}
-
-if (Get-Command choco -ErrorAction SilentlyContinue) {
-    Write-Host "Installing NSIS via Chocolatey"
-    choco install nsis --version $nsisVersion -y --no-progress 2>&1 | Out-Null
-    if (Test-Path "${env:ProgramFiles(x86)}\NSIS\makensis.exe") {
-        $env:PATH = "${env:ProgramFiles(x86)}\NSIS;${env:PATH}"
-        & "${env:ProgramFiles(x86)}\NSIS\makensis.exe" /VERSION
-        Write-Host "NSIS installed via Chocolatey at ${env:ProgramFiles(x86)}\NSIS"
-        exit 0
-    }
-}
-
-$urls = @(
-    "https://sourceforge.net/projects/nsis/files/NSIS%203/${nsisVersion}/nsis-${nsisVersion}.zip/download"
-    "https://github.com/lordmulder/nsis/releases/download/v${nsisVersion}/nsis-${nsisVersion}.zip"
-)
-
-$labels = @("SourceForge", "GitHub mirror")
-for ($i = 0; $i -lt $urls.Length; $i++) {
-    try {
-        Install-NsisPortable $urls[$i] $labels[$i]
-        exit 0
-    } catch {
-        Write-Host "Failed via $($labels[$i]): $($_.Exception.Message)"
-    }
-}
-
-Write-Host "All install attempts failed. Please install NSIS manually."
-exit 1
+```yaml
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
 ```
 
-## How to apply
+becomes:
 
-1. Open `.github/workflows/build.yml` on the branch in the GitHub
-   web UI.
-2. Click the pencil icon, find the "Install build dependencies"
-   step, paste the new YAML in.
-3. Commit with message "Fix Linux apt-get libpython3.11 fallback".
-4. Open `.github/workflows/install-nsis.ps1` similarly and replace
-   the entire file.
-5. Commit with message "Make NSIS install more robust".
+```yaml
+      - name: Install Python dependencies
+        run: bash -c "python -m pip install --upgrade pip && pip install -r requirements.txt && pip install pyinstaller"
+```
 
-Both files will be updated in a single workflow run, which should
-then pass on all three platforms.
+Same for "Verify .deb" (currently `run: | ls -lh dist/ dpkg-deb -I
+dist/*.deb`) which becomes
+`run: bash -c "ls -lh dist/ && dpkg-deb -I dist/*.deb"`.
+
+## Fix 2 — Update the Windows NSIS install path
+
+The current build.yml calls the old install-nsis.ps1 at
+`.github/workflows/install-nsis.ps1`. That file uses a single
+SourceForge URL and is failing. The new one is at
+`.github/scripts/install-nsis.ps1` and has retry logic plus
+three fallback sources.
+
+**Two changes** are needed in the windows job's "Install NSIS" step:
+
+1. Change the path from `.github/workflows/install-nsis.ps1` to
+   `.github/scripts/install-nsis.ps1`.
+2. Change `shell: pwsh` to `run: pwsh -File ...`.
+
+Current:
+```yaml
+      - name: Install NSIS
+        shell: pwsh
+        run: ./.github/workflows/install-nsis.ps1
+```
+
+Replace with:
+```yaml
+      - name: Install NSIS
+        run: pwsh -File .github/scripts/install-nsis.ps1
+```
+
+(No `shell:` line — the `pwsh` in the `run:` is the executable,
+so the default shell doesn't need to be set.)
+
+## Optional — delete the old `install-nsis.ps1`
+
+The old `.github/workflows/install-nsis.ps1` is no longer
+referenced after applying fix 2. You can delete it via the web UI
+to keep the repo tidy.
+
+## How to apply all changes
+
+Two files to edit, one file to delete:
+
+1. **Edit `.github/workflows/build.yml`**:
+   - Replace the linux "Install build dependencies" run block.
+   - Replace the linux "Install Python dependencies" run block.
+   - Replace the linux "Verify .deb" run block.
+   - Replace the windows "Install NSIS" step (path + syntax).
+2. **Edit `.github/workflows/build.yml`** to use single-line
+   runs in the macos job too (optional but recommended):
+   - "Install Python dependencies" run block.
+   - "Verify .dmg" run block.
+3. **Delete `.github/workflows/install-nsis.ps1`** (optional).
+
+Each edit is a single click + paste in the GitHub web editor. If
+any paste gets mangled, just retry — the new scripts on disk are
+self-contained and the workflow just needs to call them.
 
 ## After the fix lands
 
