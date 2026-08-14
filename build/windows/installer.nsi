@@ -54,7 +54,7 @@ Section "Install"
 
     ; Copy the PyInstaller output.
     SetOutPath "$INSTDIR"
-    File /r "..\dist\punishment-manager\*"
+    File /r "..\..\dist\punishment-manager\*"
 
     ; Start Menu shortcuts.
     CreateDirectory "$SMPROGRAMS\${APPNAME}"

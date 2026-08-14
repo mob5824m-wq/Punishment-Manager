@@ -121,7 +121,9 @@ set "MAKENSIS_DIR="
 for %%I in ("%MAKENSIS%") do set "MAKENSIS_DIR=%%~dpI"
 echo     Found makensis at %MAKENSIS%
 set "PATH=%MAKENSIS_DIR%;%PATH%"
-makensis /DVERSION=%VERSION% /DOUTFILE="dist\%INSTALLER_NAME%" build\windows\installer.nsi
+REM Use an absolute path for OUTFILE so NSIS writes the installer
+REM to <project_root>\dist\ rather than <project_root>\build\windows\dist\
+makensis /DVERSION=%VERSION% /DOUTFILE="%CD%\dist\%INSTALLER_NAME%" build\windows\installer.nsi
 if errorlevel 1 exit /b 1
 
 REM Optional: sign with signtool if a cert is available.
