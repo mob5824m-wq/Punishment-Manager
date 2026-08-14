@@ -80,21 +80,21 @@ if not exist "dist\punishment-manager\punishment-manager.exe" (
 echo ==^> Building NSIS installer
 REM The Install NSIS step in the workflow installs NSIS to
 REM C:\nsis-3.10\ via install-nsis.ps1. Just use that path
-REM directly. cmd.exe's 'if exist' parser is fragile around
-REM paths with spaces and parentheses, so we avoid it
-REM entirely here.
+REM directly.
 set "MAKENSIS=C:\nsis-3.10\makensis.exe"
-if not exist "%MAKENSIS%" (
-    echo ERROR: makensis not found at %MAKENSIS%.
-    echo The Install NSIS step in the workflow should have
-    echo installed NSIS there. Check that step's log.
-    exit /b 1
-)
+if not exist "%MAKENSIS%" goto :nsis_missing
 set "MAKENSIS_DIR=C:\nsis-3.10"
 set "PATH=%MAKENSIS_DIR%;%PATH%"
 echo     Found makensis at %MAKENSIS%
 makensis /DVERSION=%VERSION% /DOUTFILE="dist\%INSTALLER_NAME%" build\windows\installer.nsi
 if errorlevel 1 exit /b 1
+goto :nsis_end
+:nsis_missing
+echo ERROR: makensis not found at %MAKENSIS%.
+echo The Install NSIS step in the workflow should have
+echo installed NSIS there. Check that step's log.
+exit /b 1
+:nsis_end
 
 REM Optional: sign with signtool if a cert is available.
 REM signtool sign /fd SHA256 /tr http://timestamp.digicert.com ^
