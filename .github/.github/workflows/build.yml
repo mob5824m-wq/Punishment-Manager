@@ -1,0 +1,112 @@
+name: build
+
+# Sanity-check the build on every push and pull request, on all three
+# platforms. This catches build-script regressions early without
+# producing any releases - the actual release builds live in
+# release.yml and only run on `v*` tags.
+
+on:
+  push:
+    branches: [main, 'arena/**']
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: linux (.deb)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpython3.11 fakeroot dpkg lintian
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+      - name: Smoke-test imports
+        run: |
+          python -c "import bot, installer; print('imports OK')"
+      - name: Build .deb
+        run: build/build_linux.sh
+      - name: Verify .deb
+        run: |
+          ls -lh dist/
+          dpkg-deb -I dist/*.deb
+      - name: Upload .deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: punishment-manager-linux
+          path: dist/*.deb
+          if-no-files-found: error
+          retention-days: 3
+
+  macos:
+    name: macos (.dmg)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+      - name: Install create-dmg
+        run: brew install create-dmg
+      - name: Build .dmg
+        run: build/build_macos.sh
+      - name: Verify .dmg
+        run: |
+          ls -lh dist/
+          hdiutil verify dist/*.dmg || true
+      - name: Upload .dmg
+        uses: actions/upload-artifact@v4
+        with:
+          name: punishment-manager-macos
+          path: dist/*.dmg
+          if-no-files-found: error
+          retention-days: 3
+
+  windows:
+    name: windows (.exe)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+      - name: Install NSIS
+        shell: pwsh
+        run: ./.github/workflows/install-nsis.ps1
+      - name: Build .exe
+        run: build\build_windows.bat
+        shell: cmd
+      - name: Verify .exe
+        run: dir dist\*.exe
+      - name: Upload .exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: punishment-manager-windows
+          path: dist/*.exe
+          if-no-files-found: error
+          retention-days: 3
