@@ -1,84 +1,64 @@
 # CI Fix Log
 
-This document tracks each round of CI debugging so we can see
-what was tried and what the current state is.
-
 ## State
 
 | Job | Status | Last known issue |
 |-----|--------|------------------|
 | macOS .dmg | ✅ passing | — |
 | Linux .deb | ✅ passing | — |
-| Windows .exe | ❌ failing | "Active Python has python3.lib; no install needed" — passes! But the next part fails. |
+| Windows .exe | ❌ failing | `%\NSIS\makensis.exe was unexpected at this time.` (from before the latest fixes) |
 
-## Timeline
-
-1. **First error** (user-shared): `ERROR: makensis not found.`
-   **Fix:** Made the `Install NSIS` step in `build.yml` call
-   `pwsh -File .github/scripts/install-nsis.ps1`. ✅
-
-2. **Second error**: PyInstaller step fails because the active
-   Python lacks `python3.lib`.
-   **Fix:** Added `.github/scripts/install-windows-deps.ps1` to
-   download the official Python MSI and run it with
-   `Include_dev=1 Include_lib=1`.
-
-3. **Third error** (user-shared): MSI install succeeded but
-   `Test-PythonHasLibs` reported `python3.lib still missing`.
-   **Root cause:** the check was looking at
-   `os.path.join(p, '..', 'libs', 'python3.lib')` (one level too
-   high) and `InstallAllUsers=1` forced the install to
-   `%ProgramFiles%\Python311` instead of `C:\Python311`.
-   **Fix:** Dropped the `..`, switched to `InstallAllUsers=0` so
-   `TargetDir=C:\Python311` is honored. After the install the
-   script emits the install path as the last line of stdout and
-   the calling batch file updates PATH to use it.
-
-4. **Fourth error** (user-shared): `%\NSIS\makensis.exe was
-   unexpected at this time.`
-   **Root cause:** the `if exist` line had `%ProgramFiles(x86)%`
-   inside a parenthesized `else if` block. cmd.exe's parser
-   mis-handled the environment variable expansion within the
-   parens, leading to a syntax error.
-   **Fix:** Replaced `%ProgramFiles(x86)%` and `%ProgramFiles%`
-   with their hardcoded equivalents `C:\Program Files (x86)\` and
-   `C:\Program Files\`.
-
-5. **Current state** (after the fourth fix): the build is still
-   failing on the `Build .exe` step, but the path lookup is now
-   fixed. The new error message is different.
+The build still fails on the `Build .exe` step in the Windows job,
+but the latest commits should have removed the parens-block that
+was producing the `\NSIS\makensis.exe was unexpected` error. The
+new error is something different that I can't see from this
+sandbox.
 
 ## What I need from you
 
-Open the latest failed `build` run, click into the `windows
-(.exe)` job, then the `Build .exe` step, and copy the **last 50
-lines of the log**.
+Open the latest failed `build` run at
+https://github.com/mob5824m-wq/Punishment-Manager/actions
+
+Click into the `windows (.exe)` job, then the `Build .exe` step,
+and copy the **last 50 lines of the log**.
 
 The build script now does extensive error printing, so the
 output should be informative. Look for sections like:
 
 - `ERROR: install-windows-deps.ps1 failed. Log:`
 - `PyInstaller failed. Last 40 lines of log:`
-- `ERROR: makensis not found in known locations.`
+- `ERROR: makensis not found at C:\nsis-3.10\makensis.exe.`
 - A new error I haven't anticipated
 
-The new run is at
-https://github.com/mob5824m-wq/Punishment-Manager/actions
-(latest failed `build` workflow). The `Build .exe` step is
-the failing one.
+The latest commit is `1aa8f6b` which has the goto-based NSIS
+path lookup. If the error still mentions `\NSIS\makensis.exe`,
+then the build is using a cached or stale copy of the file
+(which would be unusual for GitHub Actions). If the error is
+something different, paste it and I'll write a targeted fix.
+
+## Most recent fixes (already pushed)
+
+1. **Hardcoded NSIS path** (`3b1cc16`) — The `if exist` search
+   for makensis kept triggering cmd.exe parser bugs. Replaced
+   with a single hardcoded `C:\nsis-3.10\makensis.exe` path.
+
+2. **Goto-based if-not-exist** (`1aa8f6b`) — Even the hardcode
+   version had `if not exist "..." (` (parens block). Replaced
+   with `if not exist "..." goto :label`.
+
+If those didn't help, the error is somewhere completely
+different (not in the NSIS section) and we need the actual
+log to diagnose.
 
 ## Common possibilities for the new error
 
-- The path with `(x86)` and spaces still has issues inside
-  parens, and the parser is now failing on a different line.
-  The fix would be to use `call` instead of `else if` chains.
-- The new Python was installed but the `for /f` line that reads
-  the install path uses PowerShell, which might not be on PATH
-  in this cmd session.
-- The NSIS install step set up an env var, but the build
-  script is reading a stale value.
-- The makensis invocation itself is failing (would show
-  `Error: makensis returned non-zero` or similar).
-
-The most useful thing is just the raw log output. Paste it
-back and I'll write a targeted fix.
+- **Python check failing**: The `python -c "import sys..."` line
+  at the top of `build_windows.bat` could be failing if the
+  active Python is one that doesn't have `sys` (impossible) or
+  has `python3.lib` in a different relative path than expected.
+- **PyInstaller step**: The PyInstaller command itself could
+  be failing now. The error would show in the dumped log
+  (`type pyinstaller.log`).
+- **cmd.exe syntax error elsewhere**: A previous edit to the
+  bat file might have introduced a syntax bug. The error
+  message would be different.
