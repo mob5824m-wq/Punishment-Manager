@@ -67,9 +67,12 @@ Section "Install"
     CreateShortcut "$DESKTOP\${APPNAME}.lnk" \
         "$INSTDIR\punishment-manager.exe"
 
-    ; Add to PATH for command-line use.
-    EnVar::SetHKLM
-    EnVar::AddValue "PATH" "$INSTDIR"
+    ; Note: We do not add $INSTDIR to the system PATH because the
+    ; EnVar plugin (which NSIS's PATH-modification macros use) is
+    ; not bundled with the standard NSIS install. Users who want
+    ; command-line access can add the install dir to their PATH
+    ; manually, or symlink the binary into a directory already
+    ; on PATH.
 
     ; Optional: install as a Windows Service via NSSM (if present).
     ;
@@ -103,9 +106,8 @@ Section "Uninstall"
     RMDir "$SMPROGRAMS\${APPNAME}"
     Delete "$DESKTOP\${APPNAME}.lnk"
 
-    ; Remove from PATH.
-    EnVar::SetHKLM
-    EnVar::DeleteValue "PATH" "$INSTDIR"
+    ; No PATH removal needed since we don't add to PATH on install
+    ; (the EnVar plugin is not bundled with the standard NSIS).
 
     ; Remove registry keys.
     DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${COMPANYNAME} ${APPNAME}"
