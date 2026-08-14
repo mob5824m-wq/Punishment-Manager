@@ -27,7 +27,7 @@ REM that actions/setup-python installs often lacks this, which
 REM causes PyInstaller to fail with "Python library not found".
 REM If missing, run the helper script that installs the full Python
 REM from Chocolatey or the official MSI.
-python -c "import sys, os; p=os.path.dirname(sys.executable); lib=os.path.join(p, '..', 'libs', 'python3.lib'); sys.exit(0 if os.path.exists(lib) else 1)" 2>nul
+python -c "import sys, os; p=os.path.dirname(sys.executable); lib=os.path.join(p, 'libs', 'python3.lib'); sys.exit(0 if os.path.exists(lib) else 1)" 2>nul
 if errorlevel 1 goto :need_install
 echo     Active Python has python3.lib; no install needed.
 goto :have_install
@@ -36,8 +36,21 @@ echo     Active Python lacks python3.lib; running install helper...
 pwsh -NoProfile -ExecutionPolicy Bypass -File .github\scripts\install-windows-deps.ps1 > windows-deps.log 2>&1
 if errorlevel 1 (
     echo ERROR: install-windows-deps.ps1 failed. Log:
-    powershell -NoProfile -Command "Get-Content windows-deps.log"
+    type windows-deps.log
     exit /b 1
+)
+REM After the install, the new Python is somewhere on disk
+REM (C:\Python311 or %ProgramFiles%\Python311). The script writes
+REM its actual install path to the last line of the log. Read it
+REM and prepend to PATH so the rest of this script uses it.
+for /f "delims=" %%I in ('powershell -NoProfile -Command "Get-Content windows-deps.log -Tail 1"') do set "NEWPY=%%I"
+echo     Discovered Python at: %NEWPY%
+if exist "%NEWPY%\python.exe" (
+    set "PATH=%NEWPY%;%NEWPY%\Scripts;%PATH%"
+    echo     Updated PATH to use %NEWPY%
+) else (
+    echo     WARNING: install log's last line is not a valid Python path.
+    echo     Last line was: %NEWPY%
 )
 :have_install
 
