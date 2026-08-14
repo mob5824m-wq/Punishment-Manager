@@ -2,14 +2,18 @@
 
 This repo includes three GitHub Actions workflow files that build
 the native installers and attach them to GitHub Releases. Because
-the bot's GitHub token has restricted scopes and can't push files
-to `.github/workflows/`, you'll need to add these files yourself
-through the GitHub web UI (or by pushing them as a user with
-`workflows` permission).
+the agent's GitHub App token has restricted scopes and can't push
+files into `.github/workflows/`, you'll need to add these files
+yourself through the GitHub web UI (or by pushing them as a user
+with `workflows` permission).
+
+The files are already in your working tree (look in
+`.github/workflows/`). The instructions below explain how to get
+them onto the `main` branch.
 
 ## What's included
 
-| File | Purpose |
+| File (in your working tree) | Purpose |
 |------|---------|
 | `.github/workflows/release.yml` | Builds installers on every `v*` tag and attaches them to a GitHub Release. |
 | `.github/workflows/build.yml` | Sanity-checks the build on every push / PR. |
@@ -17,28 +21,37 @@ through the GitHub web UI (or by pushing them as a user with
 
 ## How to enable them
 
-### Option A — Copy-paste via the web UI
+### Option A — Web UI (fastest, ~1 minute)
 
-1. Open the file you want to add in the GitHub web editor:
-   - [`release.yml`](https://github.com/mob5824m-wq/Punishment-Manager/new/main/.github/workflows/release.yml?filename=.github%2Fworkflows%2Frelease.yml)
-   - [`build.yml`](https://github.com/mob5824m-wq/Punishment-Manager/new/main/.github/workflows/build.yml?filename=.github%2Fworkflows%2Fbuild.yml)
-   - [`install-nsis.ps1`](https://github.com/mob5824m-wq/Punishment-Manager/new/main/.github/workflows/install-nsis.ps1?filename=.github%2Fworkflows%2Finstall-nsis.ps1)
-2. Paste the file contents.
-3. Commit directly to `main`.
+1. Go to https://github.com/mob5824m-wq/Punishment-Manager/tree/main/.github
+2. Click **Add file → Create new file**.
+3. In the "Name your file..." box, type the full path including
+   folders, e.g. `.github/workflows/release.yml`. GitHub will
+   create the folders for you.
+4. Open the file from your local checkout
+   (`Punishment-Manager/.github/workflows/release.yml`) in any text
+   editor, copy its entire contents, and paste into the GitHub
+   editor.
+5. Scroll down, leave "Commit directly to the `main` branch"
+   selected, click **Commit new file**.
+6. Repeat for `build.yml` and `install-nsis.ps1`.
 
 GitHub will pick up the workflows automatically. You should see a
-green check on the next push.
+green check mark on the next push.
 
 ### Option B — Local git push as a maintainer
 
 If you have a personal access token or a maintainer account with
-`workflows` permission:
+`workflows` permission (the same permissions that let you approve
+PRs that touch `.github/workflows/`):
 
 ```bash
 cd /path/to/Punishment-Manager
 git checkout main
-cp .github/workflows/*.yml .github/workflows/*.ps1 . # already in working tree
+# The workflow files should already be in the working tree from
+# the agent's last commit. Stage and push them.
 git add .github/workflows/
+git status   # should show three new files staged
 git commit -m "Add release + build workflows"
 git push origin main
 ```
@@ -49,8 +62,6 @@ git push origin main
 gh workflow add release.yml
 gh workflow add build.yml
 ```
-
-(Or just create them via `gh api` against the contents API.)
 
 ## Cutting a release
 
@@ -68,28 +79,29 @@ three installers, and attaches them to a new GitHub Release at:
 https://github.com/mob5824m-wq/Punishment-Manager/releases/tag/v1.0.0
 ```
 
-The release will be a normal release. If you push a `v1.0.0-rc1`
-tag (anything with a hyphen), the release is marked as a prerelease
-automatically.
+A plain version like `1.0.0` becomes a normal release. If you push
+a `v1.0.0-rc1` tag (anything with a hyphen), the release is marked
+as a prerelease automatically.
 
 ## Why can't the agent push these files?
 
-The GitHub App token used by the agent has `contents: write` (so
-it can push normal code) but not `workflows` (so it can't add or
-modify files in `.github/workflows/`). This is a security default
-GitHub enforces to prevent compromised integrations from adding
-malicious workflow files that exfiltrate secrets.
+The GitHub App token used by the agent has `contents: write`
+(so it can push normal code) but not `workflows` (so it can't add
+or modify files in `.github/workflows/`). This is a security
+default GitHub enforces to prevent a compromised integration from
+adding a malicious workflow that exfiltrates secrets.
 
 The fix is a one-time, ~30-second step for a human to copy these
 files in. From then on, the agent can cut releases with
-`./scripts/make_release.sh` without needing the special permission
-because tag pushes don't require `workflows` write.
+`./scripts/make_release.sh` without needing the special permission,
+because **pushing a tag** doesn't require `workflows` write — only
+**creating or modifying workflow files** does.
 
 ## Verifying the workflows work
 
 After copying the files in:
 
-1. **Build workflow** runs on every push / PR. You can watch it at
+1. **Build workflow** runs on every push / PR. Watch it at
    `https://github.com/mob5824m-wq/Punishment-Manager/actions`.
 
 2. **Release workflow** runs on `v*` tags. To trigger it manually:
@@ -97,8 +109,8 @@ After copying the files in:
    git tag v0.1.0-test
    git push origin v0.1.0-test
    ```
-   Then check the Actions tab. If everything works, delete the test
-   tag and cut a real one:
+   Then check the Actions tab. If everything works, delete the
+   test tag and cut a real one:
    ```bash
    git tag -d v0.1.0-test
    git push origin :refs/tags/v0.1.0-test
