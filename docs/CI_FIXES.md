@@ -1,70 +1,76 @@
-# Fixes needed for the CI workflows
+# CI Fix Log
 
-## Current state
+This document tracks each round of CI debugging so we can see
+what was tried and what the current state is.
 
-The CI build is still failing on the Windows job (`Build .exe`
-step). The Linux and macOS jobs are passing.
+## State
 
-The agent can no longer access the workflow logs to see exactly
-what's failing (the sandbox blocks the Azure blob storage that
-hosts them). The most recent change adds error logging to
-`build/build_windows.bat` so the next run should print the
-actual error to the build log.
+| Job | Status | Last known issue |
+|-----|--------|------------------|
+| macOS .dmg | ✅ passing | — |
+| Linux .deb | ✅ passing | — |
+| Windows .exe | ❌ failing | "Active Python lacks python3.lib" check now passes; failure has moved. |
 
-## What to do
+## Timeline
 
-1. Open the latest failed run:
-   https://github.com/mob5824m-wq/Punishment-Manager/actions
-2. Click into the `windows (.exe)` job.
-3. Click into the `Build .exe` step.
-4. Scroll to the bottom of the log. There should be a section
-   like "PyInstaller failed. Last 40 lines of log:" followed by
-   the actual error.
-5. Copy the error and share it back (paste it in chat or open
-   an issue).
+1. **First error** (user-shared): `ERROR: makensis not found.`
+   **Fix:** Make the `Install NSIS` step in `build.yml` call
+   `pwsh -File .github/scripts/install-nsis.ps1` (which sets
+   `$env:PATH` inside the PowerShell session). ✅ done by user.
 
-## Most likely failures
+2. **Second error** (user-shared): PyInstaller step fails because
+   the active Python lacks `python3.lib`.
+   **Fix:** Add `.github/scripts/install-windows-deps.ps1` that
+   downloads the official Python MSI from python.org and runs
+   it with `Include_dev=1 Include_lib=1` so the dev files are
+   installed.
 
-Based on the symptoms (the build step is failing, NSIS install
-succeeded), the most likely culprits are:
+3. **Third error** (user-shared): the MSI install succeeded but
+   `Test-PythonHasLibs` reported `python3.lib` was still missing.
+   **Root cause:** the check was looking at
+   `os.path.join(p, '..', 'libs', 'python3.lib')` (one level too
+   high) and the `InstallAllUsers=1` flag was forcing the install
+   to `%ProgramFiles%\Python311` instead of `C:\Python311`.
+   **Fix:**
+   - Both checks now use `os.path.join(p, 'libs', 'python3.lib')`.
+   - Switched to `InstallAllUsers=0` so `TargetDir=C:\Python311`
+     is honored.
+   - The script emits the install path as the last line of
+     stdout so the calling batch script can update PATH.
 
-### 1. `python3.lib` is missing
+4. **Current state** (after the third fix): the build is still
+   failing on the `Build .exe` step, but the new error message
+   is different. Need the actual log to diagnose further.
 
-The slim Python that `actions/setup-python` installs often lacks
-`python3.lib`. The build script detects this and runs
-`.github/scripts/install-windows-deps.ps1` to install a full
-Python from python.org. If that script is also failing (e.g. due
-to a network timeout), the error log will show "install helper
-failed" with the download details.
+## What I need from you
 
-**Fix:** if the helper log shows a download error, you can run
-the build locally once with `python -m pip install pyinstaller`
-followed by `pyinstaller --noconfirm --clean build\pyinstaller.spec`
-to confirm it works, then push any local fixes.
+Open the latest failed `windows (.exe)` build run, click into
+the `Build .exe` step, and copy the **last 50 lines of the log**.
 
-### 2. PyInstaller can't find a module
+The build script now does extensive error printing, so the
+output should be informative. Look for sections like:
 
-If the build log shows "ModuleNotFoundError: No module named 'X'"
-or "hidden import 'X' not found", the `.github/scripts/` or
-`pyinstaller.spec` needs more `hiddenimports`.
+- `ERROR: install-windows-deps.ps1 failed. Log:` (install helper
+  is still failing)
+- `PyInstaller failed. Last 40 lines of log:` (PyInstaller
+  itself is failing)
+- `ERROR: makensis not found in known locations.` (NSIS lookup
+  failed despite the previous fix)
+- Or some other error
 
-**Fix:** add the missing module to the `hiddenimports` list in
-`pyinstaller.spec` and push the change.
+The new run is at
+https://github.com/mob5824m-wq/Punishment-Manager/actions
+(latest failed `build` workflow). The `Build .exe` step is
+the failing one.
 
-### 3. PyInstaller's bootloader is missing
+## Common possibilities for the new error
 
-If the build log shows something like "failed to execute script"
-or "bootloader not found", the PyInstaller install itself is
-broken. Reinstalling pyinstaller in a fresh venv usually fixes
-this.
-
-**Fix:** add `python -m venv .venv && .venv\Scripts\activate && pip
-install pyinstaller` to the build script before the pyinstaller
-invocation.
-
-## Sharing the error
-
-The fastest way to make progress: open the Actions tab, find the
-most recent failed `windows (.exe)` run, copy the **last 30-50
-lines of the log output** from the `Build .exe` step, and paste it
-back. The agent can then propose a targeted fix.
+- The official Python MSI may have a different layout in a newer
+  version (e.g. `python311.lib` instead of `python3.lib`). The
+  check would need to look for both.
+- The MSI install may have timed out at 60s. The script retries
+  3 times but if the network is slow, all three could time out.
+- PyInstaller itself may be failing for a module reason (would
+  show `ModuleNotFoundError` in the dumped log).
+- The build step may have a syntax error after the recent edits
+  (would show a Windows batch parser error).
