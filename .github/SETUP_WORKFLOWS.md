@@ -9,7 +9,7 @@ to a GitHub Release (when you cut a tag).
 | File | Purpose |
 |------|---------|
 | `.github/workflows/build.yml` | Sanity-checks the build on every push and PR. Produces three platform artifacts (`.deb`, `.dmg`, `.exe`) for 3 days. |
-| `.github/workflows/release.yml` | Builds installers on every `v*` tag and attaches them to a GitHub Release. |
+| `.github/workflows/release.yml` | Builds installers on every `v*` tag and attaches them to a GitHub Release. **(Currently broken — see below.)** |
 | `.github/scripts/install-linux-deps.sh` | Helper for the Linux runner: installs `libpython3.11`, `fakeroot`, `dpkg`, `lintian`. |
 | `.github/scripts/install-windows-deps.ps1` | Helper for the Windows runner: ensures a full Python with `python3.lib`. |
 | `.github/scripts/install-nsis.ps1` | Helper for the Windows runner: downloads and installs NSIS 3.10 portably and exports the path to subsequent steps via `$GITHUB_ENV`. |
@@ -26,18 +26,49 @@ malicious workflow that exfiltrates secrets.
 
 In practice this means:
 
-- `build.yml` is already on `main` and **passing** on all three
-  platforms.
-- `release.yml` is on `main` but was authored before the build
-  pipeline was finalised. A handful of small fixes in
-  `release.yml` (point NSIS install at `.github/scripts/`, point
-  Linux at the helper script, drop the redundant duplicate
-  `.github/workflows/install-nsis.ps1`) have to be applied by a
-  human with `workflows` permission.
-- For day-to-day work, the `build.yml` artifacts are the source
-  of truth. The `Actions` tab on the PR shows a 3-day-retention
-  download link for each `.deb` / `.dmg` / `.exe` after every
-  commit, and that link is what users actually install from.
+- `build.yml` is on `main` and **passing** on all three platforms.
+- `release.yml` is on `main` but is **broken** — it contains a
+  YAML expression error on line 83:
+  ```yaml
+  shell: ${{ matrix.shell }}   # 'matrix' is not a valid context
+                                # in a step's `shell:` field
+  ```
+  GitHub rejects the workflow file at parse time, so the workflow
+  never runs and never creates a release. The error is visible at
+  the top of any run:
+  > Invalid workflow file: `.github/workflows/release.yml#L1`
+  > (Line: 83, Col: 16): Unrecognized named-value: 'matrix'.
+
+  A maintainer with `workflows` permission can fix this by replacing
+  the matrix job with three separate per-platform jobs (the same
+  pattern `build.yml` uses). The agent's PR #1 already has the
+  corrected `release.yml`; the agent just can't push it.
+
+## Releases
+
+The **v1.0.0** release is live at
+<https://github.com/mob5824m-wq/Punishment-Manager/releases/tag/v1.0.0>.
+It was created manually with `gh release create` and has the source
+archives GitHub auto-generates for every tag:
+
+- [Source code (zip)](https://github.com/mob5824m-wq/Punishment-Manager/archive/refs/tags/v1.0.0.zip)
+- [Source code (tar.gz)](https://github.com/mob5824m-wq/Punishment-Manager/archive/refs/tags/v1.0.0.tar.gz)
+
+**The release is missing the binary installers (`.deb`, `.dmg`,
+`.exe`).** This is because the agent's sandbox can't reach
+`uploads.github.com` to upload them. Three ways to fix this:
+
+1. **Fix `release.yml`** (per the bug above), push a `v1.0.1` tag,
+   and the workflow will build the installers and attach them to
+   the new release.
+2. **Re-run the `build` workflow** on the `v1.0.0` commit, then
+   download the artifacts from the Actions tab and drag-and-drop
+   them onto the release page in the web UI. The web-UI upload
+   goes through `github.com`, which is reachable from anywhere.
+3. **Build the installers locally** on a Linux / macOS / Windows
+   host using `build/build_linux.sh`, `build/build_macos.sh`, or
+   `build\build_windows.bat`, then drag-and-drop them onto the
+   release page.
 
 ## How to cut a release
 
@@ -46,13 +77,9 @@ In practice this means:
 ```
 
 That validates the working tree, creates an annotated `v1.0.0` tag,
-and pushes it. The release workflow picks up the tag, builds the
-three installers in parallel, and attaches them to a new GitHub
-Release at:
-
-```
-https://github.com/mob5824m-wq/Punishment-Manager/releases/tag/v1.0.0
-```
+and pushes it. (The release workflow should then create a GitHub
+Release and attach the installers — but only after the `release.yml`
+fix above is in place.)
 
 A plain version like `1.0.0` becomes a normal release. If you push
 a `v1.0.0-rc1` tag (anything with a hyphen), the release is marked
@@ -61,9 +88,10 @@ as a prerelease automatically.
 ## Verifying the workflows work
 
 1. **Build workflow** runs on every push / PR. Watch it at
-   `https://github.com/mob5824m-wq/Punishment-Manager/actions`.
+   <https://github.com/mob5824m-wq/Punishment-Manager/actions>.
 
-2. **Release workflow** runs on `v*` tags. To trigger it manually:
+2. **Release workflow** runs on `v*` tags. To trigger it manually
+   (once the workflow is fixed):
    ```bash
    git tag v0.1.0-test
    git push origin v0.1.0-test
@@ -75,20 +103,15 @@ as a prerelease automatically.
    git push origin :refs/tags/v0.1.0-test
    ```
 
-## If `release.yml` fails on the first tag
+## Fixing `release.yml` (for a maintainer)
 
-The release workflow was committed before the build pipeline was
-finalised, so it may need a one-time human fix-up. The most
-common things to check are:
+The minimum-viable fix: replace the matrix job with three explicit
+per-platform jobs, like `build.yml` does. The full diff against
+the current `release.yml` is in PR #1's branch
+(`arena/019ffe80-punishment-manager`); the user just needs to
+either:
 
-1. **NSIS install path:** the Windows step should call
-   `pwsh -File .github/scripts/install-nsis.ps1` (which exports
-   `MAKENSIS_PATH` via `$GITHUB_ENV`). The legacy
-   `.github/workflows/install-nsis.ps1` does not.
-2. **Linux deps:** the Linux step should call
-   `bash $GITHUB_WORKSPACE/.github/scripts/install-linux-deps.sh`
-   so it can fall back to `libpython3.11-dev` on Ubuntu 24.04+.
-3. **Shell on Windows:** if the workflow uses a matrix with
-   `shell: cmd`, make sure no `if/else if (...)` blocks are
-   inside the Windows step (cmd.exe's parser misreads the `(` in
-   `Program Files (x86)`).
+- merge PR #1 (if the diff is in scope), or
+- apply the diff by hand using the GitHub web editor (the path is
+  exactly `.github/workflows/release.yml`; the leading dot must
+  be there or GitHub silently ignores the file).
