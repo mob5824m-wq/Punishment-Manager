@@ -2,8 +2,8 @@
 REM Build a Windows .exe installer for the Punishment Manager.
 REM
 REM Requirements (run on Windows):
-REM   - Python 3.9+ on PATH
-REM   - pip install pyinstaller
+REM   - Python 3.9+ on PATH (any install; we re-pip-install pyinstaller
+REM     below if the active Python lacks the dev files PyInstaller needs)
 REM   - NSIS 3.x in PATH (download from https://nsis.sourceforge.io)
 REM   - Optional: a code-signing certificate in the Windows certificate
 REM     store. If present, signtool will sign the installer.
@@ -20,6 +20,33 @@ set "INSTALLER_NAME=PunishmentManager-Setup-%VERSION%.exe"
 echo ==^> Cleaning previous PyInstaller output (keeps build\ source dir)
 if exist dist rmdir /s /q dist
 mkdir dist
+
+echo ==^> Ensuring Python has dev files PyInstaller needs
+REM Check for python3.lib next to python3.dll. The slim Python
+REM that actions/setup-python installs often lacks this, which
+REM causes PyInstaller to fail with "Python library not found".
+REM If missing, run the helper script that installs the full Python
+REM from Chocolatey or the official MSI.
+python -c "import sys, os; p=os.path.dirname(sys.executable); lib=os.path.join(p, '..', 'libs', 'python3.lib'); sys.exit(0 if os.path.exists(lib) else 1)" 2>nul
+if errorlevel 1 goto :need_install
+echo     Active Python has python3.lib; no install needed.
+goto :have_install
+:need_install
+echo     Active Python lacks python3.lib; running install helper...
+pwsh -NoProfile -ExecutionPolicy Bypass -File .github\scripts\install-windows-deps.ps1
+if errorlevel 1 (
+    echo ERROR: install-windows-deps.ps1 failed.
+    exit /b 1
+)
+:have_install
+
+echo ==^> Installing pyinstaller
+python -m pip install --upgrade pip >nul
+python -m pip install pyinstaller >nul
+if errorlevel 1 (
+    echo ERROR: pip install pyinstaller failed.
+    exit /b 1
+)
 
 echo ==^> Building binary with PyInstaller
 pyinstaller --noconfirm --clean build\pyinstaller.spec
