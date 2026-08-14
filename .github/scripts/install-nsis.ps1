@@ -15,7 +15,12 @@
 # %MAKENSIS_PATH% without parsing stdout.
 $ErrorActionPreference = 'Stop'
 
-$nsisVersion = '3.10'
+# `3.10` is the source-archive version we use for portable downloads
+# (the SourceForge zip is named `nsis-3.10.zip` with no patch). For
+# Chocolatey we need the full `3.10.0` - the `nsis` package on
+# chocolatey.org doesn't publish a 3.10 (no patch) version.
+$nsisVersion      = '3.10'
+$nsisChocoVersion = '3.10.0'
 
 function Set-MakensisPath {
     param([string]$Path)
@@ -35,14 +40,25 @@ function Set-MakensisPath {
     Write-Output $Path
 }
 
+function Get-ProgramFilesX86 {
+    # PowerShell evaluates ${env:ProgramFiles(x86)} correctly on most
+    # hosts, but to be safe (and because it's awkward to read inside
+    # double-quoted strings) we use the explicit environment lookup
+    # with a fallback to the well-known default path.
+    $x86 = [System.Environment]::GetEnvironmentVariable('ProgramFiles(x86)')
+    if ($x86) { return $x86 }
+    return 'C:\Program Files (x86)'
+}
+
 function Test-MakensisExists {
-    # Look for makensis in common install locations.
+    $pf86 = Get-ProgramFilesX86
+    $pf   = [System.Environment]::GetEnvironmentVariable('ProgramFiles')
     $candidates = @(
         "C:\nsis-$nsisVersion\makensis.exe",
         "C:\nsis-3.09\makensis.exe",
         "C:\nsis-3.08\makensis.exe",
-        "${env:ProgramFiles(x86)}\NSIS\makensis.exe",
-        "${env:ProgramFiles}\NSIS\makensis.exe"
+        "$pf86\NSIS\makensis.exe",
+        "$pf\NSIS\makensis.exe"
     )
     foreach ($c in $candidates) {
         if (Test-Path $c) { return $c }
@@ -59,18 +75,26 @@ if ($existing) {
 }
 
 # Try Chocolatey first (preinstalled on GitHub-hosted Windows runners).
+# Use the full version (`3.10.0`) - the public chocolatey.org package
+# for `nsis` only has the three-part version.
 if (Get-Command choco -ErrorAction SilentlyContinue) {
-    Write-Host "Installing NSIS via Chocolatey"
-    choco install nsis --version $nsisVersion -y --no-progress 2>&1 | Out-Null
+    Write-Host "Installing NSIS via Chocolatey (version $nsisChocoVersion)"
+    try {
+        & choco install nsis --version=$nsisChocoVersion -y --no-progress 2>&1 | Out-Host
+    } catch {
+        Write-Host "Chocolatey install raised: $($_.Exception.Message)"
+    }
     $existing = Test-MakensisExists
     if ($existing) {
         Write-Host "NSIS installed via Chocolatey at $existing"
         Set-MakensisPath $existing
         return
     }
+    Write-Host "Chocolatey install did not produce a working makensis; falling back to portable download."
 }
 
-# Try portable downloads in order.
+# Try portable downloads in order. Each download is retried up to
+# three times; if all downloads fail, the script throws.
 function Install-NsisPortable($url, $label) {
     Write-Host "Downloading NSIS $nsisVersion from $url ($label)"
     $downloadDir = "$env:TEMP\nsis-install"
@@ -81,13 +105,23 @@ function Install-NsisPortable($url, $label) {
     $maxAttempts = 3
     for ($i = 1; $i -le $maxAttempts; $i++) {
         try {
-            Invoke-WebRequest -Uri $url -OutFile $zipPath -UseBasicParsing -TimeoutSec 60
-            break
+            Write-Host "  attempt $i of $maxAttempts"
+            Invoke-WebRequest -Uri $url -OutFile $zipPath -UseBasicParsing -TimeoutSec 120
+            if (Test-Path $zipPath) {
+                $size = (Get-Item $zipPath).Length
+                if ($size -gt 100000) {
+                    Write-Host "  downloaded $size bytes"
+                    break
+                }
+                Write-Host "  file too small ($size bytes); retrying"
+            }
         } catch {
-            Write-Host "Attempt $i of $maxAttempts failed: $($_.Exception.Message)"
-            if ($i -eq $maxAttempts) { throw }
-            Start-Sleep -Seconds 5
+            Write-Host "  attempt $i failed: $($_.Exception.Message)"
         }
+        if ($i -eq $maxAttempts) {
+            throw "All $maxAttempts download attempts failed for $url"
+        }
+        Start-Sleep -Seconds 5
     }
     $installDir = "C:\nsis-$nsisVersion"
     if (Test-Path $installDir) {
@@ -102,11 +136,11 @@ function Install-NsisPortable($url, $label) {
 }
 
 $urls = @(
-    "https://sourceforge.net/projects/nsis/files/NSIS%203/${nsisVersion}/nsis-${nsisVersion}.zip/download"
+    "https://sourceforge.net/projects/nsis/files/NSIS%203/${nsisVersion}/nsis-${nsisVersion}.zip/download",
     "https://github.com/lordmulder/nsis/releases/download/v${nsisVersion}/nsis-${nsisVersion}.zip"
 )
-
 $labels = @("SourceForge", "GitHub mirror")
+
 for ($i = 0; $i -lt $urls.Length; $i++) {
     try {
         Install-NsisPortable $urls[$i] $labels[$i]
