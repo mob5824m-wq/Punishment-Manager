@@ -28,7 +28,6 @@ OutFile "${OUTFILE}"
 InstallDir "$PROGRAMFILES64\${APPNAME}"
 InstallDirRegKey HKLM "Software\${COMPANYNAME}\${APPNAME}" "Install_Dir"
 RequestExecutionLevel admin
-SetBrandText "${APPNAME}"
 
 !include "MUI2.nsh"
 !include "LogicLib.nsh"
