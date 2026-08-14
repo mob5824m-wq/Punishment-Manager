@@ -211,8 +211,8 @@ The bot uses a single slash command group plus a one-off admin command.
 
 | Command              | Who can use it                  | What it does |
 |----------------------|---------------------------------|--------------|
-| `/punish apply`      | Members with *Moderate Members* | Strips the normal role, gives the punish role for a duration. Posts a staff embed and DMs the user. |
-| `/punish pardon`     | Members with *Moderate Members* | Ends the punishment early and restores the normal role. Posts a staff embed and DMs the user. |
+| `/punish apply`      | Members with *Moderate Members* | Adds the punish role for the configured duration. Posts a staff embed and DMs the user. |
+| `/punish pardon`     | Members with *Moderate Members* | Ends the punishment early and removes the punish / post-punish role. Posts a staff embed and DMs the user. |
 | `/punish status`     | Anyone                          | Shows the server configuration and a list of active punishments. Pass a `user` to see that user's active status + history. |
 | `/setup`             | Server administrators           | Configures the three roles, the staff channel, and DM behavior. |
 

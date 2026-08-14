@@ -851,7 +851,7 @@ class PunishmentCog(commands.Cog):
 
     @punish_group.command(
         name="apply",
-        description="Strip a user's normal role and give them the punish role for a duration.",
+        description="Add the punish role to a user for a duration.",
     )
     @app_commands.describe(
         user="The user to punish.",
