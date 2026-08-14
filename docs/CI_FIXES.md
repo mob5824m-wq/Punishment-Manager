@@ -6,59 +6,57 @@
 |-----|--------|-------|
 | macOS .dmg | ✅ passing | — |
 | Linux .deb | ✅ passing | — |
-| Windows .exe | ❌ failing | Latest fix (`1f3b478`) changes the NSIS path lookup to use `%MAKENSIS_PATH%` env var. Need to see if it worked. |
+| Windows .exe | ❌ failing | Getting further each round - PyInstaller + NSIS now reach the script phase. Need next error. |
 
-## What I just diagnosed and fixed
+## What I just fixed
 
-The previous error was:
+The user-shared error was:
 ```
-ERROR: makensis not found at C:\nsis-3.10\makensis.exe.
+Invalid command: "SetBrandText"
+Error in script "build\windows\installer.nsi" on line 31
 ```
 
-This was because the install script puts NSIS at `C:\nsis-3.10\` only when using the portable download. But on the Windows runner, the Chocolatey install path is used (NSIS ends up at `C:\Program Files (x86)\NSIS\`).
+`SetBrandText` is a NSIS 2 command that was removed in NSIS 3.
+Removed.
 
-I fixed this in two ways:
+Then I also removed:
+- `!define MUI_ICON "icon.ico"` (the icon file doesn't exist in `build/`)
+- `!define MUI_UNICON "icon.ico"` (same)
+- `!define MUI_HEADERIMAGE` (required the missing header bitmap)
+- `!define MUI_HEADERIMAGE_BITMAP "..."` (Chocolatey NSIS doesn't ship the Contrib\Graphics folder)
+- `!define MUI_WELCOMEFINISHPAGE_BITMAP "..."` (same)
 
-1. **install-nsis.ps1** now searches common install locations
-   to find the actual makensis path, and exports it via
-   `$GITHUB_ENV` so subsequent workflow steps can read it via
-   `%MAKENSIS_PATH%`.
-
-2. **build_windows.bat** now reads `%MAKENSIS_PATH%` first, with
-   the hardcoded `C:\nsis-3.10\` etc. as a fallback. Uses the
-   `if defined` + `goto` pattern to avoid cmd.exe's parens-block
-   parser bug.
+NSIS will use the default MUI look. The install will still be
+functional, just less branded.
 
 ## What I need from you
 
-The latest commit is `1f3b478`. The previous run was on `0c32eba`
-which produced the user-shared error.
+The latest commit is `e1577df`. I expect the next run to either:
 
-Open the latest failed `build` run at
-https://github.com/mob5824m-wq/Punishment-Manager/actions
+1. **Succeed** — in which case we have a working Windows build!
+2. **Fail with a different NSIS error** — most likely the
+   `EnVar::SetHKLM` / `EnVar::AddValue` plugin calls or the
+   `WriteRegDWORD` / `SectionIn RO` syntax. Paste the new error
+   and I'll fix it.
 
-Click into the `windows (.exe)` job, then the `Build .exe` step,
-and copy the **last 50 lines of the log**.
+Open https://github.com/mob5824m-wq/Punishment-Manager/actions,
+click into the most recent failed `build` run, then the
+`windows (.exe)` job, then the `Build .exe` step. Copy the
+last 30-50 lines of the log.
 
-The new code should print either:
+## What's likely left
 
-- `Found makensis at ...` (success path)
-- `WARNING: MAKENSIS_PATH is set to '...' but that file does not exist. Falling back to default.` (if Chocolatey path is wrong)
-- `ERROR: makensis not found in known locations.` (fallback also failed)
+- The `EnVar::SetHKLM` and `EnVar::AddValue` calls in the
+  Install section require the EnVar plugin which is bundled
+  with NSIS 3 by default but might need a different path.
+- The `SectionIn RO` is fine.
+- `WriteRegDWORD` is fine in NSIS 3.
+- The `$INSTDIR\punishment-manager.exe` path is a single file
+  (not a folder of files), so the `File /r` should work.
 
-The new code should NOT print `ERROR: makensis not found at C:\nsis-3.10\makensis.exe.`
-
-Paste the actual log and I'll write the next fix.
-
-## Common possibilities for the new error
-
-- **`MAKENSIS_PATH` not propagating**: GitHub Actions'
-  `$GITHUB_ENV` mechanism might not work the way I expect for
-  a single-line `run:` block. The fix would be to make the
-  build_windows.bat fall back to searching common paths
-  itself, ignoring the env var.
-- **Chocolatey path issue**: Maybe NSIS is at a different path
-  than I expected (e.g. `C:\Program Files\NSIS\` not
-  `C:\Program Files (x86)\NSIS\`).
-- **New bug in the build script**: The new parens-block-free
-  code has a different bug.
+Most likely culprit if there's still an error: the EnVar
+plugin macros. Those were marked as "use EnVar" but if the
+plugin isn't loaded, they fail. Removing the EnVar PATH
+manipulation (letting the install complete without modifying
+PATH) would be a safe simplification since the user can
+always add the install dir to PATH manually.
