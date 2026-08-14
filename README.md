@@ -40,6 +40,25 @@ survive a bot restart.
 
 ---
 
+## Download
+
+Pre-built native installers are attached to every GitHub release:
+
+[**Latest release →**](https://github.com/mob5824m-wq/Punishment-Manager/releases/latest)
+
+| Platform | File | Notes |
+|----------|------|-------|
+| **macOS**   | `PunishmentManager-X.Y.Z.dmg`             | Open the `.dmg`, drag the `.app` into `/Applications` |
+| **Linux**   | `punishment-manager_X.Y.Z_amd64.deb`      | `sudo dpkg -i ...` and you're done |
+| **Windows** | `PunishmentManager-Setup-X.Y.Z.exe`       | Run the installer; it adds the bot to your Start Menu |
+| **Source**  | `Source code (zip)` / `Source code (tar.gz)` | For everyone who'd rather run from source |
+
+Releases are produced automatically by GitHub Actions whenever a
+`v*` tag is pushed. See `.github/workflows/release.yml` for the
+build pipeline.
+
+---
+
 ## 1. Requirements
 
 * Python **3.9 or newer** (developed and tested on 3.11; works on 3.9+).
@@ -264,6 +283,34 @@ is no cross-compile.
 All three flow through `build/pyinstaller.spec` which bundles
 `bot.py` + `installer.py` into a single self-contained binary, then
 wraps that binary in the OS-native installer format.
+
+### Cutting a release
+
+The release workflow is fully automated. To cut a new release, push a
+semver tag from the `main` branch:
+
+```bash
+./scripts/make_release.sh 1.0.0
+# or for a prerelease:
+./scripts/make_release.sh 1.0.0-rc1
+```
+
+The script validates the working tree, creates an annotated `v1.0.0`
+tag, and pushes it. Pushing the tag triggers `.github/workflows/release.yml`,
+which builds all three platforms in parallel and attaches the artifacts
+to a new GitHub Release.
+
+You can also just run the same commands by hand:
+
+```bash
+git tag -a v1.0.0 -m "Release 1.0.0"
+git push origin v1.0.0
+```
+
+Either way, the release page appears at
+`https://github.com/mob5824m-wq/Punishment-Manager/releases/tag/v1.0.0`
+a few minutes later with the `.dmg`, `.deb`, and `.exe` ready to
+download.
 
 ### macOS
 
