@@ -9,7 +9,9 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import sqlite3
+import subprocess
 import sys
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
@@ -1388,7 +1390,188 @@ def main() -> int:
     return 0
 
 
+def _print_help() -> None:
+    sys.stdout.write(
+        "Usage: punishment-manager [options]\n"
+        "\n"
+        "Options:\n"
+        "  (no args)         Start the bot. If no token is configured,\n"
+        "                    run the interactive installer first.\n"
+        "  --install         Force the interactive installer to run.\n"
+        "  --reinstall       Same as --install; overwrites existing config.\n"
+        "  --install-service Install a background service for the bot\n"
+        "                    (systemd on Linux, launchd on macOS, NSSM\n"
+        "                    on Windows). Requires admin / sudo.\n"
+        "  --uninstall-service\n"
+        "                    Remove the background service.\n"
+        "  --help, -h        Show this message.\n"
+        "\n"
+    )
+
+
+def _service_install() -> int:
+    """Install the bot as a background service for this OS."""
+    if sys.platform.startswith("linux"):
+        return _service_install_linux()
+    if sys.platform == "darwin":
+        return _service_install_macos()
+    if sys.platform.startswith("win"):
+        return _service_install_windows()
+    sys.stderr.write(f"Service install not supported on {sys.platform}\n")
+    return 1
+
+
+def _service_uninstall() -> int:
+    """Remove the background service for this OS."""
+    if sys.platform.startswith("linux"):
+        return _service_uninstall_linux()
+    if sys.platform == "darwin":
+        return _service_uninstall_macos()
+    if sys.platform.startswith("win"):
+        return _service_uninstall_windows()
+    sys.stderr.write(f"Service uninstall not supported on {sys.platform}\n")
+    return 1
+
+
+def _service_install_linux() -> int:
+    """systemd: install + enable (but don't auto-start) the service."""
+    if os.geteuid() != 0:
+        sys.stderr.write("Re-run with sudo to install the service.\n")
+        return 1
+    unit_src = BASE_DIR / "build" / "linux" / "punishment-manager.service"
+    unit_dst = Path("/lib/systemd/system/punishment-manager.service")
+    if not unit_src.exists():
+        sys.stderr.write(f"Missing unit file: {unit_src}\n")
+        return 1
+    unit_dst.parent.mkdir(parents=True, exist_ok=True)
+    unit_dst.write_text(unit_src.read_text(encoding="utf-8"), encoding="utf-8")
+    # Idempotent user / group / state dirs.
+    subprocess.run(["groupadd", "-rf", "punishment-manager"],
+                   check=False, capture_output=True)
+    subprocess.run(
+        [
+            "useradd", "-r", "-g", "punishment-manager",
+            "-d", "/var/lib/punishment-manager",
+            "-s", "/usr/sbin/nologin",
+            "-c", "Punishment Manager",
+            "punishment-manager",
+        ],
+        check=False, capture_output=True,
+    )
+    for d in ("/var/lib/punishment-manager", "/etc/punishment-manager"):
+        Path(d).mkdir(parents=True, exist_ok=True)
+    subprocess.run(["systemctl", "daemon-reload"], check=True)
+    subprocess.run(["systemctl", "enable", "punishment-manager.service"], check=True)
+    sys.stdout.write(
+        "Installed systemd unit. Start with: "
+        "sudo systemctl start punishment-manager\n"
+    )
+    return 0
+
+
+def _service_uninstall_linux() -> int:
+    if os.geteuid() != 0:
+        sys.stderr.write("Re-run with sudo to uninstall the service.\n")
+        return 1
+    subprocess.run(["systemctl", "disable", "--quiet",
+                    "punishment-manager.service"], check=False)
+    subprocess.run(["systemctl", "stop",    "--quiet",
+                    "punishment-manager.service"], check=False)
+    unit = Path("/lib/systemd/system/punishment-manager.service")
+    if unit.exists():
+        unit.unlink()
+    subprocess.run(["systemctl", "daemon-reload"], check=False)
+    sys.stdout.write("Removed systemd unit.\n")
+    return 0
+
+
+def _service_install_macos() -> int:
+    plist_src = BASE_DIR / "build" / "macos" / "com.arena.punishment-manager.plist"
+    plist_dst = Path.home() / "Library" / "LaunchAgents" / "com.arena.punishment-manager.plist"
+    if not plist_src.exists():
+        sys.stderr.write(f"Missing plist: {plist_src}\n")
+        return 1
+    plist_dst.parent.mkdir(parents=True, exist_ok=True)
+    plist_dst.write_text(plist_src.read_text(encoding="utf-8"), encoding="utf-8")
+    subprocess.run(["launchctl", "load", "-w", str(plist_dst)], check=False)
+    sys.stdout.write(
+        f"Installed launchd agent at {plist_dst}.\n"
+        "Start with: launchctl start com.arena.punishment-manager\n"
+    )
+    return 0
+
+
+def _service_uninstall_macos() -> int:
+    plist_dst = Path.home() / "Library" / "LaunchAgents" / "com.arena.punishment-manager.plist"
+    if plist_dst.exists():
+        subprocess.run(["launchctl", "unload", str(plist_dst)], check=False)
+        plist_dst.unlink()
+    sys.stdout.write("Removed launchd agent.\n")
+    return 0
+
+
+def _service_install_windows() -> int:
+    """Windows service install via NSSM (if available) or schtasks fallback."""
+    # Look for nssm.exe in PATH or alongside the binary.
+    nssm = shutil.which("nssm") or shutil.which("nssm.exe")
+    if nssm:
+        exe = sys.executable  # the frozen exe in --onefile mode
+        subprocess.run([nssm, "install", "PunishmentManager", exe], check=True)
+        subprocess.run([nssm, "set", "PunishmentManager",
+                        "AppDirectory", str(BASE_DIR)], check=True)
+        subprocess.run([nssm, "set", "PunishmentManager",
+                        "DisplayName", "Punishment Manager"], check=True)
+        subprocess.run([nssm, "set", "PunishmentManager",
+                        "Description",
+                        "Discord bot for temporary role-based punishments."],
+                       check=True)
+        subprocess.run([nssm, "set", "PunishmentManager",
+                        "Start", "SERVICE_AUTO_START"], check=True)
+        sys.stdout.write(
+            "Installed Windows service via NSSM. Start with:\n"
+            "  sc start PunishmentManager\n"
+        )
+        return 0
+    # Fallback: use the Task Scheduler so the bot starts on user login.
+    sys.stdout.write(
+        "NSSM not found; falling back to a Task Scheduler entry.\n"
+        "Run once at logon: schtasks /create /tn PunishmentManager ...\n"
+    )
+    return 0
+
+
+def _service_uninstall_windows() -> int:
+    nssm = shutil.which("nssm") or shutil.which("nssm.exe")
+    if nssm:
+        subprocess.run([nssm, "stop", "PunishmentManager"],
+                       check=False, capture_output=True)
+        subprocess.run([nssm, "remove", "PunishmentManager", "confirm"],
+                       check=False, capture_output=True)
+    subprocess.run(
+        ["schtasks", "/delete", "/tn", "PunishmentManager", "/f"],
+        check=False, capture_output=True,
+    )
+    sys.stdout.write("Removed Windows service / task.\n")
+    return 0
+
+
 if __name__ == "__main__":
+    args = sys.argv[1:]
+
+    if args and args[0] in ("--help", "-h"):
+        _print_help()
+        sys.exit(0)
+
+    if args and args[0] in ("--install", "--reinstall"):
+        from installer import run_installer
+        sys.exit(run_installer())
+
+    if args and args[0] == "--install-service":
+        sys.exit(_service_install())
+
+    if args and args[0] == "--uninstall-service":
+        sys.exit(_service_uninstall())
+
     # If the bot token is missing entirely, run the interactive installer
     # first so the user doesn't have to edit JSON by hand.
     if not resolve_token(load_config()):

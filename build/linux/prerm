@@ -1,0 +1,11 @@
+#!/bin/sh
+# Pre-remove script for the Punishment Manager .deb.
+# Stops and disables the service before the package files are removed.
+set -e
+
+if [ -d /run/systemd/system ]; then
+    systemctl disable --quiet punishment-manager.service || true
+    systemctl stop    --quiet punishment-manager.service || true
+fi
+
+exit 0

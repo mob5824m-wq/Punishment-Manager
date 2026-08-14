@@ -249,7 +249,103 @@ The maximum duration is 30 days. The minimum is 5 seconds.
 
 ---
 
-## 7. Files
+## 7. Building native installers
+
+The bot can be packaged as a `.dmg` (macOS), `.exe` installer (Windows),
+or `.deb` (Linux). Each platform must be built on its own host — there
+is no cross-compile.
+
+| Platform | Build script                | Output                                  |
+|----------|------------------------------|------------------------------------------|
+| macOS    | `build/build_macos.sh`       | `dist/PunishmentManager-1.0.0.dmg`       |
+| Linux    | `build/build_linux.sh`       | `dist/punishment-manager_1.0.0_amd64.deb`|
+| Windows  | `build\build_windows.bat`    | `dist\PunishmentManager-Setup-1.0.0.exe` |
+
+All three flow through `build/pyinstaller.spec` which bundles
+`bot.py` + `installer.py` into a single self-contained binary, then
+wraps that binary in the OS-native installer format.
+
+### macOS
+
+Requirements: Python 3.9+, `pyinstaller`, optionally `create-dmg`
+(`brew install create-dmg`) for a styled `.dmg` window. Otherwise
+`hdiutil` is used as a fallback.
+
+```bash
+build/build_macos.sh
+open dist/PunishmentManager-1.0.0.dmg
+```
+
+The result is a real `.app` bundle (`Punishment Manager.app`) inside a
+`.dmg` that users can drag into `/Applications`. The bundle id is
+`com.arena.punishment-manager` and the binary is at
+`Punishment Manager.app/Contents/MacOS/punishment-manager`.
+
+To codesign, uncomment the `codesign` lines in `build_macos.sh` and
+set `CODESIGN_IDENTITY` to your Developer ID.
+
+### Linux (.deb)
+
+Requirements: Python 3.9+, `pyinstaller`, `dpkg`, `fakeroot`,
+`lintian` (optional).
+
+```bash
+build/build_linux.sh
+sudo dpkg -i dist/punishment-manager_1.0.0_amd64.deb
+sudo systemctl start punishment-manager
+```
+
+The package installs the bot to `/opt/punishment-manager/`, symlinks
+the binary into `/usr/bin/`, registers a desktop entry, and installs
+a systemd unit (`/lib/systemd/system/punishment-manager.service`).
+The unit is enabled (not started) by `postinst`; the user runs the
+bot once to configure it, then enables the service.
+
+### Windows
+
+Requirements: Python 3.9+, `pyinstaller`, NSIS 3.x in PATH.
+
+```
+build\build_windows.bat
+dist\PunishmentManager-Setup-1.0.0.exe
+```
+
+The NSIS installer copies the PyInstaller output to
+`%ProgramFiles64%\Punishment Manager`, creates Start Menu and Desktop
+shortcuts, adds the install dir to `PATH`, and registers an
+uninstaller in Add/Remove Programs.
+
+To sign with `signtool`, uncomment the `signtool sign` line in
+`build_windows.bat`.
+
+### Background service
+
+After install, the bot can be configured to start automatically:
+
+```bash
+# Linux (after sudo dpkg -i ...):
+sudo punishment-manager --install-service
+sudo systemctl start punishment-manager
+sudo systemctl enable punishment-manager
+
+# macOS:
+sudo punishment-manager --install-service
+launchctl load -w ~/Library/LaunchAgents/com.arena.punishment-manager.plist
+
+# Windows (run as Administrator):
+punishment-manager.exe --install-service
+sc start PunishmentManager
+```
+
+The `--install-service` command registers the bot with the OS service
+manager (systemd / launchd / NSSM). The bot will then start on boot
+and restart automatically if it crashes. `--uninstall-service`
+removes the registration.
+
+For development, you can also just run the binary directly with no
+arguments — it will auto-run the installer on first launch.
+
+## 8. Files
 
 ```
 Punishment-Manager/
@@ -258,18 +354,32 @@ Punishment-Manager/
 ├── requirements.txt
 ├── config.json             # token + per-guild role config
 ├── .gitignore
-├── scripts/
+├── scripts/                # dev launchers
 │   ├── run_mac.sh
 │   ├── run_linux.sh
 │   └── run_windows.bat
+├── build/                  # native installer build artifacts
+│   ├── pyinstaller.spec
+│   ├── build_macos.sh
+│   ├── build_linux.sh
+│   ├── build_windows.bat
+│   ├── linux/
+│   │   ├── punishment-manager.service
+│   │   ├── punishment-manager.desktop
+│   │   ├── postinst
+│   │   ├── prerm
+│   │   └── postrm
+│   ├── macos/
+│   │   ├── Info.plist
+│   │   └── com.arena.punishment-manager.plist
+│   └── windows/
+│       └── installer.nsi
 └── data/                   # created at runtime
     ├── punishments.db
     └── bot.log
 ```
 
----
-
-## 8. Troubleshooting
+## 9. Troubleshooting
 
 * **"Installer exited without saving a config"** — re-run
   `python3 installer.py` and answer the prompts. If your terminal hides
@@ -288,9 +398,15 @@ Punishment-Manager/
   `setup_hook`.
 * **No token / Login failed** — make sure `DISCORD_TOKEN` is set or
   `config.json` has a non-empty `bot_token` (or the legacy `token`).
+* **`.deb` build complains about `dpkg-deb` or `fakeroot`** — install
+  them with `sudo apt install fakeroot dpkg`.
+* **NSIS errors with `MUI2.nsh` not found** — install NSIS 3.x
+  (https://nsis.sourceforge.io) and ensure `${NSISDIR}` is set.
+* **The `.dmg` says "this app is from an unidentified developer"** —
+  that means the `.app` isn't codesigned. Either sign it with a
+  Developer ID or right-click the `.app` and choose "Open" the
+  first time to bypass Gatekeeper.
 
----
-
-## 9. License
+## 10. License
 
 MIT.
