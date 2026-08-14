@@ -94,21 +94,21 @@ if exist "C:\nsis-3.10\makensis.exe" (
 ) else if exist "C:\nsis-3.08\makensis.exe" (
     set "MAKENSIS=C:\nsis-3.08\makensis.exe"
     set "MAKENSIS_DIR=C:\nsis-3.08\"
-) else if exist "%ProgramFiles(x86)%\NSIS\makensis.exe" (
-    set "MAKENSIS=%ProgramFiles(x86)%\NSIS\makensis.exe"
-    set "MAKENSIS_DIR=%ProgramFiles(x86)%\NSIS\"
-) else if exist "%ProgramFiles%\NSIS\makensis.exe" (
-    set "MAKENSIS=%ProgramFiles%\NSIS\makensis.exe"
-    set "MAKENSIS_DIR=%ProgramFiles%\NSIS\"
+) else if exist "C:\Program Files (x86)\NSIS\makensis.exe" (
+    set "MAKENSIS=C:\Program Files (x86)\NSIS\makensis.exe"
+    set "MAKENSIS_DIR=C:\Program Files (x86)\NSIS\"
+) else if exist "C:\Program Files\NSIS\makensis.exe" (
+    set "MAKENSIS=C:\Program Files\NSIS\makensis.exe"
+    set "MAKENSIS_DIR=C:\Program Files\NSIS\"
 )
 if "%MAKENSIS%"=="" (
     echo ERROR: makensis not found in known locations.
-    echo        Searched:
-    echo            C:\nsis-3.10\makensis.exe
-    echo            C:\nsis-3.09\makensis.exe
-    echo            C:\nsis-3.08\makensis.exe
-    echo            %%ProgramFiles(x86)%%\NSIS\makensis.exe
-    echo            %%ProgramFiles%%\NSIS\makensis.exe
+    echo Searched:
+    echo    C:\nsis-3.10\makensis.exe
+    echo    C:\nsis-3.09\makensis.exe
+    echo    C:\nsis-3.08\makensis.exe
+    echo    C:\Program Files (x86)\NSIS\makensis.exe
+    echo    C:\Program Files\NSIS\makensis.exe
     exit /b 1
 )
 echo     Found makensis at %MAKENSIS%
