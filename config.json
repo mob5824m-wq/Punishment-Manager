@@ -1,0 +1,13 @@
+{
+  "bot_token": "",
+  "server_id": null,
+  "normal_role_id": null,
+  "punish_role_id": null,
+  "post_role_id": null,
+  "staff_channel_id": null,
+  "dm_user": true,
+  "token": "",
+  "guilds": {},
+  "default_duration_minutes": 30,
+  "log_channel_id": null
+}
