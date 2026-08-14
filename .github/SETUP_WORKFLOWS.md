@@ -115,3 +115,4 @@ either:
 - apply the diff by hand using the GitHub web editor (the path is
   exactly `.github/workflows/release.yml`; the leading dot must
   be there or GitHub silently ignores the file).
+
