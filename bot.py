@@ -148,7 +148,24 @@ def archive_punishment(record: dict, ended_reason: str) -> None:
 # --------------------------------------------------------------------------- #
 # Config
 # --------------------------------------------------------------------------- #
-DEFAULT_CONFIG = {
+# We support two config shapes for backwards compatibility:
+#   - NEW (single-server) shape: top-level bot_token, server_id, role ids,
+#     staff_channel_id, dm_user. Filled in by the interactive installer.
+#   - OLD (multi-server) shape: token + guilds{} map. Used by the in-Discord
+#     /setup command. Old setups keep working unchanged.
+#
+# A config is considered "legacy" if it has the `token` key but no
+# `bot_token` key. The migration step rewrites it in place.
+DEFAULT_CONFIG: dict = {
+    # --- NEW shape (preferred) ---
+    "bot_token": "",
+    "server_id": None,
+    "normal_role_id": None,
+    "punish_role_id": None,
+    "post_role_id": None,
+    "staff_channel_id": None,
+    "dm_user": True,
+    # --- legacy / shared ---
     "token": "",
     "guilds": {},
     "default_duration_minutes": 30,
@@ -160,7 +177,7 @@ def load_config() -> dict:
     if not CONFIG_PATH.exists():
         CONFIG_PATH.write_text(json.dumps(DEFAULT_CONFIG, indent=2), encoding="utf-8")
         logger.warning(
-            "Created default config at %s - please fill in your token and roles.",
+            "Created default config at %s - run the installer to fill it in.",
             CONFIG_PATH,
         )
     with CONFIG_PATH.open("r", encoding="utf-8") as f:
@@ -176,7 +193,43 @@ def save_config(cfg: dict) -> None:
 
 
 def get_guild_config(cfg: dict, guild_id: int) -> Optional[dict]:
+    """Return the per-guild config dict. Prefers the new single-server
+    shape (server_id == guild_id) and falls back to the legacy
+    `guilds` map so existing setups keep working.
+    """
+    # New shape: only applies if server_id is set AND matches.
+    if cfg.get("server_id") and int(cfg["server_id"]) == int(guild_id):
+        return {
+            "normal_role_id": cfg.get("normal_role_id"),
+            "punish_role_id": cfg.get("punish_role_id"),
+            "post_role_id": cfg.get("post_role_id"),
+        }
     return cfg.get("guilds", {}).get(str(guild_id))
+
+
+def get_staff_channel_id(cfg: dict) -> Optional[int]:
+    """Resolve the staff/log channel id from either the new or legacy
+    config key.
+    """
+    val = cfg.get("staff_channel_id")
+    if val:
+        return int(val)
+    return cfg.get("log_channel_id")
+
+
+def should_dm_user(cfg: dict) -> bool:
+    """Whether the bot should DM the punished user about the action."""
+    return bool(cfg.get("dm_user", True))
+
+
+def resolve_token(cfg: dict) -> Optional[str]:
+    """Token resolution order: env var, then new key, then legacy key."""
+    return (
+        os.environ.get("DISCORD_TOKEN")
+        or cfg.get("bot_token")
+        or cfg.get("token")
+        or None
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -347,6 +400,11 @@ class PunishmentBot(commands.Bot):
                     f"[timer] {member.mention} moved from **punished** -> "
                     f"**post-punishment**.",
                 )
+                staff_embed = self._build_timer_staff_embed(
+                    member=member,
+                    started_at=datetime.fromisoformat(record["started_at"]),
+                )
+                await self._send_staff_embed(guild, staff_embed)
                 logger.info(
                     "Advanced punishment %s for user %s to post stage.",
                     record["id"],
@@ -379,6 +437,206 @@ class PunishmentBot(commands.Bot):
                 await channel.send(message)
             except discord.HTTPException:
                 pass
+
+    # ------------------------------------------------------------------ #
+    # Embed helpers - staff channel + user DM
+    # ------------------------------------------------------------------ #
+    def _build_punish_staff_embed(
+        self,
+        *,
+        member: discord.Member,
+        moderator: discord.Member,
+        duration_seconds: int,
+        reason: str,
+        started_at: datetime,
+        expires_at: datetime,
+    ) -> discord.Embed:
+        """Embed posted in the staff channel when a punishment is applied."""
+        e = discord.Embed(
+            title="Member punished",
+            color=discord.Color.orange(),
+            timestamp=started_at,
+        )
+        e.add_field(name="User", value=f"{member.mention} (`{member.id}`)", inline=True)
+        e.add_field(name="Moderator", value=f"{moderator.mention}", inline=True)
+        e.add_field(
+            name="Duration",
+            value=format_duration(duration_seconds),
+            inline=True,
+        )
+        e.add_field(name="Reason", value=reason, inline=False)
+        e.add_field(
+            name="Started",
+            value=f"<t:{int(started_at.timestamp())}:F>",
+            inline=True,
+        )
+        e.add_field(
+            name="Ends",
+            value=f"<t:{int(expires_at.timestamp())}:F> "
+                  f"(<t:{int(expires_at.timestamp())}:R>)",
+            inline=True,
+        )
+        if member.display_avatar:
+            e.set_thumbnail(url=member.display_avatar.url)
+        e.set_footer(text=f"User ID: {member.id}")
+        return e
+
+    def _build_punish_dm_embed(
+        self,
+        *,
+        guild_name: str,
+        moderator_name: str,
+        duration_seconds: int,
+        reason: str,
+        started_at: datetime,
+        expires_at: datetime,
+    ) -> discord.Embed:
+        """Embed DMed to the user who was just punished."""
+        e = discord.Embed(
+            title=f"You've been punished in {guild_name}",
+            description=(
+                "Your access has been temporarily restricted in the server. "
+                "Details are below. If you believe this was a mistake, "
+                "please reach out to a moderator."
+            ),
+            color=discord.Color.red(),
+            timestamp=started_at,
+        )
+        e.add_field(
+            name="Duration",
+            value=format_duration(duration_seconds),
+            inline=False,
+        )
+        e.add_field(name="Reason", value=reason, inline=False)
+        e.add_field(
+            name="Started",
+            value=f"<t:{int(started_at.timestamp())}:F>",
+            inline=True,
+        )
+        e.add_field(
+            name="Ends",
+            value=f"<t:{int(expires_at.timestamp())}:F> "
+                  f"(<t:{int(expires_at.timestamp())}:R>)",
+            inline=True,
+        )
+        e.add_field(
+            name="Issued by",
+            value=moderator_name,
+            inline=False,
+        )
+        e.set_footer(text="Punishment Manager")
+        return e
+
+    def _build_pardon_staff_embed(
+        self,
+        *,
+        member: discord.Member,
+        moderator: discord.Member,
+        reason: str,
+        was_active: bool,
+    ) -> discord.Embed:
+        e = discord.Embed(
+            title="Member pardoned",
+            color=discord.Color.green(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        e.add_field(name="User", value=f"{member.mention} (`{member.id}`)", inline=True)
+        e.add_field(name="Moderator", value=f"{moderator.mention}", inline=True)
+        e.add_field(
+            name="Outcome",
+            value="Punishment ended early" if was_active else "No active punishment found; roles reset just in case",
+            inline=False,
+        )
+        e.set_footer(text=f"User ID: {member.id}")
+        return e
+
+    def _build_pardon_dm_embed(
+        self,
+        *,
+        guild_name: str,
+        moderator_name: str,
+    ) -> discord.Embed:
+        e = discord.Embed(
+            title=f"Your punishment in {guild_name} has been lifted",
+            description=(
+                "A moderator has ended your punishment early. Your normal "
+                "roles have been restored."
+            ),
+            color=discord.Color.green(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        e.add_field(name="Issued by", value=moderator_name, inline=False)
+        e.set_footer(text="Punishment Manager")
+        return e
+
+    def _build_timer_staff_embed(
+        self,
+        *,
+        member: discord.Member,
+        started_at: datetime,
+    ) -> discord.Embed:
+        e = discord.Embed(
+            title="Punishment timer expired",
+            description=(
+                f"{member.mention} was moved from the punish role to the "
+                "post-punishment role."
+            ),
+            color=discord.Color.blue(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        e.add_field(
+            name="Started",
+            value=f"<t:{int(started_at.timestamp())}:R>",
+            inline=True,
+        )
+        e.set_footer(text=f"User ID: {member.id}")
+        return e
+
+    async def _send_staff_embed(
+        self,
+        guild: discord.Guild,
+        embed: discord.Embed,
+        *,
+        content: Optional[str] = None,
+    ) -> None:
+        """Post an embed in the configured staff channel. Never raises."""
+        channel_id = get_staff_channel_id(self.config)
+        if not channel_id:
+            return
+        channel = guild.get_channel(channel_id)
+        if channel is None:
+            try:
+                channel = await guild.fetch_channel(channel_id)
+            except discord.HTTPException:
+                return
+        if not isinstance(channel, discord.abc.Messageable):
+            return
+        try:
+            await channel.send(content=content, embed=embed)
+        except discord.HTTPException as exc:
+            logger.warning("Failed to send staff embed: %s", exc)
+
+    async def _dm_embed(
+        self,
+        user: discord.abc.User,
+        embed: discord.Embed,
+        *,
+        content: Optional[str] = None,
+    ) -> bool:
+        """DM an embed to a user. Returns True on success, False on any
+        failure (DMs closed, etc.). Never raises.
+        """
+        try:
+            await user.send(content=content, embed=embed)
+            return True
+        except discord.Forbidden:
+            logger.info(
+                "Cannot DM user %s (DMs closed or bot blocked).", user.id
+            )
+            return False
+        except discord.HTTPException as exc:
+            logger.warning("Failed to DM user %s: %s", user.id, exc)
+            return False
 
     # ------------------------------------------------------------------ #
     # Core punishment flow
@@ -454,6 +712,7 @@ class PunishmentBot(commands.Bot):
 
         return {
             "expires_at": expires,
+            "started_at": now,
             "duration_seconds": duration_seconds,
         }
 
@@ -546,13 +805,15 @@ class PunishmentCog(commands.Cog):
     # ---- /setup lives at the top level, admin-only --------------------- #
     @app_commands.command(
         name="setup",
-        description="Configure this server's normal / punish / post-punish roles.",
+        description="Configure this server's normal / punish / post-punish roles, "
+                    "staff channel, and DM behavior.",
     )
     @app_commands.describe(
         normal_role="The role users normally have.",
         punish_role="The role given during punishment.",
         post_role="The role given after the timer expires.",
-        log_channel="Optional channel for punishment logs.",
+        staff_channel="Optional channel where staff get embed notifications.",
+        dm_user="Whether to DM the punished user an embed about their punishment.",
     )
     async def setup_cmd(
         self,
@@ -560,9 +821,17 @@ class PunishmentCog(commands.Cog):
         normal_role: discord.Role,
         punish_role: discord.Role,
         post_role: discord.Role,
-        log_channel: Optional[discord.TextChannel] = None,
+        staff_channel: Optional[discord.TextChannel] = None,
+        dm_user: Optional[bool] = None,
     ) -> None:
-        await self._handle_setup(interaction, normal_role, punish_role, post_role, log_channel)
+        await self._handle_setup(
+            interaction,
+            normal_role,
+            punish_role,
+            post_role,
+            staff_channel,
+            dm_user,
+        )
 
     # ------------------------------------------------------------------ #
     # Command implementations
@@ -643,15 +912,40 @@ class PunishmentCog(commands.Cog):
 
         pretty = format_duration(seconds)
         reason_text = reason or "No reason provided."
+        started_at: datetime = result["started_at"]
+        expires_at: datetime = result["expires_at"]
+
         await self._safe_followup(
             interaction,
             f"Punished {user.mention} for **{pretty}**.\nReason: {reason_text}",
         )
-        await self.bot._log_event(
-            interaction.guild,
-            f"[mod] {user.mention} punished by {interaction.user.mention} for "
-            f"**{pretty}**. Reason: {reason_text}",
+
+        # Staff channel embed.
+        staff_embed = self.bot._build_punish_staff_embed(
+            member=user,
+            moderator=interaction.user,  # type: ignore[arg-type]
+            duration_seconds=seconds,
+            reason=reason_text,
+            started_at=started_at,
+            expires_at=expires_at,
         )
+        await self.bot._send_staff_embed(interaction.guild, staff_embed)
+
+        # DM the punished user.
+        if should_dm_user(self.bot.config):
+            dm_embed = self.bot._build_punish_dm_embed(
+                guild_name=interaction.guild.name,
+                moderator_name=str(interaction.user),
+                duration_seconds=seconds,
+                reason=reason_text,
+                started_at=started_at,
+                expires_at=expires_at,
+            )
+            sent = await self.bot._dm_embed(user, dm_embed)
+            if not sent:
+                logger.info(
+                    "Skipped DM to %s: DMs unavailable.", user.id
+                )
 
     async def _handle_pardon(
         self, interaction: discord.Interaction, user: discord.Member
@@ -716,10 +1010,21 @@ class PunishmentCog(commands.Cog):
             interaction,
             f"Pardoned {user.mention}. Their normal role has been restored.",
         )
-        await self.bot._log_event(
-            interaction.guild,
-            f"[mod] {user.mention} pardoned by {interaction.user.mention}.",
+        # Staff embed.
+        staff_embed = self.bot._build_pardon_staff_embed(
+            member=user,
+            moderator=interaction.user,  # type: ignore[arg-type]
+            reason="Pardoned by moderator",
+            was_active=True,
         )
+        await self.bot._send_staff_embed(interaction.guild, staff_embed)
+        # DM the user.
+        if should_dm_user(self.bot.config):
+            dm_embed = self.bot._build_pardon_dm_embed(
+                guild_name=interaction.guild.name,
+                moderator_name=str(interaction.user),
+            )
+            await self.bot._dm_embed(user, dm_embed)
 
     async def _handle_setup(
         self,
@@ -727,20 +1032,37 @@ class PunishmentCog(commands.Cog):
         normal_role: discord.Role,
         punish_role: discord.Role,
         post_role: discord.Role,
-        log_channel: Optional[discord.TextChannel],
+        staff_channel: Optional[discord.TextChannel],
+        dm_user: Optional[bool],
     ) -> None:
         if len({normal_role.id, punish_role.id, post_role.id}) != 3:
             await interaction.response.send_message(
                 "The three roles must all be different.", ephemeral=True
             )
             return
+
+        # Always write to the legacy per-guild map so multi-server setups
+        # still work. If the user has configured a single server_id, mirror
+        # the values into the new top-level fields too.
         self.bot.config.setdefault("guilds", {})[str(interaction.guild_id)] = {
             "normal_role_id": normal_role.id,
             "punish_role_id": punish_role.id,
             "post_role_id": post_role.id,
         }
-        if log_channel is not None:
-            self.bot.config["log_channel_id"] = log_channel.id
+        if (
+            self.bot.config.get("server_id")
+            and int(self.bot.config["server_id"]) == int(interaction.guild_id)
+        ):
+            self.bot.config["normal_role_id"] = normal_role.id
+            self.bot.config["punish_role_id"] = punish_role.id
+            self.bot.config["post_role_id"] = post_role.id
+
+        if staff_channel is not None:
+            self.bot.config["staff_channel_id"] = staff_channel.id
+            self.bot.config["log_channel_id"] = staff_channel.id  # legacy key
+        if dm_user is not None:
+            self.bot.config["dm_user"] = bool(dm_user)
+
         save_config(self.bot.config)
         lines = [
             "Saved configuration for this server:",
@@ -748,8 +1070,10 @@ class PunishmentCog(commands.Cog):
             f"- Punish role: {punish_role.mention}",
             f"- Post-punish role: {post_role.mention}",
         ]
-        if log_channel is not None:
-            lines.append(f"- Log channel: {log_channel.mention}")
+        if staff_channel is not None:
+            lines.append(f"- Staff channel: {staff_channel.mention}")
+        if dm_user is not None:
+            lines.append(f"- DM the user: {bool(dm_user)}")
         await interaction.response.send_message(
             "\n".join(lines), ephemeral=True
         )
@@ -959,17 +1283,13 @@ PunishmentBot.setup_hook = setup_hook  # type: ignore[assignment]
 # --------------------------------------------------------------------------- #
 # Entry point
 # --------------------------------------------------------------------------- #
-def resolve_token(cfg: dict) -> Optional[str]:
-    return os.environ.get("DISCORD_TOKEN") or cfg.get("token") or None
-
-
 def main() -> int:
     init_db()
     token = resolve_token(bot.config)
     if not token:
         logger.error(
-            "No Discord token found. Set the DISCORD_TOKEN environment variable "
-            "or put it in config.json under 'token'."
+            "No Discord token found. Set the DISCORD_TOKEN environment variable, "
+            "or put it in config.json under 'bot_token' (or the legacy 'token')."
         )
         return 1
     try:
@@ -981,4 +1301,9 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # If the bot token is missing entirely, run the interactive installer
+    # first so the user doesn't have to edit JSON by hand.
+    if not resolve_token(load_config()):
+        from installer import run_installer
+        run_installer()
     sys.exit(main())

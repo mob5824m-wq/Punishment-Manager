@@ -1,19 +1,23 @@
 # Punishment Manager
 
 A cross-platform [discord.py](https://discordpy.readthedocs.io/) bot that
-temporarily swaps a user's role.
+temporarily swaps a user's role and posts Discord embeds to staff and the
+punished user.
 
 **Role flow**
 
 ```
-Normal role  ──/punish──▶  Punish role  ──timer──▶  Post-punish role
+Normal role  ──/punish apply──▶  Punish role  ──timer──▶  Post-punish role
 ```
 
-* When a moderator runs `/punish`, the bot **removes the user's normal role**
-  and **adds the punish role**.
-* When the timer expires, the bot **removes the punish role** and **adds the
-  post-punish role**.
-* `/pardon` ends the punishment early and restores the normal role.
+* When a moderator runs `/punish apply`, the bot **removes the user's
+  normal role** and **adds the punish role**.
+* The bot posts a **staff embed** in the configured staff channel and
+  **DMs the punished user an embed** with the same info.
+* When the timer expires, the bot **removes the punish role** and
+  **adds the post-punish role**, and posts a final staff embed.
+* `/punish pardon` ends the punishment early and posts a final
+  "pardon" embed to staff and a DM to the user.
 
 All active punishments are stored in a local SQLite database, so timers
 survive a bot restart.
@@ -27,9 +31,8 @@ survive a bot restart.
   <https://discord.com/developers/applications>.
 * The bot must be invited with at minimum:
   * **Manage Roles**
-  * **Moderate Members** *(only required if you want the `moderate_members`
-    permission check on `/punish`)*
-  * **Send Messages**
+  * **Moderate Members** *(required by `/punish` for the runtime check)*
+  * **Send Messages** *(for staff-channel embeds)*
   * **Use Application Commands**
 
 > **Role order matters.** Drag the bot's role *above* all three configured
@@ -39,14 +42,36 @@ survive a bot restart.
 
 ## 2. Setup (macOS, Linux, Windows)
 
-The included helper scripts create a virtualenv, install dependencies, and
-launch the bot. Pick the one that matches your OS.
+The included helper scripts create a virtualenv, install dependencies,
+**run the interactive installer** on first launch, then start the bot.
 
-| OS       | Script             |
-|----------|--------------------|
-| macOS    | `scripts/run_mac.sh`   |
-| Linux    | `scripts/run_linux.sh` |
-| Windows  | `scripts/run_windows.bat` |
+| OS       | Script                 |
+|----------|------------------------|
+| macOS    | `./scripts/run_mac.sh`    |
+| Linux    | `./scripts/run_linux.sh`  |
+| Windows  | `scripts\run_windows.bat` |
+
+The installer (`installer.py`) is also runnable on its own:
+
+```bash
+python3 installer.py
+```
+
+It prompts for:
+
+| Field             | Where to find it                                      |
+|-------------------|-------------------------------------------------------|
+| `bot_token`       | Discord Developer Portal -> your app -> Bot -> Token  |
+| `server_id`       | Right-click the server icon -> Copy Server ID         |
+| `normal_role_id`  | Right-click the role -> Copy Role ID                  |
+| `punish_role_id`  | "                                                    |
+| `post_role_id`    | "                                                    |
+| `staff_channel_id`| Right-click the channel -> Copy Channel ID (optional) |
+| `dm_user`         | y / n (default y)                                    |
+
+The installer writes the result to `config.json` with `0600` permissions
+on Unix so the token isn't world-readable. Re-running it preserves any
+field you skip (just press Enter).
 
 **Manual setup** (if you'd rather do it yourself):
 
@@ -58,66 +83,67 @@ source .venv/bin/activate
 .venv\Scripts\Activate.ps1
 
 pip install -r requirements.txt
+python3 installer.py    # or just edit config.json by hand
+python3 bot.py
 ```
+
+You can also set `DISCORD_TOKEN` as an environment variable and the
+launcher will skip the token prompt.
 
 ---
 
 ## 3. Configure the bot
 
-You can configure the bot two ways: in `config.json`, or with the in-Discord
-`/setup` command (recommended for most people).
+You can configure the bot two ways: with the interactive installer
+(recommended for first-time setup), or with the in-Discord `/setup`
+command (for tweaking things later).
 
-### Option A — in-Discord `/setup` (easiest)
+### Option A — interactive installer
+
+```bash
+python3 installer.py
+```
+
+This writes `config.json` with everything the bot needs.
+
+### Option B — in-Discord `/setup` (easiest to change roles later)
 
 1. Create three roles in your server, e.g. `Member`, `Punished`, `Suspended`.
-2. Run `python bot.py` once with a valid token (see step 4) so the slash
-   commands appear in your server.
+2. Create a "staff-logs" text channel and make sure the bot can post in it.
 3. As a server administrator, run:
 
    ```
    /setup normal_role:@Member punish_role:@Punished post_role:@Suspended
+              staff_channel:#staff-logs dm_user:true
    ```
 
-   (Optionally pass a `log_channel:` for punishment notifications.)
+   All five parameters are optional except the three roles.
 
-### Option B — edit `config.json`
+### Option C — edit `config.json` directly
 
 ```json
 {
-  "token": "YOUR-BOT-TOKEN",
-  "log_channel_id": 123456789012345678,
-  "guilds": {
-    "987654321098765432": {
-      "normal_role_id":  111111111111111111,
-      "punish_role_id":  222222222222222222,
-      "post_role_id":    333333333333333333
-    }
-  }
+  "bot_token":        "YOUR-BOT-TOKEN",
+  "server_id":        987654321098765432,
+  "normal_role_id":   111111111111111111,
+  "punish_role_id":   222222222222222222,
+  "post_role_id":     333333333333333333,
+  "staff_channel_id": 444444444444444444,
+  "dm_user":          true
 }
 ```
 
-`guild_id` and role ids can be obtained by right-clicking the server/role in
-Discord with developer mode enabled (*Settings → Advanced → Developer Mode*).
+The `bot_token`, `server_id`, and the three role ids go at the top level
+(single-server shape). The `guilds` / `token` / `log_channel_id` keys
+below them are a legacy multi-server shape and are still respected for
+backwards compatibility.
+
+To find ids: enable Developer Mode in *Settings -> Advanced*, then
+right-click the server/role/channel and choose "Copy ... ID".
 
 ---
 
-## 4. Set the bot token
-
-Either:
-
-* put it in `config.json` under `"token"`, **or**
-* set the `DISCORD_TOKEN` environment variable (preferred for production):
-
-  ```bash
-  # macOS / Linux
-  export DISCORD_TOKEN=YOUR-TOKEN
-  # Windows (PowerShell)
-  $env:DISCORD_TOKEN = "YOUR-TOKEN"
-  ```
-
----
-
-## 5. Run it
+## 4. Run it
 
 ```bash
 # macOS / Linux
@@ -136,30 +162,72 @@ You should see:
 ```
 
 Slash commands may take up to a few minutes to appear globally the first
-time. To make them appear instantly in one server, set the `guild_ids`
-argument in `bot.tree.sync()` (see comments in `bot.py`).
+time. To make them appear instantly in one server, change
+`await self.tree.sync()` to `await self.tree.sync(guild=discord.Object(id=YOUR_GUILD_ID))`
+in `setup_hook`.
 
 ---
 
-## 6. Commands
+## 5. Commands
 
 The bot uses a single slash command group plus a one-off admin command.
 
-| Command         | Who can use it                  | What it does |
-|-----------------|---------------------------------|--------------|
-| `/punish apply` | Members with *Moderate Members* | Strips the normal role, gives the punish role for a duration. |
-| `/punish pardon`| Members with *Moderate Members* | Ends the punishment early and restores the normal role. |
-| `/punish status`| Anyone                          | Shows the server configuration and a list of active punishments. Pass a `user` to see that user's active status + history. |
-| `/setup`        | Server administrators           | Configures the three roles (and optional log channel) for the server. |
+| Command              | Who can use it                  | What it does |
+|----------------------|---------------------------------|--------------|
+| `/punish apply`      | Members with *Moderate Members* | Strips the normal role, gives the punish role for a duration. Posts a staff embed and DMs the user. |
+| `/punish pardon`     | Members with *Moderate Members* | Ends the punishment early and restores the normal role. Posts a staff embed and DMs the user. |
+| `/punish status`     | Anyone                          | Shows the server configuration and a list of active punishments. Pass a `user` to see that user's active status + history. |
+| `/setup`             | Server administrators           | Configures the three roles, the staff channel, and DM behavior. |
 
 ### `/punish apply` options
 
 * `user` — the user to punish.
 * `duration` — how long. Examples: `30m`, `2h`, `1d`, `1d12h`, `90`
   *(bare numbers are interpreted as minutes)*.
-* `reason` — optional, shown in the log channel and stored in the DB.
+* `reason` — optional, shown in the staff embed, the DM embed, and the DB.
 
 The maximum duration is 30 days. The minimum is 5 seconds.
+
+---
+
+## 6. Embeds
+
+**Staff channel embed** (on `/punish apply`):
+
+* Title: "Member punished"
+* Color: orange
+* Fields: User (mention + id), Moderator, Duration, Reason, Started
+  (Discord timestamp), Ends (Discord timestamp + relative)
+* Thumbnail: the punished user's avatar
+* Footer: "User ID: ..."
+
+**Punished-user DM embed** (on `/punish apply`):
+
+* Title: "You've been punished in `<server name>`"
+* Color: red
+* Fields: Duration, Reason, Started, Ends, Issued by
+* Friendly message pointing the user to talk to a mod if they think it
+  was a mistake
+
+**Staff channel embed** (on timer expiry):
+
+* Title: "Punishment timer expired"
+* Color: blue
+* Description showing the user moved from punish -> post role
+* Started (relative time)
+
+**Staff channel embed** (on `/punish pardon`):
+
+* Title: "Member pardoned"
+* Color: green
+* Fields: User, Moderator, Outcome
+
+**Pardoned-user DM embed**:
+
+* Title: "Your punishment in `<server name>` has been lifted"
+* Color: green
+* Description confirming roles are restored
+* "Issued by" field
 
 ---
 
@@ -167,15 +235,16 @@ The maximum duration is 30 days. The minimum is 5 seconds.
 
 ```
 Punishment-Manager/
-├── bot.py                  # The bot
+├── bot.py                  # the bot
+├── installer.py            # interactive first-run installer
 ├── requirements.txt
-├── config.json             # Token + per-guild role config
+├── config.json             # token + per-guild role config
 ├── .gitignore
 ├── scripts/
 │   ├── run_mac.sh
 │   ├── run_linux.sh
 │   └── run_windows.bat
-└── data/                   # Created at runtime
+└── data/                   # created at runtime
     ├── punishments.db
     └── bot.log
 ```
@@ -184,15 +253,23 @@ Punishment-Manager/
 
 ## 8. Troubleshooting
 
-* **`Missing Permissions`** when running `/punish` — the bot's role isn't
-  above the configured roles. Move it up in *Server Settings → Roles*.
-* **Slash commands don't appear** — global commands can take up to an hour
-  to propagate. As a fast alternative, change
-  `await self.tree.sync()` to `await self.tree.sync(guild=discord.Object(id=YOUR_GUILD_ID))`
-  in `setup_hook`.
-* **No token / Login failed** — make sure `DISCORD_TOKEN` is set or the
-  `token` field in `config.json` is filled in. The token must be kept
-  private.
+* **"Installer exited without saving a config"** — re-run
+  `python3 installer.py` and answer the prompts. If your terminal hides
+  input (e.g. when piping from a file), the token will be read as empty
+  and you'll be asked again.
+* **`Missing Permissions`** when running `/punish apply` — the bot's
+  role isn't above the configured roles. Move it up in
+  *Server Settings → Roles*.
+* **The user never receives the DM** — they have DMs disabled or the
+  bot is blocked. Set `dm_user: false` in `/setup` to suppress the DM
+  attempt, or ask the user to enable DMs.
+* **Slash commands don't appear** — global commands can take up to an
+  hour to propagate. As a fast alternative, change
+  `await self.tree.sync()` to
+  `await self.tree.sync(guild=discord.Object(id=YOUR_GUILD_ID))` in
+  `setup_hook`.
+* **No token / Login failed** — make sure `DISCORD_TOKEN` is set or
+  `config.json` has a non-empty `bot_token` (or the legacy `token`).
 
 ---
 
