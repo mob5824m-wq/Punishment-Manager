@@ -25,9 +25,13 @@ them onto the `main` branch.
 
 1. Go to https://github.com/mob5824m-wq/Punishment-Manager/tree/main/.github
 2. Click **Add file → Create new file**.
-3. In the "Name your file..." box, type the full path including
-   folders, e.g. `.github/workflows/release.yml`. GitHub will
-   create the folders for you.
+3. In the "Name your file..." box, type the path **relative to the
+   current directory**. Since you're already inside `.github/`,
+   type just `workflows/release.yml`. **Do not** include the leading
+   `.github/` prefix — GitHub adds it automatically, and including
+   it will create a duplicate `.github/.github/workflows/` path that
+   GitHub Actions does not pick up. (That's the bug this file's
+   commit history documents.)
 4. Open the file from your local checkout
    (`Punishment-Manager/.github/workflows/release.yml`) in any text
    editor, copy its entire contents, and paste into the GitHub
@@ -38,6 +42,12 @@ them onto the `main` branch.
 
 GitHub will pick up the workflows automatically. You should see a
 green check mark on the next push.
+
+> **Path gotcha:** Workflows must live at exactly
+> `.github/workflows/<name>.yml`. If a file ends up at
+> `.github/.github/workflows/<name>.yml` instead, GitHub silently
+> ignores it and the workflow never runs. The fix is to `git mv` the
+> file to the correct path and push a new commit.
 
 ### Option B — Local git push as a maintainer
 
