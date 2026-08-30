@@ -1,0 +1,26 @@
+#!/bin/sh
+# Post-remove script for the Punishment Manager .deb.
+# Cleans up after the package has been removed.
+set -e
+
+if [ "$1" = "purge" ]; then
+    # Remove the system user and state directories only on a full purge.
+    if getent passwd punishment-manager >/dev/null; then
+        deluser --quiet --system punishment-manager || true
+    fi
+    if getent group punishment-manager >/dev/null; then
+        delgroup --quiet --system punishment-manager || true
+    fi
+    rm -rf /var/lib/punishment-manager
+    rm -rf /etc/punishment-manager
+fi
+
+if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload || true
+fi
+
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database /usr/share/applications || true
+fi
+
+exit 0

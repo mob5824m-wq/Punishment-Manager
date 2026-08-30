@@ -1,0 +1,29 @@
+[Unit]
+Description=Punishment Manager Discord bot
+Documentation=https://github.com/mob5824m-wq/Punishment-Manager
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=punishment-manager
+Group=punishment-manager
+WorkingDirectory=/opt/punishment-manager
+ExecStart=/opt/punishment-manager/punishment-manager
+Restart=on-failure
+RestartSec=10
+
+# Sandboxing - tighten if your distro supports it.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/punishment-manager /etc/punishment-manager
+
+# Logging.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=punishment-manager
+
+[Install]
+WantedBy=multi-user.target
