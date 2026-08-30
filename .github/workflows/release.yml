@@ -24,87 +24,40 @@ on:
 permissions:
   contents: write   # required to create the release + upload assets
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build:
-    name: build (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      # Don't cancel the other platforms if one fails - we want to know
-      # which one broke.
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            artifact_path: dist/*.deb
-            build_script: build/build_linux.sh
-            shell: bash
-          - os: macos-latest
-            artifact_path: dist/*.dmg
-            build_script: build/build_macos.sh
-            shell: bash
-          - os: windows-latest
-            artifact_path: dist/*.exe
-            build_script: build\build_windows.bat
-            shell: cmd
-
+  linux:
+    name: linux (.deb)
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
-
+      - name: Install build dependencies
+        run: bash $GITHUB_WORKSPACE/.github/scripts/install-linux-deps.sh
       - name: Install Python dependencies
+        run: bash -c "python -m pip install --upgrade pip && pip install -r requirements.txt && pip install pyinstaller"
+      - name: Smoke-test imports
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pyinstaller
-
-      - name: Install build tools (Linux)
-        if: runner.os == 'Linux'
+          python -c "import bot, installer; print('imports OK')"
+      - name: Build .deb
+        run: build/build_linux.sh
+      - name: Verify .deb
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libpython3.11 fakeroot dpkg lintian
-
-      - name: Install build tools (macOS)
-        if: runner.os == 'macOS'
-        run: brew install create-dmg
-
-      - name: Install build tools (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: ./.github/workflows/install-nsis.ps1
-
-      - name: Build
-        run: ${{ matrix.build_script }}
-        shell: ${{ matrix.shell }}
-
-      - name: Locate built artifact
-        id: locate
-        run: |
-          set -e
-          for f in dist/*.deb dist/*.dmg dist/*.exe; do
-            if [ -f "$f" ]; then
-              echo "artifact=$f" >> "$GITHUB_OUTPUT"
-              echo "Found artifact: $f"
-              exit 0
-            fi
-          done
-          echo "::error::No built artifact found in dist/"
-          ls -la dist/
-          exit 1
-
-      - name: Upload build artifact (for inspection)
+          ls -lh dist/
+          dpkg-deb -I dist/*.deb
+      - name: Upload .deb
         uses: actions/upload-artifact@v4
         with:
-          name: punishment-manager-${{ runner.os }}
-          path: ${{ steps.locate.outputs.artifact }}
+          name: punishment-manager-linux
+          path: dist/*.deb
           if-no-files-found: error
           retention-days: 7
-
       - name: Attach to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -112,9 +65,82 @@ jobs:
           generate_release_notes: true
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
-          # `fail_on_unmatched_files: false` so all three matrix jobs
-          # can run their upload step independently without failing
-          # when their specific artifact is the one they're uploading
-          # (vs. looking for ALL of them).
           fail_on_unmatched_files: true
-          files: ${{ steps.locate.outputs.artifact }}
+          files: dist/*.deb
+
+  macos:
+    name: macos (.dmg)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+      - name: Install create-dmg
+        run: brew install create-dmg
+      - name: Build .dmg
+        run: build/build_macos.sh
+      - name: Verify .dmg
+        run: |
+          ls -lh dist/
+          hdiutil verify dist/*.dmg || true
+      - name: Upload .dmg
+        uses: actions/upload-artifact@v4
+        with:
+          name: punishment-manager-macos
+          path: dist/*.dmg
+          if-no-files-found: error
+          retention-days: 7
+      - name: Attach to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          fail_on_unmatched_files: true
+          files: dist/*.dmg
+
+  windows:
+    name: windows (.exe)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+      - name: Install NSIS
+        run: pwsh -File .github/scripts/install-nsis.ps1
+      - name: Build .exe
+        run: build\build_windows.bat
+        shell: cmd
+      - name: Verify .exe
+        run: dir dist\*.exe
+      - name: Upload .exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: punishment-manager-windows
+          path: dist/*.exe
+          if-no-files-found: error
+          retention-days: 7
+      - name: Attach to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          fail_on_unmatched_files: true
+          files: dist/*.exe
