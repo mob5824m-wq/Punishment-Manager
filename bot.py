@@ -412,13 +412,66 @@ class PunishmentBot(commands.Bot):
         self.config = config
         self.scheduler_task: Optional[asyncio.Task] = None
 
-    async def setup_hook(self) -> None:
-        # Sync the global slash command tree.
+    async def _log_local_commands(self) -> None:
+        """Log every slash command that's about to be registered. Useful
+        for confirming at startup that the code on disk is what we
+        expect (e.g. nothing got dropped by a botched merge)."""
+        local = sorted(c.qualified_name for c in self.tree.walk_commands())
+        logger.info("Local command tree (%d): %s", len(local), ", ".join(local) or "(none)")
+
+    async def _sync_commands(self) -> None:
+        """Refresh the slash command list on every startup.
+
+        Two syncs happen here, in order:
+
+        1. **Guild sync** (instant). If `config.server_id` is set, push
+           the command list to that specific guild. This takes effect
+           immediately on Discord - useful for testing a new command
+           without waiting for global propagation.
+
+        2. **Global sync** (slow, up to 1h to propagate). Pushes the
+           command list to every guild the bot is in. This is the
+           authoritative registration for production servers.
+
+        Discord's `PUT /commands` endpoint replaces the entire set on
+        each call, so any command that exists in code stays registered
+        and any command that was removed from code disappears. There is
+        no separate "delete" step.
+        """
+        await self._log_local_commands()
+
+        # 1. Guild sync (instant, only if we have a configured server).
+        server_id = self.config.get("server_id")
+        if server_id:
+            try:
+                guild_obj = discord.Object(id=int(server_id))
+                synced = await self.tree.sync(guild=guild_obj)
+                logger.info(
+                    "Synced %d command(s) to guild %s (instant).",
+                    len(synced), server_id,
+                )
+            except discord.HTTPException as exc:
+                logger.warning(
+                    "Guild sync to %s failed (%s); continuing with global sync.",
+                    server_id, exc,
+                )
+            except Exception:
+                logger.exception("Unexpected error during guild sync.")
+        else:
+            logger.info(
+                "No server_id configured; skipping guild sync. "
+                "Commands propagate globally (up to 1h delay)."
+            )
+
+        # 2. Global sync (propagates to all guilds, up to 1h delay).
         try:
             synced = await self.tree.sync()
-            logger.info("Synced %d global command(s).", len(synced))
+            logger.info("Synced %d global command(s) (up to 1h to propagate).", len(synced))
         except Exception:
-            logger.exception("Failed to sync commands.")
+            logger.exception("Failed to sync global commands.")
+
+    async def setup_hook(self) -> None:
+        await self._sync_commands()
 
         if self.scheduler_task is None or self.scheduler_task.done():
             self.scheduler_task = self.loop.create_task(self.scheduler_loop())

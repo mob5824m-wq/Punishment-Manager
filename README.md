@@ -199,9 +199,10 @@ You should see:
 ```
 
 Slash commands may take up to a few minutes to appear globally the first
-time. To make them appear instantly in one server, change
-`await self.tree.sync()` to `await self.tree.sync(guild=discord.Object(id=YOUR_GUILD_ID))`
-in `setup_hook`.
+time. The bot already syncs both globally and to the configured
+`server_id` on every startup, so the first time you point it at your
+server, commands appear in seconds. Remove `server_id` from `config.json`
+to fall back to global-only sync (useful for multi-server bots).
 
 ---
 
@@ -439,10 +440,11 @@ Punishment-Manager/
   bot is blocked. Set `dm_user: false` in `/setup` to suppress the DM
   attempt, or ask the user to enable DMs.
 * **Slash commands don't appear** — global commands can take up to an
-  hour to propagate. As a fast alternative, change
-  `await self.tree.sync()` to
-  `await self.tree.sync(guild=discord.Object(id=YOUR_GUILD_ID))` in
-  `setup_hook`.
+  hour to propagate. The bot also syncs to the configured `server_id`
+  on every startup (instant), so if you're testing a single server,
+  make sure `server_id` is set in `config.json`. Check `data/bot.log`
+  for the sync output: it should show "Synced N command(s) to guild X"
+  followed by "Synced N global command(s)".
 * **No token / Login failed** — make sure `DISCORD_TOKEN` is set or
   `config.json` has a non-empty `bot_token` (or the legacy `token`).
 * **`.deb` build complains about `dpkg-deb` or `fakeroot`** — install
