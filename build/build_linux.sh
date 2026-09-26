@@ -76,6 +76,15 @@ install -m 755 build/linux/prerm     "$STAGE/DEBIAN/prerm"
 install -m 644 build/linux/punishment-manager.service \
     "$STAGE/lib/systemd/system/punishment-manager.service"
 
+# A read-only copy of the service/desktop templates, so `punishment-manager
+# --install-service` works from the installed binary (paths.resource_path
+# looks in /usr/share/punishment-manager when the source tree isn't present).
+install -d "$STAGE/usr/share/punishment-manager/build/linux"
+install -m 644 build/linux/punishment-manager.service \
+    "$STAGE/usr/share/punishment-manager/build/linux/punishment-manager.service"
+install -m 644 build/linux/punishment-manager.desktop \
+    "$STAGE/usr/share/punishment-manager/build/linux/punishment-manager.desktop"
+
 # Desktop entry.
 install -m 644 build/linux/punishment-manager.desktop \
     "$STAGE/usr/share/applications/punishment-manager.desktop"

@@ -38,6 +38,19 @@ DATA_FILES = [
     # can `import installer` at runtime.
     (str(PROJECT_ROOT / 'installer.py'), '.'),
 ]
+
+# Service-unit / launchd-plist templates, so `--install-service` works from
+# the packaged binary too (bot.paths.resource_path looks for these under
+# 'build/<os>/'). The app tree itself is read-only at install time, so these
+# are read-only inputs - never write next to them.
+for _rel in (
+    ('build/linux/punishment-manager.service', 'build/linux'),
+    ('build/linux/punishment-manager.desktop', 'build/linux'),
+    ('build/macos/com.arena.punishment-manager.plist', 'build/macos'),
+):
+    _src = PROJECT_ROOT / _rel[0]
+    if _src.exists():
+        DATA_FILES.append((str(_src), _rel[1]))
 ICON_PNG = PROJECT_ROOT / 'build' / 'icon.png'
 ICON_ICO = PROJECT_ROOT / 'build' / 'icon.ico'
 ICON_ICNS = PROJECT_ROOT / 'build' / 'icon.icns'
@@ -66,6 +79,10 @@ a = Analysis(
         'discord.ext.tasks',
         'aiohttp',
         'sqlite3',
+        # bot.py's `import paths` is picked up by the analysis, but
+        # installer.py is bundled as a data file (not analysed), so list the
+        # module explicitly to be safe.
+        'paths',
         # installer.py is bundled as a data file; import it via importlib.
     ],
     hookspath=[],

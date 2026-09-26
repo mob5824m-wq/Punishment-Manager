@@ -229,6 +229,45 @@ corrected `release.yml` in the PR branch but cannot push it
 (no `workflows` permission on the GitHub App token). A
 maintainer needs to apply the change.
 
+### 12. Packaged builds crashed on first launch (read-only app dir)
+
+**Problem:** the installed `.deb` binary died at import time with
+
+```
+File "bot.py", line 35, in <module>
+File "pathlib.py", line 1116, in mkdir
+PermissionError: [Errno 13] Permission denied: '/opt/punishment-manager/_internal/data'
+[PYI-49989:ERROR] Failed to execute script 'bot' due to unhandled exception!
+```
+
+`bot.py` derived every path from `Path(__file__).parent`. In a PyInstaller
+onedir build that is `_internal/` inside the install tree — root-owned and
+read-only (and explicitly read-only for the service, since the unit sets
+`ProtectSystem=strict`). So `DATA_DIR.mkdir()` raised before the logger even
+existed. The same applied to `config.json` (written into the install dir,
+world-readable, with the bot token in it) and to the Windows `.exe` under
+`C:\Program Files`. CI did not catch it because the installers are only
+*built*, never run.
+
+**Fix:** new `paths.py` resolves the data dir and config file once, at import:
+env overrides, then the platform state dir (`/var/lib/punishment-manager`,
+`~/.local/state/punishment-manager`, `~/Library/Application Support/...`,
+`%LOCALAPPDATA%\Punishment Manager`), then `<app dir>/data`, then a temp dir —
+each candidate only used if it is actually creatable and writable. A config
+found in a read-only place is copied on write to the writable location. The
+systemd unit, launchd agent and NSSM service are now generated against the
+running executable (with the packaged resources looked up via
+`paths.resource_path`), and `--install-service` chowns the state dirs to the
+service user. `bot.py --paths` prints the resolved locations.
+
+**Regression gate:** `tests/test_paths.py` re-creates the packaged layout in a
+temp dir (read-only app tree, `sys.frozen`/`_MEIPASS`/`sys.executable`
+patched, isolated `HOME`) and asserts `import bot` succeeds and nothing is
+written into the install tree. It runs in `build.yml` (all three OSes) and in
+`release.yml`'s linux job, so a path regression fails the build instead of the
+customer's first launch. Read-only-permission cases skip when running as root
+or on Windows, where `chmod` can't emulate them.
+
 ## Other notes
 
 - The build uses no code signing. If you want signed
