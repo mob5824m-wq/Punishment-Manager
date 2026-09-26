@@ -44,7 +44,10 @@ class _Sandbox:
     """A throwaway HOME + a read-only 'installed app' directory."""
 
     def __init__(self, *, frozen: bool = False, app_writable: bool = False) -> None:
-        self.tmp = Path(tempfile.mkdtemp(prefix="pm-paths-test-"))
+        # resolve() up front: paths.py resolves the app dir, and tempfile gives
+        # the symlinked / short form on some platforms (macOS /var -> /private/var,
+        # Windows C:\\Users\\RUNNER~1), so compare canonical paths on both sides.
+        self.tmp = Path(tempfile.mkdtemp(prefix="pm-paths-test-")).resolve()
         self.home = self.tmp / "home"
         self.app = self.tmp / "opt" / "punishment-manager"
         self.bundle = self.app / "_internal"
