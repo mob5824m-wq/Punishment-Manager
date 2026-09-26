@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Punishment Manager
+GenericName=Discord Bot
+Comment=Discord bot for temporary role-based punishments
+Exec=/opt/punishment-manager/punishment-manager
+Icon=punishment-manager
+Terminal=true
+Categories=Network;InstantMessaging;Chat;
+Keywords=discord;bot;moderation;
+StartupNotify=false

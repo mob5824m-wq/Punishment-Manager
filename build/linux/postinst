@@ -1,0 +1,40 @@
+#!/bin/sh
+# Post-install script for the Punishment Manager .deb.
+set -e
+
+# Create a system user for the service (idempotent).
+if ! getent passwd punishment-manager >/dev/null; then
+    adduser --system --group --home /var/lib/punishment-manager \
+        --no-create-home --gecos "Punishment Manager" punishment-manager
+fi
+
+# Ensure state directories exist and are owned by the service user.
+mkdir -p /var/lib/punishment-manager
+chown punishment-manager:punishment-manager /var/lib/punishment-manager
+chmod 750 /var/lib/punishment-manager
+
+mkdir -p /etc/punishment-manager
+chown root:punishment-manager /etc/punishment-manager
+chmod 750 /etc/punishment-manager
+
+# If a config was shipped, make sure it's readable by the service user.
+if [ -f /etc/punishment-manager/config.json ]; then
+    chown root:punishment-manager /etc/punishment-manager/config.json
+    chmod 640 /etc/punishment-manager/config.json
+fi
+
+# Make the binary executable.
+chmod 755 /opt/punishment-manager/punishment-manager
+
+# Reload systemd and try to enable (but not start) the service.
+if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload || true
+    systemctl enable punishment-manager.service || true
+fi
+
+# Update the desktop database.
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database /usr/share/applications || true
+fi
+
+exit 0
