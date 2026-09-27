@@ -303,27 +303,27 @@ with the release they belong to.
 Bump it, then push a semver tag from the `main` branch:
 
 ```bash
-echo 2.1.0 > VERSION
-git commit -am "chore: bump version to 2.1.0"
+echo 2.1.1 > VERSION
+git commit -am "chore: bump version to 2.1.1"
 git push origin main
 
-./scripts/make_release.sh 2.1.0     # or: ./scripts/make_release.sh 2.2.0-rc1
+./scripts/make_release.sh 2.1.1     # or: ./scripts/make_release.sh 2.2.0-rc1
 ```
 
 The script checks that the tag matches `VERSION`, validates the working
-tree, creates an annotated `v2.1.0` tag, and pushes it. Pushing the tag triggers `.github/workflows/release.yml`,
+tree, creates an annotated `v2.1.1` tag, and pushes it. Pushing the tag triggers `.github/workflows/release.yml`,
 which builds all three platforms in parallel and attaches the artifacts
 to a new GitHub Release.
 
 You can also just run the same commands by hand:
 
 ```bash
-git tag -a v2.1.0 -m "Release 2.1.0"
-git push origin v2.1.0
+git tag -a v2.1.1 -m "Release 2.1.1"
+git push origin v2.1.1
 ```
 
 Either way, the release page appears at
-`https://github.com/mob5824m-wq/Punishment-Manager/releases/tag/v2.1.0`
+`https://github.com/mob5824m-wq/Punishment-Manager/releases/tag/v2.1.1`
 a few minutes later with the `.dmg`, `.deb`, and `.exe` ready to
 download.
 
@@ -428,7 +428,12 @@ The first writable candidate wins; if none is writable it falls back to a
 temp dir and says so in the log. A config that exists but is read-only (the
 `.deb` ships one in `/etc`, mode `0640 root:punishment-manager`) is read from
 there, and the first save copies it to the writable data dir - which then
-takes precedence.
+takes precedence. A candidate the current user can't even look into (for
+example the `.deb`'s `0750` `/etc/punishment-manager` when a portable build is
+run by a user outside the `punishment-manager` group) is skipped with a note
+in the log, and the later candidates - such as `config.json` next to the
+executable - are still tried (v2.1.1; v2.1.0 stopped at the first such
+candidate).
 
 Print the resolved locations any time:
 

@@ -35,9 +35,9 @@ the artifact filenames, the `.app` plist and the NSIS metadata can't drift from
 the tag.
 
 ```bash
-echo 2.1.0 > VERSION
-git commit -am "chore: bump version to 2.1.0" && git push origin main
-./scripts/make_release.sh 2.1.0     # refuses to tag if VERSION and the tag disagree
+echo 2.1.1 > VERSION
+git commit -am "chore: bump version to 2.1.1" && git push origin main
+./scripts/make_release.sh 2.1.1     # refuses to tag if VERSION and the tag disagree
 ```
 
 A plain version becomes a normal release; a `v2.2.0-rc1` style tag is marked
@@ -51,7 +51,8 @@ Live releases:
 
 | Tag | Installers | Notes |
 |-----|-----------|-------|
-| `v2.1.0` | `.deb`, `.dmg`, `.exe` attached by CI | Current. Fixes packaged installs crashing at startup (`PermissionError` on `/opt/punishment-manager/_internal/data`). |
+| `v2.1.1` | `.deb`, `.dmg`, `.exe` attached by CI | Current. Path resolution skips a candidate the user can't access instead of stopping there: portable installs next to a `.deb`'s `0750 /etc/punishment-manager` find their own `config.json` again, and the startup note names the skipped candidate instead of saying "resolution failed". |
+| `v2.1.0` | `.deb`, `.dmg`, `.exe` attached by CI | Fixes packaged installs crashing at startup (`PermissionError` on `/opt/punishment-manager/_internal/data`). Safe to run; superseded by v2.1.1. |
 | `v2.0.0` | attached by CI | **Broken for installed builds** — crashes on first launch; superseded by v2.1.0. |
 | `v1.0.0` | source archives only | Created by hand before `release.yml` worked. |
 
