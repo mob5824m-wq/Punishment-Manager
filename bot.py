@@ -23,16 +23,20 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 
+import paths
+
+
 # --------------------------------------------------------------------------- #
 # Paths / constants
 # --------------------------------------------------------------------------- #
-BASE_DIR = Path(__file__).resolve().parent
-CONFIG_PATH = BASE_DIR / "config.json"
-DB_PATH = BASE_DIR / "data" / "punishments.db"
-LOG_PATH = BASE_DIR / "data" / "bot.log"
-
-DATA_DIR = BASE_DIR / "data"
-DATA_DIR.mkdir(parents=True, exist_ok=True)
+# All writable locations are resolved by paths.py. Never write next to
+# `__file__`: in a packaged build that is the read-only app tree
+# (/opt/punishment-manager/_internal, C:\Program Files\...), and creating
+# `data/` there raises PermissionError before the bot can even log anything.
+BASE_DIR = paths.APP_DIR          # read-only in packaged builds
+DATA_DIR = paths.DATA_DIR         # writable: db + log
+DB_PATH = paths.DB_PATH
+LOG_PATH = paths.LOG_PATH
 
 
 # --------------------------------------------------------------------------- #
@@ -44,12 +48,34 @@ formatter = logging.Formatter(
     "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
-file_handler = logging.FileHandler(LOG_PATH, encoding="utf-8")
-file_handler.setFormatter(formatter)
 stream_handler = logging.StreamHandler(sys.stdout)
 stream_handler.setFormatter(formatter)
-logger.addHandler(file_handler)
 logger.addHandler(stream_handler)
+try:
+    file_handler = logging.FileHandler(LOG_PATH, encoding="utf-8")
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+except OSError as exc:
+    # A broken log file must not take the bot down; stdout/journal still work.
+    logger.warning("File logging disabled (%s: %s)", LOG_PATH, exc)
+
+
+def _report_path_notes() -> None:
+    """Log any location fallbacks paths.py had to take (each note once)."""
+    for note in paths.new_startup_notes():
+        logger.info(note)
+
+
+def _log_path_notes() -> None:
+    """Report where this run keeps its files, plus late-resolved fallbacks."""
+    logger.info("Punishment Manager %s", paths.app_version())
+    _report_path_notes()
+    logger.info("Data directory: %s", DATA_DIR)
+
+
+# Paths are resolved before the logger exists; report them as the first thing
+# in the log so a misconfigured install is obvious from `bot.log` alone.
+_report_path_notes()
 
 
 # --------------------------------------------------------------------------- #
@@ -221,23 +247,64 @@ DEFAULT_CONFIG: dict = {
 }
 
 
+def config_path() -> Path:
+    """Where config.json is read from (may be a read-only system location)."""
+    return paths.config_path()
+
+
 def load_config() -> dict:
-    if not CONFIG_PATH.exists():
-        CONFIG_PATH.write_text(json.dumps(DEFAULT_CONFIG, indent=2), encoding="utf-8")
-        logger.warning(
-            "Created default config at %s - run the installer to fill it in.",
-            CONFIG_PATH,
+    """Read config.json, creating a default one in the data dir if missing.
+
+    In a packaged install the config may live in a read-only system location
+    (/etc/punishment-manager/config.json on Linux); the default/updated copy
+    is written to the writable data dir instead. See paths.py.
+
+    A missing, unreadable or corrupt config is reported and treated as "not
+    configured yet" - the bot then runs the installer rather than dying with a
+    traceback at import time (this module is imported before main() runs).
+    """
+    cfg_file = paths.config_path()
+    if not cfg_file.is_file():
+        try:
+            written = paths.write_config(dict(DEFAULT_CONFIG))
+            logger.warning(
+                "Created default config at %s - run the installer to fill it in.",
+                written,
+            )
+        except OSError as exc:
+            logger.warning(
+                "No config file at %s and none could be created (%s); "
+                "set DISCORD_TOKEN or run the installer.",
+                cfg_file,
+                exc,
+            )
+            return dict(DEFAULT_CONFIG)
+    try:
+        cfg = paths.load_config_dict(dict(DEFAULT_CONFIG))
+    except (OSError, RuntimeError, ValueError) as exc:
+        logger.error(
+            "Ignoring unreadable config file %s (%s). Fix or delete it and "
+            "re-run the installer.",
+            cfg_file,
+            exc,
         )
-    with CONFIG_PATH.open("r", encoding="utf-8") as f:
-        cfg = json.load(f)
+        cfg = {}
     for k, v in DEFAULT_CONFIG.items():
         cfg.setdefault(k, v)
     return cfg
 
 
 def save_config(cfg: dict) -> None:
-    with CONFIG_PATH.open("w", encoding="utf-8") as f:
-        json.dump(cfg, f, indent=2)
+    """Write config.json to the first writable location.
+
+    Never writes into the application directory: on an installed build that
+    is read-only (and world-readable, which would leak the token).
+    """
+    try:
+        paths.write_config(cfg)
+    except OSError as exc:
+        logger.error("Could not save config to %s: %s", paths.config_write_path(), exc)
+        raise
 
 
 def get_guild_config(cfg: dict, guild_id: int) -> Optional[dict]:
@@ -1427,6 +1494,7 @@ PunishmentBot.setup_hook = setup_hook  # type: ignore[assignment]
 # Entry point
 # --------------------------------------------------------------------------- #
 def main() -> int:
+    _log_path_notes()
     init_db()
     token = resolve_token(bot.config)
     if not token:
@@ -1457,7 +1525,16 @@ def _print_help() -> None:
         "                    on Windows). Requires admin / sudo.\n"
         "  --uninstall-service\n"
         "                    Remove the background service.\n"
+        "  --paths           Print where config, database and logs live.\n"
+        "  --version         Print the version of this build.\n"
         "  --help, -h        Show this message.\n"
+        "\n"
+        "Files: the app directory is read-only in packaged installs, so\n"
+        "state lives in a per-user/per-system location. Override with\n"
+        "  PUNISHMENT_MANAGER_HOME    (data + config base directory)\n"
+        "  PUNISHMENT_MANAGER_DATA    (db + log directory)\n"
+        "  PUNISHMENT_MANAGER_CONFIG  (config.json path)\n"
+        "Run --paths to see the resolved locations.\n"
         "\n"
     )
 
@@ -1486,18 +1563,87 @@ def _service_uninstall() -> int:
     return 1
 
 
+# Fallback unit used when the shipped build/linux/punishment-manager.service
+# isn't reachable (e.g. running the PyInstaller binary, where the source tree
+# isn't installed). Paths are filled in from this process so the unit matches
+# wherever the executable actually lives.
+_LINUX_UNIT_TEMPLATE = """[Unit]
+Description=Punishment Manager Discord bot
+Documentation=https://github.com/mob5824m-wq/Punishment-Manager
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=punishment-manager
+Group=punishment-manager
+WorkingDirectory={app_dir}
+ExecStart={exe}
+Restart=on-failure
+RestartSec=10
+
+# Sandboxing - tighten if your distro supports it.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/punishment-manager /etc/punishment-manager
+
+# Logging.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=punishment-manager
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+
+def _systemd_unit_text() -> str:
+    """Body for the systemd unit: shipped file if present, else generated.
+
+    The ExecStart/WorkingDirectory lines are rewritten to match wherever this
+    process is actually running from, so `--install-service` works for a binary
+    unpacked outside /opt and for a source checkout (via the venv's python).
+    """
+    if paths.is_frozen():
+        # `sys.executable` *is* the app in a PyInstaller build. Note that
+        # resolve() is deliberately not used: for a source install it would
+        # follow a venv symlink to the base interpreter and drop site-packages.
+        exe = str(Path(sys.executable))
+        work_dir = str(Path(sys.executable).parent)
+    else:
+        script = paths.APP_DIR / "bot.py"
+        exe = f"{Path(sys.executable)} {script}"
+        work_dir = str(paths.APP_DIR)
+
+    shipped = paths.resource_path("build", "linux", "punishment-manager.service")
+    if shipped is not None:
+        text = shipped.read_text(encoding="utf-8")
+    else:
+        text = _LINUX_UNIT_TEMPLATE.format(app_dir=work_dir, exe=exe)
+
+    if not text.endswith("\n"):
+        text += "\n"
+    lines = []
+    for line in text.splitlines():
+        if line.startswith("ExecStart="):
+            line = f"ExecStart={exe}"
+        elif line.startswith("WorkingDirectory="):
+            line = f"WorkingDirectory={work_dir}"
+        lines.append(line)
+    return "\n".join(lines) + "\n"
+
+
 def _service_install_linux() -> int:
     """systemd: install + enable (but don't auto-start) the service."""
     if os.geteuid() != 0:
         sys.stderr.write("Re-run with sudo to install the service.\n")
         return 1
-    unit_src = BASE_DIR / "build" / "linux" / "punishment-manager.service"
     unit_dst = Path("/lib/systemd/system/punishment-manager.service")
-    if not unit_src.exists():
-        sys.stderr.write(f"Missing unit file: {unit_src}\n")
-        return 1
+    unit_text = _systemd_unit_text()
     unit_dst.parent.mkdir(parents=True, exist_ok=True)
-    unit_dst.write_text(unit_src.read_text(encoding="utf-8"), encoding="utf-8")
+    unit_dst.write_text(unit_text, encoding="utf-8")
     # Idempotent user / group / state dirs.
     subprocess.run(["groupadd", "-rf", "punishment-manager"],
                    check=False, capture_output=True)
@@ -1513,6 +1659,7 @@ def _service_install_linux() -> int:
     )
     for d in ("/var/lib/punishment-manager", "/etc/punishment-manager"):
         Path(d).mkdir(parents=True, exist_ok=True)
+    _chown_state_dirs()
     subprocess.run(["systemctl", "daemon-reload"], check=True)
     subprocess.run(["systemctl", "enable", "punishment-manager.service"], check=True)
     sys.stdout.write(
@@ -1520,6 +1667,43 @@ def _service_install_linux() -> int:
         "sudo systemctl start punishment-manager\n"
     )
     return 0
+
+
+def _chown_state_dirs() -> None:
+    """Give the service user write access to its state + config dirs.
+
+    Mirrors build/linux/postinst. Without this, a service running as
+    `punishment-manager` gets PermissionError writing its db/log because
+    `mkdir` above (run as root) leaves the dirs root-owned.
+    """
+    import pwd  # noqa: PLC0415 - posix-only, imported lazily
+    import grp  # noqa: PLC0415
+
+    try:
+        pw = pwd.getpwnam("punishment-manager")
+    except KeyError:
+        return
+    try:
+        uid, gid = pw.pw_uid, pw.pw_gid
+        state = Path("/var/lib/punishment-manager")
+        os.chown(str(state), uid, gid)
+        os.chmod(str(state), 0o750)
+        # Anything already sitting there (e.g. a db or config written by a
+        # `sudo punishment-manager` run) has to belong to the service too.
+        for path in sorted(state.rglob("*")):
+            try:
+                os.chown(str(path), uid, gid)
+            except OSError:
+                pass
+        # Config dir: root-owned, group-readable by the service user.
+        os.chown("/etc/punishment-manager", 0, gid)
+        os.chmod("/etc/punishment-manager", 0o750)
+        cfg = Path("/etc/punishment-manager/config.json")
+        if cfg.exists():
+            os.chown(str(cfg), 0, gid)
+            os.chmod(str(cfg), 0o640)
+    except (OSError, grp.error) as exc:
+        sys.stderr.write(f"warning: could not set ownership on state dirs: {exc}\n")
 
 
 def _service_uninstall_linux() -> int:
@@ -1538,14 +1722,71 @@ def _service_uninstall_linux() -> int:
     return 0
 
 
+# Fallback launchd agent for packaged macOS builds, where the source tree
+# (and therefore build/macos/*.plist) isn't installed.
+_MACOS_PLIST_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.arena.punishment-manager</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>{exe}</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+        <key>Crashed</key>
+        <true/>
+    </dict>
+
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>StandardOutPath</key>
+    <string>{outlog}</string>
+
+    <key>StandardErrorPath</key>
+    <string>{errlog}</string>
+
+    <key>WorkingDirectory</key>
+    <string>{workdir}</string>
+</dict>
+</plist>
+"""
+
+
 def _service_install_macos() -> int:
-    plist_src = BASE_DIR / "build" / "macos" / "com.arena.punishment-manager.plist"
     plist_dst = Path.home() / "Library" / "LaunchAgents" / "com.arena.punishment-manager.plist"
-    if not plist_src.exists():
-        sys.stderr.write(f"Missing plist: {plist_src}\n")
+    plist_src = paths.resource_path("build", "macos", "com.arena.punishment-manager.plist")
+    if plist_src is not None:
+        text = plist_src.read_text(encoding="utf-8")
+    else:
+        # Packaged build (no source tree installed) or the shipped plist is
+        # missing: generate one that points at the binary being run, and send
+        # its output to the writable data dir rather than /tmp.
+        exe = Path(sys.executable).resolve() if paths.is_frozen() else (
+            Path(sys.argv[0]).resolve() if sys.argv[0] else Path(sys.executable).resolve()
+        )
+        text = _MACOS_PLIST_TEMPLATE.format(
+            exe=exe,
+            workdir=paths.DATA_DIR,
+            outlog=paths.LOG_PATH.with_name("launchd.out.log"),
+            errlog=paths.LOG_PATH.with_name("launchd.err.log"),
+        )
+    try:
+        plist_dst.parent.mkdir(parents=True, exist_ok=True)
+        plist_dst.write_text(text, encoding="utf-8")
+    except OSError as exc:
+        sys.stderr.write(f"Cannot write launchd agent to {plist_dst}: {exc}\n")
         return 1
-    plist_dst.parent.mkdir(parents=True, exist_ok=True)
-    plist_dst.write_text(plist_src.read_text(encoding="utf-8"), encoding="utf-8")
     subprocess.run(["launchctl", "load", "-w", str(plist_dst)], check=False)
     sys.stdout.write(
         f"Installed launchd agent at {plist_dst}.\n"
@@ -1568,10 +1809,20 @@ def _service_install_windows() -> int:
     # Look for nssm.exe in PATH or alongside the binary.
     nssm = shutil.which("nssm") or shutil.which("nssm.exe")
     if nssm:
-        exe = sys.executable  # the frozen exe in --onefile mode
+        exe = sys.executable if paths.is_frozen() else str(paths.APP_DIR / "bot.py")
+        # Working directory must be writable (the install dir under
+        # Program Files is not), and stdout/stderr belong in the data dir.
         subprocess.run([nssm, "install", "PunishmentManager", exe], check=True)
         subprocess.run([nssm, "set", "PunishmentManager",
-                        "AppDirectory", str(BASE_DIR)], check=True)
+                        "AppDirectory", str(paths.DATA_DIR)], check=True)
+        for opt, value in (
+            ("AppStdout", str(paths.LOG_PATH.with_name("service.out.log"))),
+            ("AppStderr", str(paths.LOG_PATH.with_name("service.err.log"))),
+            ("AppRotateFiles", "1"),
+            ("AppRotateOnline", "1"),
+        ):
+            subprocess.run([nssm, "set", "PunishmentManager", opt, value],
+                           check=False, capture_output=True)
         subprocess.run([nssm, "set", "PunishmentManager",
                         "DisplayName", "Punishment Manager"], check=True)
         subprocess.run([nssm, "set", "PunishmentManager",
@@ -1615,6 +1866,15 @@ if __name__ == "__main__":
         _print_help()
         sys.exit(0)
 
+    if args and args[0] == "--version":
+        sys.stdout.write(f"Punishment Manager {paths.app_version()}\n")
+        sys.exit(0)
+
+    if args and args[0] == "--paths":
+        sys.stdout.write(f"Punishment Manager {paths.app_version()}\n")
+        sys.stdout.write(paths.describe() + "\n")
+        sys.exit(0)
+
     if args and args[0] in ("--install", "--reinstall"):
         from installer import run_installer
         sys.exit(run_installer())
@@ -1627,7 +1887,24 @@ if __name__ == "__main__":
 
     # If the bot token is missing entirely, run the interactive installer
     # first so the user doesn't have to edit JSON by hand.
-    if not resolve_token(load_config()):
+    try:
+        has_token = bool(resolve_token(load_config()))
+    except (OSError, RuntimeError) as exc:
+        # Unusable config/state location: say so plainly instead of dying with
+        # a traceback out of an import.
+        sys.stderr.write(
+            f"ERROR: cannot use the Punishment Manager files ({exc})\n"
+            f"  config: {paths.config_path()}\n"
+            f"  data:   {paths.DATA_DIR}\n"
+            "Set PUNISHMENT_MANAGER_CONFIG / PUNISHMENT_MANAGER_DATA to writable\n"
+            "paths, or run the installer with sudo (for a system service).\n"
+        )
+        sys.exit(1)
+    if not has_token:
         from installer import run_installer
-        run_installer()
+        if run_installer() == 0:
+            # Re-read, or main() would still be looking at the empty config
+            # loaded at import time and refuse to start after a successful
+            # install.
+            bot.config = load_config()
     sys.exit(main())

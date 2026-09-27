@@ -1,7 +1,7 @@
 ; NSIS installer script for the Punishment Manager.
 ;
-; Build with:
-;   makensis /DVERSION=1.0.0 /DOUTFILE="dist\PunishmentManager-Setup-1.0.0.exe" build/windows/installer.nsi
+; Build with build_windows.bat, which passes the version from the VERSION file:
+;   makensis /DVERSION=1.0.1 /DOUTFILE="dist\PunishmentManager-Setup-1.0.1.exe" build/windows/installer.nsi
 ;
 ; The PyInstaller COLLECT output (dist\punishment-manager\) is wrapped
 ; into a single Setup.exe that installs to %ProgramFiles64%.
@@ -17,7 +17,9 @@ ShowUninstDetails hide
 !define DESCRIPTION "Discord bot for temporary role-based punishments."
 
 !ifndef VERSION
-    !define VERSION "1.0.0"
+    ; Only reached when makensis is run by hand: build_windows.bat always
+    ; passes /DVERSION, taken from the VERSION file at the project root.
+    !define VERSION "0.0.0+unknown"
 !endif
 !ifndef OUTFILE
     !define OUTFILE "dist\PunishmentManager-Setup-${VERSION}.exe"

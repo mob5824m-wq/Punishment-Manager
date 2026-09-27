@@ -6,6 +6,10 @@
 #   ./scripts/make_release.sh 1.0.0
 #   ./scripts/make_release.sh 1.1.0-rc1   # prerelease
 #
+# The version must match the VERSION file at the project root, which every
+# build script reads - that is what keeps punishment-manager_<VERSION>_amd64.deb
+# and the release tag agreeing.
+#
 # Requires: git, gh (authenticated).
 set -euo pipefail
 
@@ -23,6 +27,19 @@ TAG="v${VERSION}"
 
 if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
     echo "ERROR: '$VERSION' doesn't look like a semver tag (e.g. 1.0.0, 1.0.0-rc1)."
+    exit 1
+fi
+
+# The VERSION file is the single source of truth for the artifacts' names,
+# the .app's plist and the NSIS installer - refuse to tag past it.
+if [ ! -f VERSION ]; then
+    echo "ERROR: no VERSION file at $PROJECT_ROOT." >&2
+    exit 1
+fi
+CURRENT_VERSION="$(tr -d '[:space:]' < VERSION)"
+if [ "$CURRENT_VERSION" != "$VERSION" ]; then
+    echo "ERROR: VERSION file says $CURRENT_VERSION but you asked to release $VERSION." >&2
+    echo "       Bump it first:  echo $VERSION > VERSION && git commit -am 'chore: bump version to $VERSION'" >&2
     exit 1
 fi
 

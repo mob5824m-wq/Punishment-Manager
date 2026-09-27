@@ -7,14 +7,16 @@
 #   - Either `create-dmg` (brew install create-dmg) or the built-in
 #     `hdiutil` (always present on macOS).
 #
-# Output: dist/PunishmentManager-1.0.0.dmg
+# Output: dist/PunishmentManager-<VERSION>.dmg  (version from VERSION file)
 set -euo pipefail
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 PROJECT_ROOT="$( cd "$SCRIPT_DIR/.." && pwd )"
 cd "$PROJECT_ROOT"
 
-VERSION="1.0.0"
+# shellcheck disable=SC1091
+. "$PROJECT_ROOT/scripts/pm_version.sh"
+VERSION="$(pm_version "$PROJECT_ROOT")"
 APP_NAME="Punishment Manager"
 DMG_NAME="PunishmentManager-${VERSION}.dmg"
 

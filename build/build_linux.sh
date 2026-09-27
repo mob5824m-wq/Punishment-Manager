@@ -6,17 +6,23 @@
 #   - pip install pyinstaller
 #   - dpkg, fakeroot
 #
-# Output: dist/punishment-manager_1.0.0_amd64.deb
+# Output: dist/punishment-manager_<VERSION>_amd64.deb
+#
+# The version comes from the VERSION file at the project root, so a release
+# tag and the file it produces can't disagree (see scripts/pm_version.sh).
 set -euo pipefail
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 PROJECT_ROOT="$( cd "$SCRIPT_DIR/.." && pwd )"
 cd "$PROJECT_ROOT"
 
-VERSION="1.0.0"
+# shellcheck disable=SC1091
+. "$PROJECT_ROOT/scripts/pm_version.sh"
+VERSION="$(pm_version "$PROJECT_ROOT")"
 ARCH="amd64"
 PKG_NAME="punishment-manager"
 DEB_FILE="${PKG_NAME}_${VERSION}_${ARCH}.deb"
+echo "==> Building ${PKG_NAME} ${VERSION}"
 
 echo "==> Cleaning previous PyInstaller output (keeps build/ source dir)"
 rm -rf dist
@@ -75,6 +81,15 @@ install -m 755 build/linux/prerm     "$STAGE/DEBIAN/prerm"
 # Systemd unit.
 install -m 644 build/linux/punishment-manager.service \
     "$STAGE/lib/systemd/system/punishment-manager.service"
+
+# A read-only copy of the service/desktop templates, so `punishment-manager
+# --install-service` works from the installed binary (paths.resource_path
+# looks in /usr/share/punishment-manager when the source tree isn't present).
+install -d "$STAGE/usr/share/punishment-manager/build/linux"
+install -m 644 build/linux/punishment-manager.service \
+    "$STAGE/usr/share/punishment-manager/build/linux/punishment-manager.service"
+install -m 644 build/linux/punishment-manager.desktop \
+    "$STAGE/usr/share/punishment-manager/build/linux/punishment-manager.desktop"
 
 # Desktop entry.
 install -m 644 build/linux/punishment-manager.desktop \

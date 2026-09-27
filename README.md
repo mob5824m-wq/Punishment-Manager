@@ -287,29 +287,37 @@ wraps that binary in the OS-native installer format.
 
 ### Cutting a release
 
-The release workflow is fully automated. To cut a new release, push a
-semver tag from the `main` branch:
+The release workflow is fully automated. The version lives in one place -
+the `VERSION` file at the project root - which every build script reads
+(`build_linux.sh`, `build_macos.sh`, `build_windows.bat`,
+`build/pyinstaller.spec`), so the `.deb`/`.dmg`/`.exe` filenames, the `.app`
+plist, the NSIS metadata and `punishment-manager --version` can never disagree
+with the release they belong to.
+
+Bump it, then push a semver tag from the `main` branch:
 
 ```bash
-./scripts/make_release.sh 1.0.0
-# or for a prerelease:
-./scripts/make_release.sh 1.0.0-rc1
+echo 1.0.1 > VERSION
+git commit -am "chore: bump version to 1.0.1"
+git push origin main
+
+./scripts/make_release.sh 1.0.1     # or: ./scripts/make_release.sh 1.1.0-rc1
 ```
 
-The script validates the working tree, creates an annotated `v1.0.0`
-tag, and pushes it. Pushing the tag triggers `.github/workflows/release.yml`,
+The script checks that the tag matches `VERSION`, validates the working
+tree, creates an annotated `v1.0.1` tag, and pushes it. Pushing the tag triggers `.github/workflows/release.yml`,
 which builds all three platforms in parallel and attaches the artifacts
 to a new GitHub Release.
 
 You can also just run the same commands by hand:
 
 ```bash
-git tag -a v1.0.0 -m "Release 1.0.0"
-git push origin v1.0.0
+git tag -a v1.0.1 -m "Release 1.0.1"
+git push origin v1.0.1
 ```
 
 Either way, the release page appears at
-`https://github.com/mob5824m-wq/Punishment-Manager/releases/tag/v1.0.0`
+`https://github.com/mob5824m-wq/Punishment-Manager/releases/tag/v1.0.1`
 a few minutes later with the `.dmg`, `.deb`, and `.exe` ready to
 download.
 
@@ -395,10 +403,58 @@ arguments — it will auto-run the installer on first launch.
 
 ## 8. Files
 
+### Where config, database and logs live
+
+Running from a source checkout keeps everything in the repo (`./data`,
+`./config.json`). A **packaged install must not write next to the binary** -
+`/opt/punishment-manager`, `C:\Program Files\Punishment Manager` and the
+macOS `.app` are read-only (and world-readable, which would leak the token),
+so `paths.py` picks a writable location at startup:
+
+| Install          | Data (db + log)                                             | Config read from                                        |
+|------------------|-------------------------------------------------------------|----------------------------------------------------------|
+| source checkout  | `./data/`                                                    | `./config.json`                                          |
+| Linux (`.deb`)   | `/var/lib/punishment-manager`, else `$XDG_STATE_HOME/punishment-manager`, else `~/.local/state/punishment-manager` | `~/.local/state/.../config.json`, then `/etc/punishment-manager/config.json` |
+| macOS (`.dmg`)   | `~/Library/Application Support/Punishment Manager`           | there, else `/Library/Application Support/Punishment Manager` |
+| Windows          | `%LOCALAPPDATA%\Punishment Manager`, else the install dir    | there, else `config.json` next to `punishment-manager.exe` |
+
+The first writable candidate wins; if none is writable it falls back to a
+temp dir and says so in the log. A config that exists but is read-only (the
+`.deb` ships one in `/etc`, mode `0640 root:punishment-manager`) is read from
+there, and the first save copies it to the writable data dir - which then
+takes precedence.
+
+Print the resolved locations any time:
+
+```bash
+punishment-manager --paths        # or: python3 bot.py --paths
+punishment-manager --version      # which build is actually installed
+```
+
+Or pin them explicitly (useful for containers and custom service units):
+
+```bash
+PUNISHMENT_MANAGER_HOME=/srv/pm punishment-manager      # data + config base
+PUNISHMENT_MANAGER_DATA=/srv/pm/data ...                # db + log dir only
+PUNISHMENT_MANAGER_CONFIG=/etc/punishment-manager/config.json ...
+```
+
+Because the systemd service runs as the `punishment-manager` user, configure
+it with `sudo` so the file lands where the service can read it:
+
+```bash
+sudo punishment-manager --install     # writes /var/lib or /etc, service-visible
+sudo systemctl start punishment-manager
+```
+
+Running the installer as your own user only configures *your* user (the
+installer tells you when that's the case).
+
 ```
 Punishment-Manager/
 ├── bot.py                  # the bot
 ├── installer.py            # interactive first-run installer
+├── paths.py                # where config/db/logs live at runtime
 ├── requirements.txt
 ├── config.json             # token + per-guild role config
 ├── .gitignore
@@ -422,13 +478,35 @@ Punishment-Manager/
 │   │   └── com.arena.punishment-manager.plist
 │   └── windows/
 │       └── installer.nsi
-└── data/                   # created at runtime
+├── tests/
+│   └── test_paths.py        # packaged-install path resolution (read-only app dir)
+└── data/                    # created at runtime, source checkouts only
     ├── punishments.db
     └── bot.log
 ```
 
+```bash
+python3 -m pytest tests/test_paths.py -q   # or: python3 tests/test_paths.py
+```
+
 ## 9. Troubleshooting
 
+* **`PermissionError: [Errno 13] Permission denied:
+  '/opt/punishment-manager/_internal/data'`** at startup, usually followed by
+  `[PYI-...:ERROR] Failed to execute script 'bot'` — that build predates
+  `paths.py` and tried to create its data directory inside the read-only
+  install tree. Update to a build that ships `paths.py` (state then lives in
+  `/var/lib/punishment-manager`, or your user's state dir). On the old build
+  you can work around it:
+
+  ```bash
+  sudo mkdir -p /var/lib/punishment-manager
+  sudo chown punishment-manager:punishment-manager /var/lib/punishment-manager
+  sudo PUNISHMENT_MANAGER_DATA=/var/lib/punishment-manager punishment-manager
+  ```
+
+  `punishment-manager --paths` prints where the current build keeps its
+  files.
 * **"Installer exited without saving a config"** — re-run
   `python3 installer.py` and answer the prompts. If your terminal hides
   input (e.g. when piping from a file), the token will be read as empty

@@ -11,8 +11,10 @@ Asks the user for:
   - staff_channel_id   (optional; where staff get embed notifications)
   - dm_user            (whether to DM the punished user an embed)
 
-Writes everything to config.json in the project root. Re-runnable: any
-field the user skips is left as it was.
+Writes everything to config.json - in the project root when running from
+source, or in the writable state directory when running an installed build
+(see paths.py; the app dir is read-only there). Re-runnable: any field the
+user skips is left as it was.
 
 Cross-platform: uses only the standard library, no `readline` magic.
 """
@@ -26,9 +28,20 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
+import paths
 
-BASE_DIR = Path(__file__).resolve().parent
-CONFIG_PATH = BASE_DIR / "config.json"
+
+BASE_DIR = paths.APP_DIR          # read-only in packaged builds
+
+
+def config_path() -> Path:
+    """The config file this run reads (may be a read-only system file).
+
+    Deliberately a function: saves go through paths.write_config(), which can
+    redirect writes to a writable copy, and a module-level constant would keep
+    pointing at the file that was read.
+    """
+    return paths.config_path()
 
 
 # --------------------------------------------------------------------------- #
@@ -133,25 +146,56 @@ How to find the values:
 
 
 def _load_existing() -> dict:
-    if not CONFIG_PATH.exists():
+    cfg_file = paths.config_path()
+    if not cfg_file.is_file():
         return {}
     try:
-        with CONFIG_PATH.open("r", encoding="utf-8") as f:
-            return json.load(f)
-    except (OSError, json.JSONDecodeError):
-        print(f"  (Existing {CONFIG_PATH} is unreadable; starting fresh.)")
+        return paths.load_config_dict()
+    except (OSError, RuntimeError) as exc:
+        print(f"  (Existing {cfg_file} is unreadable: {exc}; starting fresh.)")
         return {}
 
 
-def _save(cfg: dict) -> None:
-    with CONFIG_PATH.open("w", encoding="utf-8") as f:
-        json.dump(cfg, f, indent=2)
-    # Also chmod 600 so the token isn't world-readable on multi-user systems.
+def _save(cfg: dict) -> Optional[Path]:
+    """Persist the config. Returns None if it could not be written."""
     try:
-        os.chmod(CONFIG_PATH, 0o600)
-    except (OSError, NotImplementedError):
-        pass
-    print(f"  Wrote {CONFIG_PATH}")
+        written = paths.write_config(cfg)
+    except OSError as exc:
+        print(
+            f"\n  ERROR: could not write config ({exc}).\n"
+            f"  Tried: {paths.config_write_path()}\n"
+            "  Re-run with sudo, or set PUNISHMENT_MANAGER_CONFIG to a\n"
+            "  writable path, e.g.:\n"
+            "    PUNISHMENT_MANAGER_CONFIG=~/pm-config.json sudo -E punishment-manager --install\n"
+        )
+        return None
+    print(f"  Wrote {written}")
+    if _service_will_miss_it(written):
+        print(
+            f"  NOTE: the punishment-manager service runs as its own user and reads\n"
+            f"  /var/lib/{paths.APP_NAME} or /etc/{paths.APP_NAME}, not this file.\n"
+            "  To configure the service, re-run the installer with sudo:\n"
+            f"    sudo {Path(sys.argv[0]).name} --install\n"
+        )
+    return written
+
+
+def _service_will_miss_it(written: Path) -> bool:
+    """True when we saved somewhere the systemd service won't read.
+
+    Only meaningful for the packaged Linux install, where the unit runs as
+    the `punishment-manager` user (macOS uses a per-user launchd agent and
+    Windows a per-service account, both of which read the user's own files).
+    """
+    if os.name == "nt" or sys.platform == "darwin" or not paths.is_frozen():
+        return False
+    try:
+        if os.geteuid() == 0:
+            return False  # root writes land in /var/lib or /etc (service-visible)
+    except AttributeError:  # pragma: no cover - non-posix
+        return False
+    visible = (f"/var/lib/{paths.APP_NAME}", f"/etc/{paths.APP_NAME}")
+    return not str(written).startswith(visible)
 
 
 def _show_current(label: str, value: Any) -> str:
@@ -164,6 +208,8 @@ def _show_current(label: str, value: Any) -> str:
 
 def run_installer() -> int:
     print(WELCOME)
+    print(f"Config file: {paths.config_path()}")
+    print(f"Data files:  {paths.DATA_DIR}\n")
 
     cfg = _load_existing()
 
@@ -249,12 +295,19 @@ def run_installer() -> int:
         print("Aborted. No files were changed.")
         return 1
 
-    _save(cfg)
+    if _save(cfg) is None:
+        return 1
+
     print(
         "\nDone. Run the bot with:\n"
         "  ./scripts/run_mac.sh    (macOS)\n"
         "  ./scripts/run_linux.sh  (Linux)\n"
         "  scripts\\run_windows.bat (Windows)\n"
+        "  punishment-manager      (installed build)\n"
+        "\nConfig: "
+        f"{paths.config_path()}\n"
+        "Data:   "
+        f"{paths.DATA_DIR}\n"
     )
     return 0
 
