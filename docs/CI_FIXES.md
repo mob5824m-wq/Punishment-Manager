@@ -23,11 +23,11 @@ plist and the NSIS metadata always match the tag.
 
 ```bash
 # 1. Bump the version and land it on main.
-echo 2.1.0 > VERSION
-git commit -am "chore: bump version to 2.1.0" && git push origin main
+echo 2.1.1 > VERSION
+git commit -am "chore: bump version to 2.1.1" && git push origin main
 
 # 2. Tag it - this runs release.yml end to end.
-./scripts/make_release.sh 2.1.0     # refuses to tag if VERSION disagrees
+./scripts/make_release.sh 2.1.1     # refuses to tag if VERSION disagrees
 ```
 
 To fall back to a manual release (only needed if release.yml breaks again):
@@ -302,10 +302,40 @@ build rather than a nearby checkout. `make_release.sh` refuses to tag when the
 tag and the file disagree. `tests/test_version.py` fails if any of those
 scripts hardcodes a version again.
 
+### 14. An inaccessible path candidate ended the search (v2.1.1)
+
+**Problem:** before Python 3.13 (the builds use 3.11), `Path.exists()` /
+`is_file()` only swallow `ENOENT`/`ENOTDIR`/`EBADF`/`ELOOP` and raise
+everything else - notably `EACCES` for a path under a directory the user may
+not traverse. The `.deb`'s `postinst` makes `/etc/punishment-manager`
+`0750 root:punishment-manager`, so for anyone outside that group (typically a
+portable/unzipped build run next to a `.deb` install) the
+`/etc/punishment-manager/config.json` candidate raised `PermissionError` out of
+`_pick_config_path()`'s loop. v2.1.0 was still safe to run - the import-time
+guard caught it - but every candidate *after* the inaccessible one was dropped
+(the portable install's own `<app dir>/config.json` was never tried and an
+empty default was created in the data dir instead), and the note was
+mislabelled `WARNING: config resolution failed (...)`. The data-dir loop had
+the same bug: an inaccessible `$XDG_STATE_HOME` candidate demoted the bot to
+the temp-dir fallback with "data directory resolution failed".
+
+**Fix:** `paths._inspect()` classifies a path without raising
+(`dir`/`file`/`other`/`missing`/`inaccessible` plus the OS reason) and backs
+every probe in the resolution code. Both loops skip an inaccessible candidate
+with an accurate per-candidate note (`... cannot be accessed (Permission
+denied); using another location` / `Config candidate ... cannot be accessed
+(...); skipped`) and carry on; the import-time `except` clauses are a true
+last resort again.
+
+**Regression gate:** `tests/test_paths.py::InaccessibleCandidateTests`
+re-creates a portable install next to a locked system config dir and a locked
+per-user state dir (skipped as root / on Windows like the other permission-bit
+fixtures).
+
 ## Test gate in CI
 
 `build.yml` (all three platforms) and `release.yml` (linux) run
-`python -m pytest tests`, which covers runtime path resolution (fix 12) and
+`python -m pytest tests`, which covers runtime path resolution (fixes 12 and 14) and
 the version plumbing (fix 13). Both suites are plain `unittest`, so they also
 run standalone: `python tests/test_paths.py`.
 
