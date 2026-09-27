@@ -31,6 +31,13 @@ Config file, first that exists wins (so the .deb's read-only
 data dir. A config found in a read-only place is *copied on write* into the
 data dir, which then takes precedence on later runs.
 
+A candidate we cannot even look at - because it sits under a directory we may
+not traverse, e.g. the .deb's ``0750 root:punishment-manager``
+``/etc/punishment-manager`` seen by a user outside that group running a
+portable build - is skipped with a note and the search continues with the
+later candidates (``<app dir>/config.json``, ``~/.punishment-manager``, ...).
+It never aborts the search or demotes the bot to the temp-dir fallback.
+
 Everything here is standard-library only and import-safe: it never raises, and
 never writes outside a directory it has verified is writable. Call ``describe()``
 or run ``punishment-manager --paths`` to see the resolved locations.
@@ -142,7 +149,7 @@ def resource_path(*parts: str) -> Optional[Path]:
             cand = root.joinpath(*parts)
         except (OSError, ValueError):
             continue
-        if cand.is_file():
+        if _is_file(cand):
             return cand
     return None
 
@@ -157,23 +164,76 @@ def _home() -> Optional[Path]:
         return None
 
 
+def _inspect(path: Path) -> tuple[str, str]:
+    """Classify `path` without ever raising: ``(kind, reason)``.
+
+    ``kind`` is ``"dir"``, ``"file"`` or ``"other"`` when the path exists,
+    ``"missing"`` when it doesn't, and ``"inaccessible"`` when we can't even
+    tell - typically ``EACCES`` from a parent directory we may not traverse
+    (the .deb's ``0750 root:punishment-manager`` ``/etc/punishment-manager``
+    as seen by a user outside that group). ``reason`` is the OS error text
+    for that last case, for the startup note.
+
+    Before Python 3.13 ``Path.exists()`` / ``is_file()`` only swallow
+    ``ENOENT``/``ENOTDIR``/``EBADF``/``ELOOP`` and raise everything else, so a
+    single inaccessible candidate used to escape the resolution loops below
+    and every candidate after it was dropped.
+    """
+    try:
+        st = path.stat()
+    except (FileNotFoundError, NotADirectoryError):
+        return "missing", ""
+    except (OSError, ValueError) as exc:
+        return "inaccessible", getattr(exc, "strerror", None) or str(exc)
+    if stat.S_ISDIR(st.st_mode):
+        return "dir", ""
+    if stat.S_ISREG(st.st_mode):
+        return "file", ""
+    return "other", ""
+
+
+def _exists(path: Path) -> bool:
+    """``path.exists()`` that treats an inaccessible path as absent."""
+    return _inspect(path)[0] in ("dir", "file", "other")
+
+
+def _is_dir(path: Path) -> bool:
+    return _inspect(path)[0] == "dir"
+
+
+def _is_file(path: Path) -> bool:
+    return _inspect(path)[0] == "file"
+
+
+def _who() -> str:
+    """Who we are, for the 'not writable/readable by ...' notes."""
+    return f"uid {os.getuid()}" if hasattr(os, "getuid") else "this user"
+
+
 def _nearest_existing(path: Path) -> Optional[Path]:
     probe = path
-    while not probe.exists() and probe.parent != probe:
+    while not _exists(probe) and probe.parent != probe:
         probe = probe.parent
-    return probe if probe.exists() else None
+    return probe if _exists(probe) else None
 
 
 def _dir_usable(path: Path) -> bool:
     """True if `path` is a writable dir or can be created by us."""
-    if path.exists():
-        return path.is_dir() and os.access(path, os.W_OK | os.X_OK)
+    kind, _ = _inspect(path)
+    if kind == "inaccessible":
+        return False
+    if kind != "missing":
+        return kind == "dir" and os.access(path, os.W_OK | os.X_OK)
     ancestor = _nearest_existing(path)
     return ancestor is not None and os.access(ancestor, os.W_OK | os.X_OK)
 
 
 def ensure_writable(path: Path) -> Optional[Path]:
-    """Create `path` if needed. Return it, or None when it isn't usable."""
+    """Create `path` if needed. Return it, or None when it isn't usable.
+
+    Never raises: an unusable *or inaccessible* location is just ``None``, so
+    the callers' candidate loops move on to the next one.
+    """
     path = Path(path).expanduser()
     if not _dir_usable(path):
         return None
@@ -181,7 +241,7 @@ def ensure_writable(path: Path) -> Optional[Path]:
         path.mkdir(parents=True, exist_ok=True)
     except (OSError, ValueError):
         return None
-    if path.is_dir() and os.access(path, os.W_OK):
+    if _is_dir(path) and os.access(path, os.W_OK):
         return path
     return None
 
@@ -298,11 +358,16 @@ def _pick_data_dir() -> tuple[Path, list[str]]:
             _tighten_private_dir(ready)
             _import_legacy_state(ready, notes)
             return ready, notes
-        if cand.exists():
-            notes.append(
-                f"{cand} exists but is not writable by uid "
-                f"{os.getuid() if hasattr(os, 'getuid') else 'this user'}; using another location."
-            )
+        # Say precisely why this one was passed over. An inaccessible
+        # candidate (parent dir we can't traverse) is skipped like any other,
+        # not reported as the whole resolution failing.
+        kind, why = _inspect(cand)
+        if kind == "inaccessible":
+            notes.append(f"{cand} cannot be accessed ({why}); using another location.")
+        elif kind == "dir":
+            notes.append(f"{cand} exists but is not writable by {_who()}; using another location.")
+        elif kind != "missing":
+            notes.append(f"{cand} exists but is not a directory; using another location.")
         else:
             notes.append(f"{cand} could not be created; using another location.")
     fallback = ensure_writable(Path(tempfile.gettempdir()) / APP_NAME)
@@ -341,9 +406,9 @@ def _import_legacy_state(data_dir: Path, notes: list[str]) -> None:
     when the new location has none.
     """
     new_db = data_dir / "punishments.db"
-    if not is_frozen() or new_db.exists():
+    if not is_frozen() or _exists(new_db):
         return  # source runs already use <repo>/data as the first candidate
-    legacy_db = next((p for p in (d / "punishments.db" for d in _legacy_data_dirs()) if p.is_file()), None)
+    legacy_db = next((p for p in (d / "punishments.db" for d in _legacy_data_dirs()) if _is_file(p)), None)
     if legacy_db is None:
         return
     try:
@@ -380,18 +445,31 @@ def config_candidates(data_dir: Path) -> list[Path]:
     return _dedupe(cands)
 
 
-def _pick_config_path(data_dir: Path) -> Path:
-    cands = config_candidates(data_dir)
-    for cand in cands:
-        if cand.is_file() and os.access(cand, os.R_OK):
-            return cand
+def _pick_config_path(data_dir: Path) -> tuple[Path, list[str]]:
+    """First readable config candidate, plus notes about any passed over.
+
+    A candidate we can't read - or can't even look at, because it sits in a
+    directory we may not traverse (a portable build run by a user outside
+    the .deb's ``punishment-manager`` group, next to its ``0750``
+    ``/etc/punishment-manager``) - is skipped with a note, and the search
+    carries on to the later candidates such as ``<app dir>/config.json``.
+    """
+    notes: list[str] = []
+    for cand in config_candidates(data_dir):
+        kind, why = _inspect(cand)
+        if kind == "file" and os.access(cand, os.R_OK):
+            return cand, notes
+        if kind == "inaccessible":
+            notes.append(f"Config candidate {cand} cannot be accessed ({why}); skipped.")
+        elif kind == "file":
+            notes.append(f"Config candidate {cand} exists but is not readable by {_who()}; skipped.")
     # Nothing exists yet: create it in the data dir, except for a source
     # checkout where ./config.json next to bot.py is what everyone expects.
     if not is_frozen():
         repo_cfg = APP_DIR / "config.json"
         if ensure_writable(repo_cfg.parent) is not None:
-            return repo_cfg
-    return data_dir / "config.json"
+            return repo_cfg, notes
+    return data_dir / "config.json", notes
 
 
 def config_path() -> Path:
@@ -407,7 +485,7 @@ def config_write_path() -> Path:
     root-owned), the writable copy in the data dir is used instead.
     """
     cfg = CONFIG_PATH
-    if cfg.is_file():
+    if _is_file(cfg):
         if os.access(cfg, os.W_OK):
             return cfg
     elif ensure_writable(cfg.parent) is not None:
@@ -418,7 +496,7 @@ def config_write_path() -> Path:
 def load_config_dict(default: Optional[dict] = None) -> dict[str, Any]:
     """Read config.json, creating `default` (or {}) at a writable location."""
     cfg_path = CONFIG_PATH
-    if not cfg_path.is_file():
+    if not _is_file(cfg_path):
         target = config_write_path()
         _write_json(target, dict(default or {}))
         _adopt(target)
@@ -551,8 +629,9 @@ except Exception as exc:  # pragma: no cover - defensive: import must not fail
     _NOTES.append(f"WARNING: data directory resolution failed ({exc}); using {DATA_DIR}.")
 
 try:
-    CONFIG_PATH = _pick_config_path(DATA_DIR)
-except Exception as exc:  # pragma: no cover
+    CONFIG_PATH, _notes = _pick_config_path(DATA_DIR)
+    _NOTES.extend(_notes)
+except Exception as exc:  # pragma: no cover - defensive: import must not fail
     CONFIG_PATH = DATA_DIR / "config.json"
     _NOTES.append(f"WARNING: config resolution failed ({exc}); using {CONFIG_PATH}.")
 
@@ -597,7 +676,7 @@ def describe() -> str:
         f"data dir      : {DATA_DIR}",
         f"database      : {DB_PATH}",
         f"log file      : {LOG_PATH}",
-        f"config (read) : {CONFIG_PATH}{'  [exists]' if CONFIG_PATH.is_file() else '  [not created yet]'}",
+        f"config (read) : {CONFIG_PATH}{'  [exists]' if _is_file(CONFIG_PATH) else '  [not created yet]'}",
         f"config (write): {config_write_path()}",
     ]
     if _NOTES:
