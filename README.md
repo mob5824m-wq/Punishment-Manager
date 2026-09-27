@@ -55,7 +55,13 @@ Pre-built native installers are attached to every GitHub release:
 
 Releases are produced automatically by GitHub Actions whenever a
 `v*` tag is pushed. See `.github/workflows/release.yml` for the
-build pipeline.
+build pipeline, and the `VERSION` file for where the number comes from.
+
+> **Use v2.1.0 or newer.** The v1.0.0 and v2.0.0 installers crash on first
+> launch on a packaged install (`PermissionError: [Errno 13] Permission
+> denied: '/opt/punishment-manager/_internal/data'`), because they tried to
+> create their database and log inside the read-only install directory. v2.1.0
+> stores that state in a writable per-platform location instead.
 
 ---
 
@@ -297,27 +303,27 @@ with the release they belong to.
 Bump it, then push a semver tag from the `main` branch:
 
 ```bash
-echo 1.0.1 > VERSION
-git commit -am "chore: bump version to 1.0.1"
+echo 2.1.0 > VERSION
+git commit -am "chore: bump version to 2.1.0"
 git push origin main
 
-./scripts/make_release.sh 1.0.1     # or: ./scripts/make_release.sh 1.1.0-rc1
+./scripts/make_release.sh 2.1.0     # or: ./scripts/make_release.sh 2.2.0-rc1
 ```
 
 The script checks that the tag matches `VERSION`, validates the working
-tree, creates an annotated `v1.0.1` tag, and pushes it. Pushing the tag triggers `.github/workflows/release.yml`,
+tree, creates an annotated `v2.1.0` tag, and pushes it. Pushing the tag triggers `.github/workflows/release.yml`,
 which builds all three platforms in parallel and attaches the artifacts
 to a new GitHub Release.
 
 You can also just run the same commands by hand:
 
 ```bash
-git tag -a v1.0.1 -m "Release 1.0.1"
-git push origin v1.0.1
+git tag -a v2.1.0 -m "Release 2.1.0"
+git push origin v2.1.0
 ```
 
 Either way, the release page appears at
-`https://github.com/mob5824m-wq/Punishment-Manager/releases/tag/v1.0.1`
+`https://github.com/mob5824m-wq/Punishment-Manager/releases/tag/v2.1.0`
 a few minutes later with the `.dmg`, `.deb`, and `.exe` ready to
 download.
 
