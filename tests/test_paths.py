@@ -206,6 +206,41 @@ class FrozenBuildTests(unittest.TestCase):
         self.assertEqual(res.returncode, 0, msg=res.stderr or res.stdout)
         self.assertEqual(Path(res.stdout.strip()), self.sb.app)
 
+    def test_unreadable_config_candidate_falls_back_to_user_state(self) -> None:
+        # A normal user cannot traverse the .deb's /etc/punishment-manager
+        # directory (it is private to the service group). That must skip the
+        # system config, not abort all config resolution.
+        private = self.sb.tmp / "private-config"
+        private.mkdir()
+        config = private / "config.json"
+        config.write_text(json.dumps({"bot_token": "service-only"}), encoding="utf-8")
+        user_state = self.sb.home / "user-state"
+        private.chmod(0)
+        try:
+            code = (
+                "import paths\n"
+                "paths.load_config_dict()\n"
+                "print(paths.config_path())\n"
+                "print(paths.startup_notes())\n"
+            )
+            res = self.sb.run_python(
+                code,
+                extra_env={
+                    "PUNISHMENT_MANAGER_CONFIG": str(config),
+                    "PUNISHMENT_MANAGER_DATA": str(user_state),
+                },
+            )
+        finally:
+            private.chmod(0o700)
+
+        self.assertEqual(res.returncode, 0, msg=res.stderr or res.stdout)
+        lines = res.stdout.splitlines()
+        self.assertEqual(Path(lines[0]), user_state / "config.json")
+        self.assertIn("Could not inspect config candidate", res.stdout)
+        self.assertIn("Permission denied", res.stdout)
+        self.assertNotIn("config resolution failed", res.stdout + res.stderr)
+        self.assertTrue(Path(lines[0]).is_file())
+
     def test_legacy_db_next_to_executable_is_carried_over(self) -> None:
         # Pre-fix portable installs kept their history in <app dir>/data.
         self.sb.unlock()

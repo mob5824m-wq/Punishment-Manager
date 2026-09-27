@@ -354,14 +354,24 @@ Requirements: Python 3.9+, `pyinstaller`, `dpkg`, `fakeroot`,
 ```bash
 build/build_linux.sh
 sudo dpkg -i dist/punishment-manager_1.0.0_amd64.deb
-sudo systemctl start punishment-manager
 ```
 
 The package installs the bot to `/opt/punishment-manager/`, symlinks
 the binary into `/usr/bin/`, registers a desktop entry, and installs
 a systemd unit (`/lib/systemd/system/punishment-manager.service`).
-The unit is enabled (not started) by `postinst`; the user runs the
-bot once to configure it, then enables the service.
+The unit is enabled (not started) by `postinst`. It runs as the dedicated
+`punishment-manager` account, so configure the service as root before starting
+it:
+
+```bash
+sudo punishment-manager --install
+sudo systemctl start punishment-manager
+```
+
+Running `punishment-manager` directly as an ordinary user is separate from the
+system service: it uses that user's state/config, and intentionally cannot read
+the service-only config in `/etc/punishment-manager` or write under
+`/var/lib/punishment-manager`.
 
 ### Windows
 
@@ -420,14 +430,16 @@ so `paths.py` picks a writable location at startup:
 | Install          | Data (db + log)                                             | Config read from                                        |
 |------------------|-------------------------------------------------------------|----------------------------------------------------------|
 | source checkout  | `./data/`                                                    | `./config.json`                                          |
-| Linux (`.deb`)   | `/var/lib/punishment-manager`, else `$XDG_STATE_HOME/punishment-manager`, else `~/.local/state/punishment-manager` | `~/.local/state/.../config.json`, then `/etc/punishment-manager/config.json` |
+| Linux (`.deb`)   | Service: `/var/lib/punishment-manager`; ordinary user: `$XDG_STATE_HOME/punishment-manager`, else `~/.local/state/punishment-manager` | Service: `/var/lib/punishment-manager/config.json`, then `/etc/punishment-manager/config.json`; ordinary user: their own state config, then any readable system config |
 | macOS (`.dmg`)   | `~/Library/Application Support/Punishment Manager`           | there, else `/Library/Application Support/Punishment Manager` |
 | Windows          | `%LOCALAPPDATA%\Punishment Manager`, else the install dir    | there, else `config.json` next to `punishment-manager.exe` |
 
 The first writable candidate wins; if none is writable it falls back to a
-temp dir and says so in the log. A config that exists but is read-only (the
-`.deb` ships one in `/etc`, mode `0640 root:punishment-manager`) is read from
-there, and the first save copies it to the writable data dir - which then
+temp dir and says so in the log. The `.deb` ships a config in `/etc` with
+`0640 root:punishment-manager` permissions. Root and the service account can
+read it; an unrelated user cannot, so a direct unprivileged launch skips that
+system config and uses the user's own config. When the service account saves a
+read-only system config, it copies it to its writable data dir, which then
 takes precedence.
 
 Print the resolved locations any time:
