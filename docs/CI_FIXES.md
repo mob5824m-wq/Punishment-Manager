@@ -12,8 +12,8 @@
 The `build.yml` CI build is fully working on all three platforms, and so is
 `release.yml`: the matrix bug described under ~~"The open bug"~~ below was
 applied to `main` (three explicit per-platform jobs), so pushing a `v*` tag
-now builds the installers and attaches them to the release by itself. That is
-how **v1.0.1** was cut - the first release produced entirely by CI.
+builds the installers and attaches them to the release by itself - as it did
+for v2.0.0, and again for **v2.1.0** (the crash fix below).
 
 ## How a release is cut
 
@@ -23,11 +23,11 @@ plist and the NSIS metadata always match the tag.
 
 ```bash
 # 1. Bump the version and land it on main.
-echo 1.0.1 > VERSION
-git commit -am "chore: bump version to 1.0.1" && git push origin main
+echo 2.1.0 > VERSION
+git commit -am "chore: bump version to 2.1.0" && git push origin main
 
 # 2. Tag it - this runs release.yml end to end.
-./scripts/make_release.sh 1.0.1     # refuses to tag if VERSION disagrees
+./scripts/make_release.sh 2.1.0     # refuses to tag if VERSION disagrees
 ```
 
 To fall back to a manual release (only needed if release.yml breaks again):
