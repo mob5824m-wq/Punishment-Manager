@@ -287,29 +287,37 @@ wraps that binary in the OS-native installer format.
 
 ### Cutting a release
 
-The release workflow is fully automated. To cut a new release, push a
-semver tag from the `main` branch:
+The release workflow is fully automated. The version lives in one place -
+the `VERSION` file at the project root - which every build script reads
+(`build_linux.sh`, `build_macos.sh`, `build_windows.bat`,
+`build/pyinstaller.spec`), so the `.deb`/`.dmg`/`.exe` filenames, the `.app`
+plist, the NSIS metadata and `punishment-manager --version` can never disagree
+with the release they belong to.
+
+Bump it, then push a semver tag from the `main` branch:
 
 ```bash
-./scripts/make_release.sh 1.0.0
-# or for a prerelease:
-./scripts/make_release.sh 1.0.0-rc1
+echo 1.0.1 > VERSION
+git commit -am "chore: bump version to 1.0.1"
+git push origin main
+
+./scripts/make_release.sh 1.0.1     # or: ./scripts/make_release.sh 1.1.0-rc1
 ```
 
-The script validates the working tree, creates an annotated `v1.0.0`
-tag, and pushes it. Pushing the tag triggers `.github/workflows/release.yml`,
+The script checks that the tag matches `VERSION`, validates the working
+tree, creates an annotated `v1.0.1` tag, and pushes it. Pushing the tag triggers `.github/workflows/release.yml`,
 which builds all three platforms in parallel and attaches the artifacts
 to a new GitHub Release.
 
 You can also just run the same commands by hand:
 
 ```bash
-git tag -a v1.0.0 -m "Release 1.0.0"
-git push origin v1.0.0
+git tag -a v1.0.1 -m "Release 1.0.1"
+git push origin v1.0.1
 ```
 
 Either way, the release page appears at
-`https://github.com/mob5824m-wq/Punishment-Manager/releases/tag/v1.0.0`
+`https://github.com/mob5824m-wq/Punishment-Manager/releases/tag/v1.0.1`
 a few minutes later with the `.dmg`, `.deb`, and `.exe` ready to
 download.
 
@@ -420,6 +428,7 @@ Print the resolved locations any time:
 
 ```bash
 punishment-manager --paths        # or: python3 bot.py --paths
+punishment-manager --version      # which build is actually installed
 ```
 
 Or pin them explicitly (useful for containers and custom service units):

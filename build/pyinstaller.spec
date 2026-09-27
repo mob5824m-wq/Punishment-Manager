@@ -33,10 +33,27 @@ PROJECT_ROOT = Path(SPECPATH).resolve().parent
 SOURCES = [
     str(PROJECT_ROOT / 'bot.py'),
 ]
+def _read_version() -> str:
+    """Version for this bundle, from the VERSION file at the project root.
+
+    It is also bundled as a data file so `punishment-manager --version`
+    reports the version of the build that is actually installed, not of
+    whatever source tree happens to be around.
+    """
+    try:
+        version = (PROJECT_ROOT / 'VERSION').read_text(encoding='utf-8').strip()
+    except OSError:
+        version = ''
+    return version or '0.0.0+unknown'
+
+
+VERSION = _read_version()
+
 DATA_FILES = [
     # Bundle installer.py alongside the binary so the main entry point
     # can `import installer` at runtime.
     (str(PROJECT_ROOT / 'installer.py'), '.'),
+    (str(PROJECT_ROOT / 'VERSION'), '.'),
 ]
 
 # Service-unit / launchd-plist templates, so `--install-service` works from
@@ -136,8 +153,8 @@ if IS_MACOS:
         info_plist={
             'CFBundleName': 'Punishment Manager',
             'CFBundleDisplayName': 'Punishment Manager',
-            'CFBundleShortVersionString': '1.0.0',
-            'CFBundleVersion': '1.0.0',
+            'CFBundleShortVersionString': VERSION,
+            'CFBundleVersion': VERSION,
             'CFBundleExecutable': 'punishment-manager',
             'NSHighResolutionCapable': True,
             'LSMinimumSystemVersion': '10.13',

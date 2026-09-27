@@ -8,15 +8,29 @@ REM   - NSIS 3.x in PATH (download from https://nsis.sourceforge.io)
 REM   - Optional: a code-signing certificate in the Windows certificate
 REM     store. If present, signtool will sign the installer.
 REM
-REM Output: dist\PunishmentManager-Setup-1.0.0.exe
+REM Output: dist\PunishmentManager-Setup-<VERSION>.exe
+REM
+REM The version comes from the VERSION file at the project root (same source
+REM as build_linux.sh / build_macos.sh / pyinstaller.spec), so a release tag
+REM and the installer it produces can't disagree. PM_VERSION overrides it.
 setlocal enableextensions enabledelayedexpansion
 
 set "SCRIPT_DIR=%~dp0"
 pushd "%SCRIPT_DIR%.." || exit /b 1
 
-set "VERSION=1.0.0"
+if defined PM_VERSION (
+    set "VERSION=%PM_VERSION%"
+) else (
+    rem First line of the VERSION file; `for /f` trims the CRLF.
+    set "VERSION="
+    for /f "usebackq tokens=* delims=" %%v in ("VERSION") do (
+        if not defined VERSION set "VERSION=%%v"
+    )
+    if not defined VERSION set "VERSION=0.0.0+unknown"
+)
 set "INSTALLER_NAME=PunishmentManager-Setup-%VERSION%.exe"
 
+echo ==^> Building Punishment Manager %VERSION%
 echo ==^> Cleaning previous PyInstaller output (keeps build\ source dir)
 if exist dist rmdir /s /q dist
 mkdir dist

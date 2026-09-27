@@ -68,6 +68,7 @@ def _report_path_notes() -> None:
 
 def _log_path_notes() -> None:
     """Report where this run keeps its files, plus late-resolved fallbacks."""
+    logger.info("Punishment Manager %s", paths.app_version())
     _report_path_notes()
     logger.info("Data directory: %s", DATA_DIR)
 
@@ -1525,6 +1526,7 @@ def _print_help() -> None:
         "  --uninstall-service\n"
         "                    Remove the background service.\n"
         "  --paths           Print where config, database and logs live.\n"
+        "  --version         Print the version of this build.\n"
         "  --help, -h        Show this message.\n"
         "\n"
         "Files: the app directory is read-only in packaged installs, so\n"
@@ -1864,7 +1866,12 @@ if __name__ == "__main__":
         _print_help()
         sys.exit(0)
 
+    if args and args[0] == "--version":
+        sys.stdout.write(f"Punishment Manager {paths.app_version()}\n")
+        sys.exit(0)
+
     if args and args[0] == "--paths":
+        sys.stdout.write(f"Punishment Manager {paths.app_version()}\n")
         sys.stdout.write(paths.describe() + "\n")
         sys.exit(0)
 

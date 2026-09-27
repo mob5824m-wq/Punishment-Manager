@@ -9,16 +9,28 @@
 | Windows `.exe` | passing | `dist/PunishmentManager-Setup-X.Y.Z.exe` |
 | All artifacts | produced | Uploaded as workflow artifacts (3-day retention) |
 
-The `build.yml` CI build is fully working on all three platforms.
-The `release.yml` workflow is currently **broken** (see below) and
-the **v1.0.0 release** had to be created manually. See
-`.github/SETUP_WORKFLOWS.md` for the workflow state and the
-maintainer-side fix needed.
+The `build.yml` CI build is fully working on all three platforms, and so is
+`release.yml`: the matrix bug described under ~~"The open bug"~~ below was
+applied to `main` (three explicit per-platform jobs), so pushing a `v*` tag
+now builds the installers and attaches them to the release by itself. That is
+how **v1.0.1** was cut - the first release produced entirely by CI.
 
-## How a release is currently cut
+## How a release is cut
 
-Until `release.yml` is fixed, releases are created by hand. The
-recipe that produced v1.0.0:
+`VERSION` at the project root is the single source of truth for the version;
+every build script reads it (see "Fix 13"), so the artifact names, the `.app`
+plist and the NSIS metadata always match the tag.
+
+```bash
+# 1. Bump the version and land it on main.
+echo 1.0.1 > VERSION
+git commit -am "chore: bump version to 1.0.1" && git push origin main
+
+# 2. Tag it - this runs release.yml end to end.
+./scripts/make_release.sh 1.0.1     # refuses to tag if VERSION disagrees
+```
+
+To fall back to a manual release (only needed if release.yml breaks again):
 
 ```bash
 # 1. Tag the commit you want to release.
@@ -55,10 +67,14 @@ flow:
 A plain version like `1.0.0` becomes a normal release. A
 `v1.0.0-rc1` tag (anything with a hyphen) is marked prerelease.
 
-## The open bug: `release.yml` is broken
+## ~~The open bug: `release.yml` is broken~~ (resolved)
+
+**Resolved.** The corrected file is on `main` (three explicit jobs, no
+`matrix.shell`), and v1.0.1 was released through it. The original failure,
+kept for context:
 
 `release.yml` triggers on every `v*` tag push, but it never
-actually runs. GitHub rejects the workflow file at parse time:
+actually ran. GitHub rejected the workflow file at parse time:
 
 > Invalid workflow file: `.github/workflows/release.yml#L1`
 > (Line: 83, Col: 16): Unrecognized named-value: 'matrix'.
@@ -76,12 +92,11 @@ resolved, so `${{ matrix.shell }}` is not a valid value. The
 correct pattern (already used in `build.yml`) is to replace the
 matrix with three explicit per-platform jobs, one per runner.
 
-The agent's GitHub App token cannot push files into
-`.github/workflows/` (it lacks the `workflows` permission), so
-the fix has to be applied by a maintainer. The corrected
-`release.yml` is in the PR branch history; merging PR #1 (or
-applying the change by hand through the web editor) is the last
-step to make the release flow automated again.
+The agent's GitHub App token could not push files into
+`.github/workflows/` (no `workflows` permission), so a maintainer applied the
+corrected file; releases are automated again. If the permission is still
+missing on the App, `.github/workflows/*` edits must go in through the web
+editor or a maintainer's token.
 
 ## History of fixes
 
@@ -267,6 +282,32 @@ written into the install tree. It runs in `build.yml` (all three OSes) and in
 `release.yml`'s linux job, so a path regression fails the build instead of the
 customer's first launch. Read-only-permission cases skip when running as root
 or on Windows, where `chmod` can't emulate them.
+
+### 13. Version drift between the tag and the installers
+
+**Problem:** the version was hardcoded in seven places - `build_linux.sh`,
+`build_macos.sh`, `build_windows.bat`, the `pyinstaller.spec` plist, the
+macOS `Info.plist`, `installer.nsi` and the generated `.deb` control file -
+and nothing tied them to the git tag. Cutting `v1.0.1` would have shipped
+`punishment-manager_1.0.0_amd64.deb` attached to a release named v1.0.1, with
+a `.app` reporting a third version, and no way to ask a user which build they
+had installed.
+
+**Fix:** a `VERSION` file at the project root is the single source of truth.
+`scripts/pm_version.sh` resolves it (`$PM_VERSION` override > `VERSION` file >
+matching git tag > `0.0.0+unknown`) for the shell scripts, the `.bat` reads the
+file directly, and the spec reads it for the plist *and* bundles a copy so
+`punishment-manager --version` / the startup log line report the *installed*
+build rather than a nearby checkout. `make_release.sh` refuses to tag when the
+tag and the file disagree. `tests/test_version.py` fails if any of those
+scripts hardcodes a version again.
+
+## Test gate in CI
+
+`build.yml` (all three platforms) and `release.yml` (linux) run
+`python -m pytest tests`, which covers runtime path resolution (fix 12) and
+the version plumbing (fix 13). Both suites are plain `unittest`, so they also
+run standalone: `python tests/test_paths.py`.
 
 ## Other notes
 

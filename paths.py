@@ -49,6 +49,7 @@ from typing import Any, Iterable, Optional
 
 __all__ = [
     "APP_NAME",
+    "app_version",
     "APP_TITLE",
     "BUNDLE_DIR",
     "APP_DIR",
@@ -515,6 +516,24 @@ def _adopt(target: Path) -> bool:
     before = CONFIG_PATH
     CONFIG_PATH = target
     return before != target
+
+
+def app_version() -> str:
+    """Version of *this* build, from the VERSION file.
+
+    Packaged builds read the copy bundled by build/pyinstaller.spec, source
+    runs read the repo file - so `--version` describes what is installed
+    rather than whatever checkout happens to be nearby.
+    """
+    found = resource_path("VERSION")
+    if found is not None:
+        try:
+            text = found.read_text(encoding="utf-8").strip()
+        except OSError:
+            text = ""
+        if text:
+            return text
+    return "0.0.0+unknown"
 
 
 # --------------------------------------------------------------------------- #
