@@ -255,6 +255,109 @@ class FrozenBuildTests(unittest.TestCase):
         self.assertEqual(json.loads((etc / "config.json").read_text())["bot_token"], "from-system")
 
 
+class InaccessibleCandidateTests(unittest.TestCase):
+    """A candidate we may not even stat() must be skipped, not end the search.
+
+    Before Python 3.13, ``Path.exists()`` / ``is_file()`` raise PermissionError
+    for a path under a directory we can't traverse - e.g. the .deb's ``0750
+    root:punishment-manager`` ``/etc/punishment-manager`` as seen by a user
+    outside that group who runs a portable build. v2.1.0 let that escape the
+    candidate loops: every later candidate was dropped (the portable install's
+    own ``config.json``, the remaining state dirs) and the import-time guard
+    logged it as "resolution failed".
+    """
+
+    def setUp(self) -> None:
+        if NEEDS_POSIX_PERMS:
+            self.skipTest(PERMS_SKIP_REASON)
+        self.sb = _Sandbox(frozen=True)
+        self.locked: list[Path] = []
+
+    def tearDown(self) -> None:
+        for d in self.locked:  # or rmtree can't remove them
+            try:
+                d.chmod(0o755)
+            except OSError:
+                pass
+        self.sb.cleanup()
+
+    def lock(self, path: Path) -> Path:
+        path.mkdir(parents=True, exist_ok=True)
+        path.chmod(0o000)
+        self.locked.append(path)
+        return path
+
+    def test_portable_config_after_an_inaccessible_system_dir_is_used(self) -> None:
+        # Portable install: config.json next to the executable...
+        self.sb.unlock()
+        self.sb.write_config({"bot_token": "from-portable"}, where=self.sb.app)
+        self.sb.lock_readonly(self.sb.app)
+        # ...and a system config dir this user can't look into, which sorts
+        # *before* it in config_candidates().
+        etc = self.sb.tmp / "etc-punishment-manager"
+        etc.mkdir()
+        self.sb.write_config({"bot_token": "from-system"}, where=etc)
+        self.lock(etc)
+        code = (
+            "import paths\n"
+            "from pathlib import Path\n"
+            f"paths.system_config_dir = lambda: Path({str(etc)!r})\n"
+            "cands = paths.config_candidates(paths.DATA_DIR)\n"
+            "picked, notes = paths._pick_config_path(paths.DATA_DIR)\n"
+            "print(picked)\n"
+            "print(len(notes))\n"
+            "print(notes[0] if notes else '')\n"
+            f"print(cands.index(Path({str(etc / 'config.json')!r})) < cands.index(picked))\n"
+        )
+        res = self.sb.run_python(code)
+        self.assertEqual(res.returncode, 0, msg=res.stderr or res.stdout)
+        picked, n_notes, note, sorted_after = res.stdout.splitlines()
+        self.assertEqual(Path(picked), self.sb.app / "config.json")
+        self.assertEqual(sorted_after, "True")  # it really was a *later* candidate
+        self.assertEqual(n_notes, "1")
+        self.assertIn(str(etc / "config.json"), note)
+        self.assertIn("cannot be accessed", note)
+        self.assertNotIn("resolution failed", note)
+
+    def test_inaccessible_state_dir_candidate_is_skipped_not_fatal(self) -> None:
+        # Lock the parents of the per-user state dirs on Linux (~/.local/...)
+        # and macOS (~/Library/...). The next candidate, ~/.punishment-manager,
+        # must win - not the temp-dir fallback, and not a "resolution failed".
+        self.lock(self.sb.home / ".local")
+        self.lock(self.sb.home / "Library")
+        code = (
+            "import paths\n"
+            "print(paths.DATA_DIR)\n"
+            "print(paths.config_path())\n"
+            "print('|'.join(paths.startup_notes()))\n"
+            "paths.describe()\n"  # must not raise either
+        )
+        res = self.sb.run_python(code)
+        self.assertEqual(res.returncode, 0, msg=res.stderr or res.stdout)
+        data_dir, cfg_path, notes = res.stdout.splitlines()[:3]
+        self.assertEqual(Path(data_dir), self.sb.home / ".punishment-manager")
+        self.assertTrue(Path(data_dir).is_dir())
+        self.assertEqual(Path(cfg_path).parent, Path(data_dir))
+        self.assertNotEqual(Path(data_dir), Path(tempfile.gettempdir()) / "punishment-manager")
+        self.assertIn("cannot be accessed", notes)
+        self.assertNotIn("resolution failed", notes)
+        self.assertNotIn("temporary", notes)
+
+    def test_ensure_writable_never_raises_for_an_inaccessible_path(self) -> None:
+        from unittest import mock
+
+        import paths
+
+        locked = self.lock(self.sb.tmp / "locked")
+        self.assertIsNone(paths.ensure_writable(locked / "state" / "punishment-manager"))
+        self.assertIsNone(paths.ensure_writable(locked))
+        self.assertEqual(paths._inspect(locked / "anything"), ("inaccessible", "Permission denied"))
+        self.assertEqual(paths._inspect(self.sb.tmp / "nope" / "config.json"), ("missing", ""))
+        # A shipped-resource root we can't traverse must not raise either.
+        with mock.patch.object(paths, "_RESOURCE_ROOTS_POSIX", (str(locked),)):
+            self.assertIsNone(paths.resource_path("does-not-exist.service"))
+
+
 class EnvOverrideTests(unittest.TestCase):
     def setUp(self) -> None:
         self.sb = _Sandbox(app_writable=True)
