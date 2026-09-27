@@ -26,10 +26,11 @@ Data directory, first usable candidate wins
        unzipped installs keep working
     5. a temp dir - the bot still starts, and says where it put its files
 
-Config file, first that exists wins (so the .deb's read-only
-``/etc/punishment-manager/config.json`` is honoured), otherwise created in the
-data dir. A config found in a read-only place is *copied on write* into the
-data dir, which then takes precedence on later runs.
+Config file, first readable regular candidate wins (so the .deb's read-only
+``/etc/punishment-manager/config.json`` is honoured by root and the service
+account), otherwise created in the data dir. Inaccessible candidates are
+skipped. A config found in a read-only place is *copied on write* into the data
+dir, which then takes precedence on later runs.
 
 Everything here is standard-library only and import-safe: it never raises, and
 never writes outside a directory it has verified is writable. Call ``describe()``
@@ -71,6 +72,10 @@ __all__ = [
 
 APP_NAME = "punishment-manager"          # lower-case, used for unix dirs
 APP_TITLE = "Punishment Manager"          # display name, used for win/mac dirs
+
+# Collected during import-time path resolution, then reported by bot.py once
+# logging is available.
+_NOTES: list[str] = []
 
 # Directory under which the shipped service-unit / launchd-plist resources
 # are looked up in a packaged install (see build/pyinstaller.spec).
@@ -368,7 +373,7 @@ def system_config_dir() -> Optional[Path]:
 
 
 def config_candidates(data_dir: Path) -> list[Path]:
-    """Ordered config.json candidates; the first that exists is read."""
+    """Ordered config.json candidates; the first readable regular file wins."""
     override = _env_path("PUNISHMENT_MANAGER_CONFIG")
     if override is not None:
         return [override]
@@ -383,8 +388,38 @@ def config_candidates(data_dir: Path) -> list[Path]:
 def _pick_config_path(data_dir: Path) -> Path:
     cands = config_candidates(data_dir)
     for cand in cands:
-        if cand.is_file() and os.access(cand, os.R_OK):
+        # Don't use Path.is_file() here: on Python versions supported by this
+        # app it can raise PermissionError when a parent directory (commonly
+        # /etc/punishment-manager) is intentionally private to a service group.
+        # Treat that candidate as unavailable and continue to the user's config
+        # instead of aborting resolution and bypassing the rest of the search.
+        try:
+            info = cand.stat()
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        except (OSError, ValueError) as exc:
+            _NOTES.append(
+                f"Could not inspect config candidate {cand} ({exc}); skipping it."
+            )
+            continue
+
+        if not stat.S_ISREG(info.st_mode):
+            continue
+        try:
+            readable = os.access(cand, os.R_OK)
+        except (OSError, ValueError) as exc:
+            _NOTES.append(
+                f"Could not check whether config candidate {cand} is readable "
+                f"({exc}); skipping it."
+            )
+            continue
+        if readable:
             return cand
+        _NOTES.append(
+            f"Config candidate {cand} exists but is not readable by this user; "
+            "skipping it."
+        )
+
     # Nothing exists yet: create it in the data dir, except for a source
     # checkout where ./config.json next to bot.py is what everyone expects.
     if not is_frozen():
@@ -542,7 +577,6 @@ def app_version() -> str:
 BUNDLE_DIR = bundle_dir()
 APP_DIR = app_dir()
 
-_NOTES: list[str] = []
 try:
     DATA_DIR, _notes = _pick_data_dir()
     _NOTES.extend(_notes)
