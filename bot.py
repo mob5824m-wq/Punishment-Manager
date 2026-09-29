@@ -964,6 +964,9 @@ class PunishmentCog(commands.Cog):
                 cmd.guild_only = True
 
     # ---- Group of helpers (use a slash command group) ------------------ #
+    # NOTE: Discord rejects the *entire* command list (HTTP 400, code 50035)
+    # if any command or option description is over 100 characters.
+    # tests/test_commands.py checks every description against that limit.
     punish_group = app_commands.Group(
         name="punish",
         description="Temporarily swap a user's role.",
@@ -999,7 +1002,7 @@ class PunishmentCog(commands.Cog):
 
     @punish_group.command(
         name="status",
-        description="Show this server's configuration and active punishments. "
+        description="Show this server's config and active punishments. "
                     "Pass a user to see their punishment history.",
     )
     @app_commands.describe(
