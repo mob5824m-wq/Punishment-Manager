@@ -17,3 +17,7 @@ config.local.json
 .vscode/
 .idea/
 
+
+# local sandbox scratch
+.tmp-test/
+node_modules/

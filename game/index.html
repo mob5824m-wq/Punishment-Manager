@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<title>CubeClash — 3D Pixel Sandbox</title>
+<link rel="stylesheet" href="./style.css" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' fill='%2358c34a'/></svg>" />
+<script>
+// Resolve a working three.js CDN before the module graph loads (importmaps can't fall back).
+(function(){
+  var CDNS=[
+    'https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.module.js',
+    'https://unpkg.com/three@0.161.0/build/three.module.js',
+    'https://esm.sh/three@0.161.0'
+  ];
+  function boot(url){
+    if(document.readyState==='loading'){
+      document.addEventListener('DOMContentLoaded',function(){boot(url);}); return;
+    }
+    var im=document.createElement('script');
+    im.type='importmap';
+    im.textContent=JSON.stringify({imports:{three:url}});
+    document.head.appendChild(im);
+    var m=document.createElement('script');
+    m.type='module'; m.src='./src/main.js';
+    document.head.appendChild(m);
+  }
+  function tryNext(i){
+    if(i>=CDNS.length){
+      document.addEventListener('DOMContentLoaded',function(){
+        document.body.innerHTML='<div class="screen"><div class="panel small"><h2>OFFLINE</h2>'+
+          '<p class="tag">CubeClash needs a network connection the first time to fetch its 3D engine.</p></div></div>';
+      });
+      return;
+    }
+    var t=setTimeout(function(){tryNext(i+1);},6000);
+    fetch(CDNS[i],{method:'GET',mode:'cors'}).then(function(r){
+      clearTimeout(t); if(r.ok) boot(CDNS[i]); else tryNext(i+1);
+    }).catch(function(){clearTimeout(t);tryNext(i+1);});
+  }
+  tryNext(0);
+})();
+</script>
+</head>
+<body>
+<div id="app">
+  <canvas id="view"></canvas>
+
+  <!-- ===== HUD ===== -->
+  <div id="hud" class="hidden">
+    <div id="topbar">
+      <div class="chip" id="scoreChip"><span class="lbl">SCORE</span><span id="score">0</span></div>
+      <div class="chip" id="modeChip"><span class="lbl">MODE</span><span id="modeName">SURVIVAL</span></div>
+      <div class="chip" id="waveChip"><span class="lbl">WAVE</span><span id="wave">1</span></div>
+      <div class="chip" id="fpsChip"><span class="lbl">FPS</span><span id="fps">60</span></div>
+      <button class="chip btn" id="pauseBtn">❚❚</button>
+    </div>
+
+    <div id="hearts"></div>
+
+    <div id="crosshair"><i></i><i></i></div>
+    <div id="hitmark"></div>
+    <div id="dmgflash"></div>
+    <div id="toast"></div>
+
+    <div id="hotbar"></div>
+
+    <!-- touch controls -->
+    <div id="touch" class="hidden">
+      <div id="stick"><div id="stickNub"></div></div>
+      <div id="tbtns">
+        <button class="tb" id="tbJump">▲</button>
+        <button class="tb" id="tbPlace">＋</button>
+        <button class="tb" id="tbBreak">⛏</button>
+        <button class="tb small" id="tbFly">✈</button>
+        <button class="tb small" id="tbPrev">◀</button>
+        <button class="tb small" id="tbNext">▶</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== START ===== -->
+  <div id="start" class="screen">
+    <div class="panel">
+      <h1 class="logo">CUBE<span>CLASH</span></h1>
+      <p class="tag">Mine. Build. Clash. A pixel voxel sandbox.</p>
+      <div class="modes">
+        <button class="mode" data-mode="survival">
+          <b>SURVIVAL</b>
+          <small>Hearts, hunger for blood, night waves of mobs. Score by clashing.</small>
+        </button>
+        <button class="mode" data-mode="creative">
+          <b>CREATIVE</b>
+          <small>Fly, infinite blocks, no death. Score by building big.</small>
+        </button>
+      </div>
+      <div class="help">
+        <div><b>WASD</b> move · <b>SPACE</b> jump / fly up · <b>SHIFT</b> down · <b>MOUSE</b> look</div>
+        <div><b>LMB</b> mine / attack · <b>RMB</b> place · <b>1-8</b> or wheel: block · <b>F</b> fly · <b>P</b> pause</div>
+        <div class="touchonly">Touch: left stick to move, drag right to look, buttons to act.</div>
+      </div>
+      <div class="hs">
+        <h3>HIGH SCORES</h3>
+        <ol id="hsList"><li class="empty">no runs yet — go clash</li></ol>
+      </div>
+      <div class="foot">Tip: hold LMB to keep mining. Break the glow-cube for big points.</div>
+    </div>
+  </div>
+
+  <!-- ===== PAUSE ===== -->
+  <div id="pause" class="screen hidden">
+    <div class="panel small">
+      <h2>PAUSED</h2>
+      <div class="statline"><span>Score</span><b id="pScore">0</b></div>
+      <div class="statline"><span>Blocks mined</span><b id="pMined">0</b></div>
+      <div class="statline"><span>Mobs clashed</span><b id="pKills">0</b></div>
+      <div class="row">
+        <button class="big" id="resumeBtn">RESUME</button>
+        <button class="big ghost" id="restartBtn">RESTART</button>
+      </div>
+      <button class="link" id="quitBtn">quit to title</button>
+    </div>
+  </div>
+
+  <!-- ===== GAME OVER ===== -->
+  <div id="over" class="screen hidden">
+    <div class="panel small">
+      <h2 class="dead">YOU DIED</h2>
+      <div class="bigscore" id="oScore">0</div>
+      <div id="oNew" class="newhs hidden">★ NEW HIGH SCORE ★</div>
+      <div class="statline"><span>Waves survived</span><b id="oWave">0</b></div>
+      <div class="statline"><span>Mobs clashed</span><b id="oKills">0</b></div>
+      <div class="statline"><span>Blocks mined</span><b id="oMined">0</b></div>
+      <ol id="oList" class="mini"></ol>
+      <div class="row">
+        <button class="big" id="againBtn">RESTART <small>(R)</small></button>
+        <button class="big ghost" id="titleBtn">TITLE</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="loading" class="screen hidden"><div class="panel small"><h2>GENERATING WORLD</h2><div class="bar"><i id="barFill"></i></div></div></div>
+</div>
+</body>
+</html>
