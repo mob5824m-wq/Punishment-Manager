@@ -332,12 +332,36 @@ re-creates a portable install next to a locked system config dir and a locked
 per-user state dir (skipped as root / on Windows like the other permission-bit
 fixtures).
 
+### 15. No slash commands were registered: a description over Discord's limit
+
+**Problem:** `/punish status` had a 101-character description. Discord allows
+1-100 characters for every command and option description and validates the
+whole list at once, so the startup `tree.sync()` failed with HTTP 400 / error
+50035 (`In command 'punish status' ... description: Must be between 1 and 100
+in length`) and **none** of the commands were registered or updated. The bot
+logged `Failed to sync global commands.` and carried on - it has to, the
+scheduler that releases punished users runs in the same process - so it looked
+healthy. discord.py shortens descriptions it derives itself (docstrings,
+`@app_commands.describe(...)`), but a `description=` passed explicitly to
+`command()` / `Group()` is sent as-is, and nothing exercised the command tree
+before a release.
+
+**Fix:** the description is 94 characters now ("config" instead of
+"configuration").
+
+**Regression gate:** `tests/test_commands.py` builds the real command tree in a
+sandboxed subprocess - the exact payload `tree.sync()` would upload, no network
+or token needed - and fails, naming the command, if any command, group,
+subcommand or option description is outside 1-100 characters. It also feeds the
+checker the string that broke sync, so the gate can't quietly become a no-op.
+
 ## Test gate in CI
 
 `build.yml` (all three platforms) and `release.yml` (linux) run
-`python -m pytest tests`, which covers runtime path resolution (fixes 12 and 14) and
-the version plumbing (fix 13). Both suites are plain `unittest`, so they also
-run standalone: `python tests/test_paths.py`.
+`python -m pytest tests`, which covers runtime path resolution (fixes 12 and 14),
+the version plumbing (fix 13) and the slash-command definitions (fix 15). The
+suites are plain `unittest`, so they also run standalone:
+`python tests/test_paths.py`.
 
 ## Other notes
 
