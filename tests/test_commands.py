@@ -62,7 +62,7 @@ async def main():
     tree = bot.bot.tree
     payload = []
     for cmd in tree.get_commands():
-        # discord.py 2.6 made `tree` a required argument of to_dict().
+        # discord.py 2.4 made `tree` a required argument of to_dict().
         if "tree" in inspect.signature(cmd.to_dict).parameters:
             payload.append(cmd.to_dict(tree))
         else:
