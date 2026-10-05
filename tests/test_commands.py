@@ -18,6 +18,14 @@ that is passed explicitly and nothing exercised the tree before a release, so
 the only way to find out was to deploy. These tests check the real command tree
 and the automatic per-guild sync path offline, instead.
 
+Motivation for the duplicate half of this file: the sync used to upload the
+whole tree twice - once to Discord's *global* registry (``tree.sync()``) and
+once per guild (``copy_global_to()`` + ``tree.sync(guild=...)``). Discord keeps
+those two registries separate and the client lists a command from each of them,
+so every server showed doubled ``/punish`` and ``/setup`` entries. The bot now
+syncs per guild only and empties the global registry; the tests below pin that
+down, including the empty global upload that removes existing duplicates.
+
 Run with either:
     python -m pytest tests/test_commands.py
     python tests/test_commands.py
@@ -61,21 +69,29 @@ async def main():
     await bot._register_cog()
     tree = bot.bot.tree
     payload = []
+    meta = {}
     for cmd in tree.get_commands():
         # discord.py 2.4 made `tree` a required argument of to_dict().
         if "tree" in inspect.signature(cmd.to_dict).parameters:
             payload.append(cmd.to_dict(tree))
         else:
             payload.append(cmd.to_dict())
+        # Visibility flags are assigned in cog_load(), after the decorators ran.
+        perms = getattr(cmd, "default_permissions", None)
+        meta[cmd.name] = {
+            "guild_only": bool(getattr(cmd, "guild_only", False)),
+            "default_member_permissions": None if perms is None else str(perms.value),
+        }
     with open(sys.argv[1], "w", encoding="utf-8") as fh:
-        json.dump(payload, fh)
+        json.dump({"commands": payload, "meta": meta}, fh)
 
 
 asyncio.run(main())
 """
 
-# Exercise the real automatic guild-sync path with a fake command tree, so the
-# test verifies copy-before-sync and one-time syncing without contacting Discord.
+# Exercise the real guild-sync path against a recording tree, so the test sees
+# exactly what would reach Discord without making any request: copy-before-sync,
+# one-time syncing, and the *empty* global upload that removes duplicates.
 _DUMP_GUILD_SYNC_EVENTS = r"""
 import asyncio, json, sys
 
@@ -88,39 +104,110 @@ class FakeGuild:
         self.id = guild_id
 
 
-class FakeTree:
+def record_tree(tree, events, registry):
+    # Patch the tree's network endpoints so this test makes no Discord
+    # requests. ``sync`` is the upload: what the real tree would send is
+    # recorded as a count, so the test can prove the global upload is empty
+    # (that is the duplicate cleanup) and each guild upload carries commands.
+    # get_commands / add_command / walk_commands stay the real ones.
+    real_copy = tree.copy_global_to
+    real_clear = tree.clear_commands
+    real_get = tree.get_commands
+
+    def copy_global_to(*, guild):
+        events.append(["copy", guild.id])
+        real_copy(guild=guild)
+
+    def clear_commands(*, guild):
+        events.append(["clear", None if guild is None else guild.id])
+        real_clear(guild=guild)
+
+    async def sync(*, guild=None):
+        count = len(real_get(guild=guild))
+        events.append(["sync", None if guild is None else guild.id, count])
+        if guild is None:
+            # An empty global upload replaces the registry: duplicates gone.
+            registry["global"] = []
+        return [object()] * count
+
+    tree.copy_global_to = copy_global_to
+    tree.clear_commands = clear_commands
+    tree.sync = sync
+
+
+class FakeResponse:
     def __init__(self):
-        self.events = []
+        self.deferred = False
 
-    def copy_global_to(self, *, guild):
-        self.events.append(["copy", guild.id])
+    def is_done(self):
+        return self.deferred
 
-    async def sync(self, *, guild=None):
-        assert guild is not None
-        self.events.append(["sync", guild.id])
-        return [object(), object(), object()]
+    async def defer(self, *, ephemeral=False):
+        self.deferred = True
+
+
+class FakeFollowup:
+    def __init__(self):
+        self.sent = []
+
+    async def send(self, content, *, ephemeral=False):
+        self.sent.append(content)
+
+
+class FakeInteraction:
+    def __init__(self, guild_id):
+        self.guild_id = guild_id
+        self.response = FakeResponse()
+        self.followup = FakeFollowup()
 
 
 async def main():
-    client = bot.PunishmentBot({})
-    fake_tree = FakeTree()
-    # Patch the tree's sync endpoints so this test makes no Discord requests.
-    client.tree.copy_global_to = fake_tree.copy_global_to
-    client.tree.sync = fake_tree.sync
+    # Register the cog exactly like PunishmentBot.setup_hook() does.
+    await bot._register_cog()
+    client = bot.bot
+    # Discord still holds the two global commands an older version registered.
+    registry = {"global": [{"id": 1}, {"id": 2}]}
+    events = []
+    record_tree(client.tree, events, registry)
+    client.config = {"server_id": 101}
+    client._connection.application_id = 987654321
+
+    async def fake_get_global_commands(application_id):
+        events.append(["get-global", None])
+        return list(registry["global"])
+
+    client.http.get_global_commands = fake_get_global_commands
     client._connection._guilds.update({
         101: FakeGuild(101),
         202: FakeGuild(202),
     })
 
-    await client._sync_connected_guilds()
+    await client._sync_commands()           # startup: clear duplicates, sync server_id
+    await client._sync_connected_guilds()   # READY: sync every connected guild
     # A repeated READY event must not re-upload commands to the same guilds.
     await client._sync_connected_guilds()
     # Guilds joined after startup receive the same immediate sync.
     await client.on_guild_join(FakeGuild(303))
     await client.on_guild_available(FakeGuild(303))
 
+    # /fixcommands: on-demand cleanup, after a fresh duplicate appeared.
+    registry["global"] = [{"id": 3}]
+    cog = client.get_cog("PunishmentCog")
+    interaction = FakeInteraction(202)
+    fix_start = len(events)
+    await cog._handle_fixcommands(interaction)
+
     with open(sys.argv[1], "w", encoding="utf-8") as fh:
-        json.dump(fake_tree.events, fh)
+        json.dump({
+            "events": events,
+            # The cleanup must not gut the local tree: guild copies are what
+            # keeps the commands alive after the global registry is emptied.
+            "local_commands": sorted(
+                c.qualified_name for c in client.tree.get_commands(guild=None)
+            ),
+            "fix_events": events[fix_start:],
+            "fix_reply": interaction.followup.sent,
+        }, fh)
 
 
 asyncio.run(main())
@@ -145,8 +232,12 @@ def _isolated_test_env(home: Path) -> dict[str, str]:
     }
 
 
-def dump_command_payload() -> list[dict]:
-    """The command list ``tree.sync()`` would upload to Discord (no network)."""
+def dump_command_payload() -> dict:
+    """The command list ``tree.sync()`` would upload to Discord (no network).
+
+    ``{"commands": [...payload...], "meta": {name: {"guild_only": ...,
+    "default_member_permissions": ...}}}``.
+    """
     with tempfile.TemporaryDirectory(prefix="pm-commands-test-") as tmp:
         home = Path(tmp).resolve()
         out = home / "payload.json"
@@ -165,8 +256,13 @@ def dump_command_payload() -> list[dict]:
         return json.loads(out.read_text(encoding="utf-8"))
 
 
-def dump_guild_sync_events() -> list[list[object]]:
-    """Run the automatic guild-sync path with two fake connected guilds."""
+def dump_guild_sync_events() -> dict:
+    """Run the whole startup / READY / join / ``/fixcommands`` path offline.
+
+    Keys: ``events`` (everything that would reach Discord), ``local_commands``
+    (the tree after the global cleanup), ``fix_events`` (requests made by
+    ``/fixcommands``) and ``fix_reply`` (what the admin sees).
+    """
     with tempfile.TemporaryDirectory(prefix="pm-guild-sync-test-") as tmp:
         home = Path(tmp).resolve()
         out = home / "events.json"
@@ -276,16 +372,24 @@ class CommandTreeTests(unittest.TestCase):
     """The real tree from bot.py: what tree.sync() uploads at startup."""
 
     payload: list[dict]
+    meta: dict[str, dict]
+    sync: dict
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.payload = dump_command_payload()
+        dumped = dump_command_payload()
+        cls.payload = dumped["commands"]
+        cls.meta = dumped["meta"]
+        cls.sync = dump_guild_sync_events()
 
     def test_documented_commands_are_registered(self) -> None:
         # Keeps the limit check below from passing vacuously (say, if the cog
         # stopped registering, or subcommands stopped being walked).
         names = command_names(self.payload)
-        for expected in ("punish", "punish apply", "punish pardon", "punish status", "setup"):
+        for expected in (
+            "punish", "punish apply", "punish pardon", "punish status",
+            "setup", "fixcommands",
+        ):
             self.assertIn(expected, names, f"command tree has: {sorted(names)}")
 
     def test_every_description_fits_discords_limit(self) -> None:
@@ -296,16 +400,64 @@ class CommandTreeTests(unittest.TestCase):
             "and register none of the commands:\n  " + "\n  ".join(problems),
         )
 
-    def test_commands_are_copied_and_synced_to_every_connected_guild(self) -> None:
-        events = dump_guild_sync_events()
+    def test_admin_commands_are_guild_only_and_admin_only(self) -> None:
+        # Administrator = 1 << 3 = 8.
+        for name in ("setup", "fixcommands"):
+            with self.subTest(command=name):
+                self.assertTrue(self.meta[name]["guild_only"], f"/{name} is guild-only")
+                self.assertEqual(
+                    self.meta[name]["default_member_permissions"], str(1 << 3),
+                    f"/{name} must be administrator-only",
+                )
+        # /punish stays available to users with Moderate Members.
+        self.assertEqual(
+            self.meta["punish"]["default_member_permissions"], str(1 << 40)
+        )
+        self.assertFalse(self.meta["punish"]["guild_only"])
+
+    def test_commands_are_synced_per_guild_and_never_registered_globally(self) -> None:
+        """No double commands: guild scope only, and the global registry emptied.
+
+        The startup sequence must (1) read what is registered globally, (2)
+        upload an *empty* global command set to delete those duplicates, and
+        (3) sync each connected guild exactly once - including the configured
+        ``server_id``, which is synced before login even finishes.
+        """
+        events = self.sync["events"]
         self.assertEqual(
             events,
             [
-                ["copy", 101], ["sync", 101],
-                ["copy", 202], ["sync", 202],
-                ["copy", 303], ["sync", 303],
+                ["get-global", None],
+                ["clear", None], ["sync", None, 0],   # duplicates deleted
+                ["copy", 101], ["sync", 101, 3],      # configured server_id
+                ["copy", 202], ["sync", 202, 3],      # other connected guild
+                ["copy", 303], ["sync", 303, 3],      # joined after startup
+                # /fixcommands: fresh duplicate found and removed ...
+                ["get-global", None], ["clear", None], ["sync", None, 0],
+                # ... and this server's copy re-uploaded, then verified empty.
+                ["sync", 202, 3], ["get-global", None],
             ],
+            "unexpected command registration traffic",
         )
+        # Every upload to the global scope is empty; only guild uploads carry
+        # commands. A non-empty global upload is what brings duplicates back.
+        for name, guild_id, count in [e for e in events if e[0] == "sync"]:
+            if guild_id is None:
+                self.assertEqual(count, 0, "global command upload was not empty")
+
+    def test_duplicate_cleanup_keeps_the_local_tree_intact(self) -> None:
+        # Guild copies are made from the local global tree, so emptying the
+        # Discord-side registry must not remove the commands locally.
+        self.assertEqual(
+            self.sync["local_commands"], ["fixcommands", "punish", "setup"]
+        )
+
+    def test_fixcommands_removes_duplicates_and_reports_it(self) -> None:
+        reply = "\n".join(self.sync["fix_reply"])
+        self.assertIn("Removed 1 duplicated command(s).", reply)
+        self.assertIn("Re-synced this server's commands.", reply)
+        # The duplicate really was deleted, and this guild re-synced.
+        self.assertEqual(self.sync["events"][-2][0:2], ["sync", 202])
 
 
 def main() -> int:

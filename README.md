@@ -201,22 +201,29 @@ You should see:
 
 ```
 [INFO] punishment_manager: Database initialised at data/punishments.db
-[INFO] punishment_manager: Synced N global command(s) (up to 1h to propagate).
+[INFO] punishment_manager: Global command registry was already empty (startup; commands are registered per guild).
 [INFO] punishment_manager: Logged in as YourBot (id=...)
-[INFO] punishment_manager: Synced N command(s) to guild X (instant).
+[INFO] punishment_manager: Synced 3 command(s) to guild X (instant).
 ```
 
-On startup, the bot syncs commands globally and also copies them to every
-server it is connected to, so they appear there immediately without waiting
-for global propagation or setting `server_id`. Newly joined servers are
-synced as soon as they become available. Global commands can still take up
-to an hour to propagate to servers the bot is not currently connected to.
+Slash commands are registered **per server only** — that is the scope that
+appears immediately, so they show up without waiting and without setting
+`server_id`. Newly joined servers are synced as soon as they become
+available.
+
+Discord keeps *two* independent command registries per app (the global one
+and the per-guild one) and the Discord client lists a command from each of
+them, so registering a command in both is exactly what makes every
+`/punish` and `/setup` entry appear **twice**. That is why the bot never
+uploads commands globally; if an older version left any behind, startup
+deletes them (you will see a "Removed N duplicate global command(s)" line),
+and the admin-only `/fixcommands` command does the same thing on demand.
 
 ---
 
 ## 5. Commands
 
-The bot uses a single slash command group plus a one-off admin command.
+The bot uses a single slash command group plus two admin commands.
 
 | Command              | Who can use it                  | What it does |
 |----------------------|---------------------------------|--------------|
@@ -224,6 +231,7 @@ The bot uses a single slash command group plus a one-off admin command.
 | `/punish pardon`     | Members with *Moderate Members* | Ends the punishment early and removes the punish / post-punish role. Posts a staff embed and DMs the user. |
 | `/punish status`     | Anyone                          | Shows the server configuration and a list of active punishments. Pass a `user` to see that user's active status + history. |
 | `/setup`             | Server administrators           | Configures the three roles, the staff channel, and DM behavior. |
+| `/fixcommands`       | Server administrators           | Removes duplicated slash commands (e.g. doubled `/punish` entries) and re-syncs this server. |
 
 ### `/punish apply` options
 
@@ -533,9 +541,17 @@ python3 -m pytest tests/test_paths.py -q   # or: python3 tests/test_paths.py
 * **Slash commands don't appear** — the bot syncs instantly to every
   connected server, so `server_id` is not required. Make sure the bot was
   invited with the `applications.commands` scope and check `data/bot.log`
-  for a "Synced N command(s) to guild X" line for your server. Global
-  registration can take up to an hour to reach servers the bot is not
-  currently connected to.
+  for a "Synced N command(s) to guild X" line for your server.
+* **Slash commands appear twice / doubled** (`/punish` and `/setup` listed
+  two or three times) — Discord is showing the same command from both of its
+  command registries. This is what older versions of the bot caused by
+  syncing globally *and* per server; it is fixed now. Startup deletes the
+  duplicate global registrations automatically (look for a "Removed N
+  duplicate global command(s)" line in `data/bot.log`), or an admin can run
+  `/fixcommands` to do it on the spot. Discord can take a few minutes to
+  refresh the command list — restarting Discord (Ctrl+R) shows it
+  immediately. If the duplicates come back, another copy of the bot is still
+  running with the same token; stop it and run `/fixcommands` again.
 * **No token / Login failed** — make sure `DISCORD_TOKEN` is set or
   `config.json` has a non-empty `bot_token` (or the legacy `token`).
 * **`.deb` build complains about `dpkg-deb` or `fakeroot`** — install

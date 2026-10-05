@@ -481,6 +481,9 @@ class PunishmentBot(commands.Bot):
         self._guild_sync_lock = asyncio.Lock()
         self._guild_commands_copied: set[int] = set()
         self._guild_commands_synced: set[int] = set()
+        # Set once the duplicate-prone *global* command registry has been
+        # emptied. Retried on the next READY if that request failed.
+        self._global_registry_cleared = False
 
     async def _log_local_commands(self) -> None:
         """Log every slash command that's about to be registered. Useful
@@ -489,17 +492,25 @@ class PunishmentBot(commands.Bot):
         local = sorted(c.qualified_name for c in self.tree.walk_commands())
         logger.info("Local command tree (%d): %s", len(local), ", ".join(local) or "(none)")
 
-    async def _sync_guild_commands(self, guild_id: int) -> bool:
-        """Publish the global slash-command tree to one guild immediately.
+    async def _sync_guild_commands(self, guild_id: int, *, force: bool = False) -> bool:
+        """Publish this bot's slash commands to one guild, in the guild scope.
 
         ``CommandTree.sync(guild=...)`` only uploads commands scoped to that
         guild. Copying the global tree first is what makes those commands
         available instantly in the guild instead of waiting for global
         propagation.
+
+        Commands are registered in the *guild* scope on purpose: Discord keeps
+        the global and the per-guild command registries separate, and a command
+        that lives in both is listed twice by the Discord client. See
+        :meth:`_sync_commands`.
+
+        ``force`` re-uploads a guild that was already synced (``/fixcommands``
+        uses it to refresh the command list on demand).
         """
         guild_id = int(guild_id)
         async with self._guild_sync_lock:
-            if guild_id in self._guild_commands_synced:
+            if not force and guild_id in self._guild_commands_synced:
                 return True
 
             guild_obj = discord.Object(id=guild_id)
@@ -530,8 +541,90 @@ class PunishmentBot(commands.Bot):
         )
         return True
 
+    async def _fetch_global_command_count(self) -> Optional[int]:
+        """How many commands Discord has in the *global* command registry.
+
+        ``None`` means the count could not be read (no application id yet, or
+        Discord refused the request), so callers can report "unknown" instead of
+        wrongly claiming there was nothing to remove.
+        """
+        if self.application_id is None:
+            return None
+        try:
+            return len(await self.http.get_global_commands(self.application_id))
+        except discord.HTTPException as exc:
+            logger.warning("Could not read the global command registry: %s", exc)
+            return None
+
+    async def _clear_global_commands(self, *, reason: str) -> Optional[int]:
+        """Empty Discord's *global* command registry (removes duplicate commands).
+
+        Discord keeps global commands and per-guild commands in two separate
+        registries, and a command that lives in both is shown twice by the
+        Discord client - that is where doubled ``/punish`` and ``/setup`` entries
+        came from. This bot registers commands per guild, so anything still in
+        the global registry is a duplicate.
+
+        The upload replaces the complete registry, so one empty request deletes
+        every global command. Only the *registry* is emptied: the local tree is
+        restored right after, which keeps :meth:`copy_global_to` working for
+        guilds that join later.
+
+        Returns how many commands were registered globally before the request
+        (``None`` if that could not be determined). Raises
+        :class:`discord.HTTPException` if the upload fails.
+        """
+        # Reading first makes the log line (and /fixcommands) truthful: stale
+        # global commands are invisible to the local tree.
+        before = await self._fetch_global_command_count()
+
+        # Serialize with the per-guild syncs: they copy the local global tree,
+        # so it must never be seen half-emptied.
+        async with self._guild_sync_lock:
+            commands = list(self.tree.get_commands(guild=None))
+            self.tree.clear_commands(guild=None)
+            try:
+                # An empty payload replaces the whole global registry, so this
+                # one request deletes every globally registered command.
+                await self.tree.sync()
+            finally:
+                for command in commands:
+                    self.tree.add_command(command)
+        self._global_registry_cleared = True
+
+        if before is None:
+            logger.info("Cleared the global command registry (%s).", reason)
+        elif before == 0:
+            logger.info("Global command registry was already empty (%s).", reason)
+        else:
+            logger.info(
+                "Removed %d duplicate global command(s) (%s): %s",
+                before,
+                reason,
+                ", ".join(c.qualified_name for c in commands) or "(none)",
+            )
+        return before
+
+    async def _retry_global_cleanup(self) -> None:
+        """Empty the global registry unless that already succeeded this run."""
+        if self._global_registry_cleared:
+            return
+        try:
+            await self._clear_global_commands(
+                reason="startup; commands are registered per guild"
+            )
+        except Exception:
+            logger.exception(
+                "Failed to clear the global command registry; will retry when "
+                "the gateway is ready."
+            )
+
     async def _sync_connected_guilds(self) -> None:
         """Immediately sync commands to every guild this bot is connected to."""
+        # Retry the duplicate cleanup if setup could not reach Discord. The
+        # per-guild syncs below are the only registrations that should remain.
+        await self._retry_global_cleanup()
+
         guilds = list(self.guilds)
         if not guilds:
             logger.info("No connected guilds found for immediate command sync.")
@@ -541,21 +634,32 @@ class PunishmentBot(commands.Bot):
             await self._sync_guild_commands(guild.id)
 
     async def _sync_commands(self) -> None:
-        """Refresh commands globally and to every connected guild.
+        """Register the slash commands exactly once: per guild, never globally.
 
-        Global registration is authoritative but may take up to an hour to
-        propagate. Guild copies are synced immediately: the configured
-        ``server_id`` is attempted during setup, then every connected guild is
-        synced once the gateway is ready (and newly joined guilds are synced
-        when they become available).
+        Discord keeps two independent command registries per application: the
+        *global* commands and the *per-guild* commands. Registering the same
+        command in both is allowed, and the Discord client then lists every
+        command twice - once from each registry. That is what earlier releases
+        did (a global sync *and* ``copy_global_to()`` for every connected
+        guild), so ``/punish`` and ``/setup`` showed up doubled.
 
-        Discord replaces the complete command set on each sync, so commands
-        removed from the local tree disappear without a separate delete step.
+        This bot registers commands in the guild scope only. It is the scope
+        that appears instantly, it covers every server the bot is in (the
+        configured ``server_id`` here, every connected guild on READY, and new
+        guilds when they become available), and it cannot double up with a
+        global copy.
+
+        Leftover global commands from an older version are deleted here, which
+        is what makes existing duplicates disappear after updating.
         """
         await self._log_local_commands()
 
+        # Remove the duplicate half first, so the guild syncs below leave
+        # exactly one registration per command.
+        await self._retry_global_cleanup()
+
         # Keep the configured server fast even before the gateway cache is
-        # ready. The connected-guild pass below also covers every other server.
+        # ready. The connected-guild pass (on_ready) also covers every server.
         server_id = self.config.get("server_id")
         if server_id:
             try:
@@ -567,13 +671,6 @@ class PunishmentBot(commands.Bot):
                 "No server_id configured; commands will be synced instantly "
                 "to every connected guild after login."
             )
-
-        # Global sync (propagates to all guilds, up to 1h to propagate).
-        try:
-            synced = await self.tree.sync()
-            logger.info("Synced %d global command(s) (up to 1h to propagate).", len(synced))
-        except Exception:
-            logger.exception("Failed to sync global commands.")
 
     async def setup_hook(self) -> None:
         await self._sync_commands()
@@ -1009,9 +1106,10 @@ class PunishmentCog(commands.Cog):
         self.punish_group.default_permissions = discord.Permissions(
             moderate_members=True
         )
-        # /setup: only admins should see/use it, and only in a guild.
+        # /setup and /fixcommands: only admins should see/use them, and only in
+        # a guild.
         for cmd in self.__cog_app_commands__:
-            if cmd.qualified_name == "setup":
+            if cmd.qualified_name in ("setup", "fixcommands"):
                 cmd.default_permissions = discord.Permissions(administrator=True)
                 cmd.guild_only = True
 
@@ -1097,6 +1195,14 @@ class PunishmentCog(commands.Cog):
             staff_channel,
             dm_user,
         )
+
+    # ---- /fixcommands: clean up duplicated slash commands -------------- #
+    @app_commands.command(
+        name="fixcommands",
+        description="Remove duplicated slash commands and re-sync this server.",
+    )
+    async def fixcommands_cmd(self, interaction: discord.Interaction) -> None:
+        await self._handle_fixcommands(interaction)
 
     # ------------------------------------------------------------------ #
     # Command implementations
@@ -1339,6 +1445,61 @@ class PunishmentCog(commands.Cog):
         await interaction.response.send_message(
             "\n".join(lines), ephemeral=True
         )
+
+    async def _handle_fixcommands(self, interaction: discord.Interaction) -> None:
+        """Delete the duplicate (global) half of this bot's slash commands.
+
+        Discord's global and per-guild command registries are independent, so a
+        command registered in both is listed twice. Startup empties the global
+        registry automatically; this command does the same on demand and
+        re-uploads this server's copy so what remains is fresh.
+        """
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.defer(ephemeral=True)
+        except (discord.InteractionResponded, discord.HTTPException):
+            pass
+
+        try:
+            removed = await self.bot._clear_global_commands(
+                reason=f"requested with /fixcommands in guild {interaction.guild_id}"
+            )
+            resynced = await self.bot._sync_guild_commands(
+                interaction.guild_id, force=True
+            )
+            remaining = await self.bot._fetch_global_command_count()
+        except discord.DiscordException as exc:
+            logger.warning("Could not remove duplicate commands: %s", exc)
+            await self._safe_followup(
+                interaction,
+                "Could not remove the duplicate commands "
+                f"(Discord said: {exc}). Please try again in a minute.",
+            )
+            return
+
+        if removed is None:
+            lines = ["Cleared Discord's global command registry."]
+        elif removed == 0:
+            lines = [
+                "No duplicated commands found: each command is registered once."
+            ]
+        else:
+            lines = [f"Removed {removed} duplicated command(s)."]
+        lines.append(
+            "Re-synced this server's commands."
+            if resynced
+            else "Could not re-sync this server; it will be retried on the next connect."
+        )
+        if remaining:
+            lines.append(
+                f"{remaining} global command(s) came back - is another copy of "
+                "the bot still running with the same token?"
+            )
+        lines.append(
+            "Discord can take a few minutes to refresh the command list; "
+            "reopening Discord shows the result right away."
+        )
+        await self._safe_followup(interaction, "\n".join(lines))
 
     async def _handle_status(
         self,
