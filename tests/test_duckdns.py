@@ -277,6 +277,22 @@ class UpdaterLoopTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0.3)
         self.assertEqual(self.calls, seen, "stop() must stop the timer")
 
+    async def test_it_follows_a_replaced_config(self) -> None:
+        """What the bot's installer path does: swap the dict, keep updating."""
+        live = {"config": {"duckdns_enabled": False}}
+        session = aiohttp.ClientSession()
+        self.addAsyncCleanup(session.close)
+        updater = duckdns.DuckDNSUpdater(
+            lambda: live["config"], session=session, url=self.url
+        )
+        self.assertFalse(await updater.start(), "a config without DuckDNS starts nothing")
+        # ...the user configures DuckDNS, and the bot swaps its config object.
+        live["config"] = dict(CONFIGURED)
+        self.assertTrue(await updater.start())
+        self.assertTrue(await self.wait_until(lambda: updater.last_result is not None))
+        self.assertTrue(updater.last_result.ok)
+        await updater.stop()
+
     async def test_start_is_a_no_op_when_not_configured(self) -> None:
         updater = duckdns.DuckDNSUpdater({})
         self.assertFalse(await updater.start())
@@ -454,6 +470,11 @@ class BotWiringTests(unittest.TestCase):
                     "duckdns_interval_minutes"):
             with self.subTest(key=key):
                 self.assertIn(f'"{key}"', self.bot_source)
+
+    def test_the_updater_reads_the_live_config(self) -> None:
+        # The installer path replaces bot.config after __init__, so a captured
+        # dict would leave the updater thinking DuckDNS is not configured.
+        self.assertIn("duckdns.DuckDNSUpdater(lambda: self.config)", self.bot_source)
 
     def test_the_updater_is_started_and_stopped(self) -> None:
         self.assertIn("await self.duckdns.stop()", self.bot_source)

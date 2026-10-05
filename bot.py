@@ -673,7 +673,9 @@ class SentinelBot(commands.Bot):
             format_duration=format_duration,
         )
         self.scheduler_task: Optional[asyncio.Task] = None
-        self.duckdns = duckdns.DuckDNSUpdater(self.config)
+        # lambda, not the dict: the interactive installer path replaces
+        # bot.config after this object is built (see __main__).
+        self.duckdns = duckdns.DuckDNSUpdater(lambda: self.config)
         self._guild_sync_lock = asyncio.Lock()
         self._guild_commands_copied: set[int] = set()
         self._guild_commands_synced: set[int] = set()
@@ -2259,11 +2261,6 @@ async def setup_hook(self: SentinelBot) -> None:
         logger.exception("Could not start the server dashboard; the Discord bot will keep running.")
     _log_remote_access_notes(self.config)
     try:
-        # The updater was built in __init__, but the interactive installer path
-        # replaces bot.config afterwards (see __main__), so re-point it at
-        # whatever config the bot is actually running with.
-        if self.duckdns.config is not self.config:
-            self.duckdns.config = self.config
         await self.duckdns.start()
     except Exception:
         logger.exception("Could not start the DuckDNS updater; the Discord bot will keep running.")

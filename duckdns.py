@@ -40,7 +40,7 @@ import logging
 import os
 import random
 from dataclasses import dataclass
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Union
 from urllib.parse import urlsplit
 
 import aiohttp
@@ -240,11 +240,16 @@ class DuckDNSUpdater:
     Started by the bot when `duckdns_domain` and `duckdns_token` are set. A
     failure never propagates: a dynamic-DNS glitch must not take the Discord
     bot down, and the next tick retries anyway.
+
+    ``config`` may be the config dict itself or a zero-argument callable
+    returning it. The bot passes ``lambda: self.config`` because the
+    interactive installer replaces its config after the bot object is built,
+    and a stale dict here would leave the record quietly never updated.
     """
 
     def __init__(
         self,
-        config: dict,
+        config: Union[dict, Callable[[], dict]],
         *,
         session: Optional[aiohttp.ClientSession] = None,
         interval_seconds: Optional[float] = None,
@@ -266,16 +271,25 @@ class DuckDNSUpdater:
     def running(self) -> bool:
         return self._task is not None and not self._task.done()
 
+    def _current_config(self) -> dict:
+        """The live config, whichever way it was handed over (see the class)."""
+        return self.config() if callable(self.config) else self.config
+
     def _delay(self) -> float:
-        base = self._interval if self._interval is not None else interval_seconds(self.config)
+        base = (
+            self._interval
+            if self._interval is not None
+            else interval_seconds(self._current_config())
+        )
         return float(base) + random.uniform(0, min(INTERVAL_JITTER_SECONDS, base / 10))
 
     async def start(self) -> bool:
         """Begin refreshing the record. False when DuckDNS is not configured."""
         if self.running:
             return True
-        if not configured(self.config):
-            if credentials(self.config) and not bool(self.config.get("duckdns_enabled", True)):
+        config = self._current_config()
+        if not configured(config):
+            if credentials(config) and not bool(config.get("duckdns_enabled", True)):
                 logger.info("DuckDNS updating disabled by config.")
             return False
         if self._session is None:
@@ -283,7 +297,7 @@ class DuckDNSUpdater:
             self._owns_session = True
         self._stop.clear()
         self._task = asyncio.create_task(self._run(), name="duckdns-updater")
-        domain, _token = credentials(self.config) or ("", "")
+        domain, _token = credentials(config) or ("", "")
         logger.info(
             "DuckDNS: keeping %s pointed at this machine (every %ss).",
             domain_fqdn(domain),
@@ -306,7 +320,8 @@ class DuckDNSUpdater:
 
     async def update_now(self) -> Optional[UpdateResult]:
         """Run one update and log it. Returns None when not configured."""
-        pair = credentials(self.config)
+        config = self._current_config()
+        pair = credentials(config)
         if pair is None:
             return None
         domain, token = pair
@@ -330,7 +345,7 @@ class DuckDNSUpdater:
             # would otherwise fill the log every five minutes.
             (logger.info if result.changed else logger.debug)("%s", result.describe())
             if result.changed:
-                log_dashboard_url(self.config)
+                log_dashboard_url(config)
         else:
             logger.warning("%s", result.describe())
             if not self._token_hint_logged:
