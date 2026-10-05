@@ -495,7 +495,8 @@ class WorkflowWiringTests(unittest.TestCase):
         self.addCleanup(os.unlink, report.name)
         report.write(
             '<testsuites><testsuite name="pytest" tests="2" failures="1">'
-            '<testcase classname="test_x.SomeTests" name="test_a">'
+            '<testcase classname="test_x.SomeTests" name="test_a"'
+            ' file="tests/test_x.py" line="10">'
             '<failure message="assert 1 == 2">Traceback (most recent call last):'
             '\n  File &quot;tests/test_x.py&quot;, line 10\nAssertionError</failure>'
             "</testcase>"
@@ -510,7 +511,10 @@ class WorkflowWiringTests(unittest.TestCase):
         # Reporting must not change the job's result: pytest already failed it.
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         self.assertIn("1 failing test(s)", result.stdout)
-        self.assertIn("::error title=test_x.SomeTests.test_a::", result.stdout)
+        self.assertIn("tests/test_x.py", result.stdout)
+        self.assertIn("file=tests/test_x.py,line=10,", result.stdout)
+        # Module prefix dropped (the file= property carries it), class kept.
+        self.assertIn("title=SomeTests.test_a", result.stdout)
         self.assertIn("assert 1 == 2", result.stdout)
         self.assertNotIn("test_b", result.stdout.split("::error")[1].splitlines()[0])
 

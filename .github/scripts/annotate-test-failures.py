@@ -47,21 +47,26 @@ def first_lines(text: str, limit: int = 6) -> str:
     return "\n".join(lines[:limit]) or "no details in the report"
 
 
-def failures(report: Path) -> list[tuple[str, str, str]]:
-    """(classname, name, message) for every failed or errored test case."""
+def failures(report: Path) -> list[dict]:
+    """One entry per failed or errored test case in a JUnit report."""
     root = ET.parse(report).getroot()
-    cases = root.iter("testcase")
-    found: list[tuple[str, str, str]] = []
-    for case in cases:
+    found: list[dict] = []
+    for case in root.iter("testcase"):
         problem = case.find("failure")
         if problem is None:
             problem = case.find("error")
         if problem is None:
             continue
-        classname = case.get("classname", "")
-        name = case.get("name", "?")
-        message = problem.get("message") or (problem.text or "")
-        found.append((classname, name, first_lines(message)))
+        found.append(
+            {
+                "classname": case.get("classname", ""),
+                "name": case.get("name", "?"),
+                # pytest writes these on the testcase; older reports may not.
+                "file": case.get("file", ""),
+                "line": case.get("line", ""),
+                "message": first_lines(problem.get("message") or (problem.text or "")),
+            }
+        )
     return found
 
 
@@ -72,7 +77,7 @@ def main(argv: list[str]) -> int:
         print(f"annotate-test-failures: no JUnit report at {reports[0]}; nothing to annotate.")
         return 0
 
-    results: list[tuple[str, str, str]] = []
+    results: list[dict] = []
     for path in existing:
         try:
             results.extend(failures(path))
@@ -83,15 +88,20 @@ def main(argv: list[str]) -> int:
         print("annotate-test-failures: the report contains no failures.")
         return 0
 
+    def where(item: dict) -> str:
+        classname = item["classname"].rsplit(".", 1)[-1]
+        return f"{classname}.{item['name']}" if classname and classname != item["name"] else item["name"]
+
     print(f"annotate-test-failures: {len(results)} failing test(s).")
-    for classname, name, message in results[:MAX_ANNOTATIONS]:
-        where = f"{classname}.{name}" if classname else name
-        print(f"::error title={escape(where)}::{escape(message)}")
+    for item in results[:MAX_ANNOTATIONS]:
+        location = ""
+        if item["file"]:
+            location = f"file={escape(item['file'])},"
+            if item["line"].isdigit():
+                location += f"line={item['line']},"
+        print(f"::error {location}title={escape(where(item))}::{escape(item['message'])}")
     if len(results) > MAX_ANNOTATIONS:
-        rest = ", ".join(
-            f"{classname.rsplit('.', 1)[-1]}.{name}" if classname else name
-            for classname, name, _ in results[MAX_ANNOTATIONS:]
-        )
+        rest = ", ".join(where(item) for item in results[MAX_ANNOTATIONS:])
         print(f"::warning::{len(results) - MAX_ANNOTATIONS} more failure(s) not shown: {escape(rest)}")
     # The step that ran pytest has already failed the job; this step only
     # reports, so it must not turn a test failure into a green build.

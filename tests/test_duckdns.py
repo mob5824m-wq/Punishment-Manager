@@ -26,6 +26,7 @@ import os
 import socket
 import subprocess
 import sys
+import time
 import unittest
 from pathlib import Path
 
@@ -215,7 +216,22 @@ class UpdateRequestTests(unittest.IsolatedAsyncioTestCase):
 
 
 class UpdaterLoopTests(unittest.IsolatedAsyncioTestCase):
-    """The timer that keeps the record fresh while the bot runs."""
+    """The timer that keeps the record fresh while the bot runs.
+
+    These wait for the updater to make progress instead of sleeping for a
+    fixed time and asserting it has. A 50 ms timer on a loaded two-core
+    Windows runner is not the laptop's 50 ms timer, and a suite that assumes
+    otherwise fails for reasons that have nothing to do with the code.
+    """
+
+    async def wait_until(self, predicate, timeout: float = 15.0, interval: float = 0.05) -> bool:
+        """Poll `predicate` until it is true or `timeout` elapses."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if predicate():
+                return True
+            await asyncio.sleep(interval)
+        return bool(predicate())
 
     async def asyncSetUp(self) -> None:
         self.calls = 0
@@ -245,15 +261,20 @@ class UpdaterLoopTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertTrue(await updater.start())
-        await asyncio.sleep(0.35)
+        self.assertTrue(
+            await self.wait_until(lambda: self.calls >= 2),
+            "the updater should refresh on its interval",
+        )
+        self.assertTrue(await self.wait_until(lambda: len(results) >= 2))
         await updater.stop()
-        self.assertGreaterEqual(self.calls, 2, "the updater should refresh on its interval")
-        self.assertFalse(updater.running)
-        self.assertEqual(len(results), self.calls)
-        self.assertTrue(all(result.ok for result in results))
 
+        self.assertFalse(updater.running)
+        self.assertTrue(all(result.ok for result in results))
+        # stop() releases the timer: nothing new may start, and whatever was in
+        # flight when it was cancelled is allowed to land first.
+        await asyncio.sleep(0.3)
         seen = self.calls
-        await asyncio.sleep(0.15)
+        await asyncio.sleep(0.3)
         self.assertEqual(self.calls, seen, "stop() must stop the timer")
 
     async def test_start_is_a_no_op_when_not_configured(self) -> None:
@@ -274,9 +295,11 @@ class UpdaterLoopTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertTrue(await updater.start())
-        await asyncio.sleep(0.3)
+        self.assertTrue(
+            await self.wait_until(lambda: updater.last_result is not None),
+            "the first update should have run by now",
+        )
         self.assertTrue(updater.running, "a failed update must not kill the updater")
-        self.assertIsNotNone(updater.last_result)
         self.assertFalse(updater.last_result.ok)
         await updater.stop()
 
