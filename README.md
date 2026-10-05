@@ -182,15 +182,26 @@ This writes `config.json` with everything the bot needs.
    /rules publish channel:#rules role:@Verified rules_text:"1. Be respectful. 2. No spam or harassment."
    ```
 
-   The bot posts an embed and adds a ✅ reaction. Members who react receive
-   the configured role; removing their reaction removes that role. Publishing
-   again replaces the previous active bot post. Existing role assignments
-   are not changed by republishing; if you change the acceptance role, remove
-   the old role from existing members as needed. `/rules disable` turns off
-   reaction handling and leaves assignments unchanged.
+   The bot posts this message, an embed containing the rules, and adds a ✅
+   reaction:
 
-Rules text can be up to 4,096 characters. The bot stores the active post and
-role per server in `config.json`; no manual config edit is needed.
+   > By reacting to this you acknowledge the rules and will abide by them.
+
+   Members who react receive the configured role; removing their reaction
+   removes that role. Publishing again replaces the previous active bot post.
+   Existing role assignments are not changed by republishing; if you change
+   the acceptance role, remove the old role from existing members as needed.
+   `/rules disable` turns off reaction handling and leaves assignments
+   unchanged.
+
+The prompt sentence lives in `rules.py` as `RULES_POST_CONTENT`, so
+`/rules publish` and the dashboard's publish button always post the same
+wording (edit it there to change it everywhere). Rules text can be up to
+4,096 characters. The bot stores the active post and role per server in
+`config.json`; no manual config edit is needed.
+
+The rules post is sent with mentions disabled, so no `@` in the rules can ping
+anyone, and the post is only edited or deleted by the bot itself.
 
 #### Markdown in the rules
 
@@ -215,9 +226,10 @@ literally, so the bot's preview does not pretend otherwise.
 **In the dashboard.** The Rules page has a formatting toolbar (bold, italic,
 underline, strikethrough, spoiler, headings, lists, quote, code, code block,
 link — with `Ctrl`/`Cmd` + `B`, `I`, `E` shortcuts) and a **live preview** that
-shows the embed exactly as Discord renders it, including the embed title and
-footer. The preview is rendered by the bot (`discord_markdown.py`) rather than
-the browser, so what you see is what the published post looks like. While you
+shows the whole post exactly as Discord renders it: the prompt message, the
+embed body, the embed title and the footer. The preview is rendered by the bot
+(`discord_markdown.py`) rather than the browser, so what you see is what the
+published post looks like. While you
 type, the editor also flags syntax Discord would show as plain text — an
 unclosed `**`, a `####` heading, a missing space after `#`, or a non-http link.
 

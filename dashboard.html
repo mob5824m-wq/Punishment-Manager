@@ -161,6 +161,8 @@
     .md-tool:hover { border-color: rgba(139,124,255,.35); background: rgba(139,124,255,.09); color: white; }
     .md-hints { display: grid; gap: 6px; margin-top: 10px; }
     .md-hint { display: flex; gap: 8px; padding: 9px 11px; border: 1px solid rgba(244,189,80,.2); border-radius: 10px; background: rgba(244,189,80,.055); color: #e8ce94; font-size: 11px; line-height: 1.45; }
+    .discord-post { display: grid; gap: 7px; }
+    .discord-post-content { color: var(--soft); font-size: 12px; line-height: 1.5; }
     .discord-embed { min-height: 272px; padding: 15px 16px; border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 6px; background: #101320; font-size: 12.5px; line-height: 1.6; overflow-wrap: anywhere; }
     .discord-embed-title { margin-bottom: 9px; color: #fff; font-size: 14px; font-weight: 750; }
     .discord-embed-footer { margin-top: 12px; padding-top: 9px; border-top: 1px solid var(--line); color: var(--muted); font-size: 10px; }
@@ -392,10 +394,13 @@
               </div>
               <div class="field">
                 <label>Live preview <span class="hint">As Discord renders the embed</span></label>
-                <div class="discord-embed">
-                  <div class="discord-embed-title" id="rules-preview-title">Rules</div>
-                  <div id="rules-preview"><span class="dm-empty">Start typing to preview…</span></div>
-                  <div class="discord-embed-footer">React with ✅ to accept the rules</div>
+                <div class="discord-post">
+                  <div id="rules-preview-content" class="discord-post-content">By reacting to this you acknowledge the rules and will abide by them.</div>
+                  <div class="discord-embed">
+                    <div class="discord-embed-title" id="rules-preview-title">Rules</div>
+                    <div id="rules-preview"><span class="dm-empty">Start typing to preview…</span></div>
+                    <div class="discord-embed-footer">React with ✅ to accept the rules</div>
+                  </div>
                 </div>
               </div>
             </div>

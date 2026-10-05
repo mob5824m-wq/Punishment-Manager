@@ -26,6 +26,7 @@ from rules import (
     MAX_RULES_LENGTH,
     PRIVILEGED_ROLE_PERMISSIONS,
     RULES_ACCEPT_EMOJI,
+    RULES_POST_CONTENT,
     get_guild_rules,
 )
 
@@ -964,13 +965,9 @@ class DashboardServer:
             color=discord.Color.blurple(),
         )
         embed.set_footer(text=f"React with {RULES_ACCEPT_EMOJI} to accept the rules")
-        content = (
-            f"React with {RULES_ACCEPT_EMOJI} below to accept these rules and "
-            f"receive {role.mention}. Removing your reaction removes the role."
-        )
         try:
             message = await channel.send(
-                content=content,
+                content=RULES_POST_CONTENT,
                 embed=embed,
                 allowed_mentions=discord.AllowedMentions.none(),
             )
