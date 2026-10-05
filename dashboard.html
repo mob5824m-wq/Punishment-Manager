@@ -1,0 +1,656 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Punishment Manager · Server Console</title>
+  <style>
+    :root {
+      --bg: #090c14;
+      --panel: #111725;
+      --panel-2: #151e2e;
+      --panel-3: #1a2538;
+      --line: rgba(163, 181, 211, .12);
+      --text: #edf3ff;
+      --muted: #8997ae;
+      --soft: #b4c0d4;
+      --accent: #8b7cff;
+      --accent-2: #b4a8ff;
+      --green: #34d399;
+      --yellow: #f4bd50;
+      --red: #fb7185;
+      --blue: #62b6ff;
+      --radius: 16px;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      min-height: 100vh; margin: 0; color: var(--text);
+      background: radial-gradient(ellipse at 76% -20%, rgba(93, 73, 214, .2), transparent 46%), var(--bg);
+    }
+    button, input, select, textarea { font: inherit; }
+    button { cursor: pointer; }
+    .hidden { display: none !important; }
+    .login-wrap { min-height: 100vh; display: grid; place-items: center; padding: 24px; }
+    .login-card { width: min(450px, 100%); padding: 36px; border: 1px solid var(--line); border-radius: 24px; background: linear-gradient(145deg, rgba(23,31,48,.98), rgba(14,19,31,.98)); box-shadow: 0 30px 90px rgba(0,0,0,.45); }
+    .brand-mark { width: 48px; height: 48px; display: grid; place-items: center; border-radius: 15px; color: white; background: linear-gradient(140deg, #9385ff, #6054dc); font-size: 22px; box-shadow: 0 8px 28px rgba(116,98,255,.32); }
+    .login-card h1 { margin: 22px 0 8px; font-size: 26px; letter-spacing: -.5px; }
+    .login-card p { margin: 0 0 26px; color: var(--muted); line-height: 1.55; }
+    .login-card label { display: block; margin-bottom: 8px; color: var(--soft); font-size: 13px; font-weight: 650; }
+    .login-card input { width: 100%; }
+    .login-card .btn { width: 100%; margin-top: 14px; }
+    .login-foot { margin-top: 22px; padding-top: 17px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; line-height: 1.5; }
+    .shell { min-height: 100vh; display: grid; grid-template-columns: 248px minmax(0, 1fr); }
+    .sidebar { position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; padding: 23px 16px 16px; border-right: 1px solid var(--line); background: rgba(12,16,26,.88); backdrop-filter: blur(16px); }
+    .brand { display: flex; align-items: center; gap: 12px; padding: 0 8px 24px; }
+    .brand .brand-mark { width: 38px; height: 38px; border-radius: 12px; font-size: 17px; }
+    .brand-title { font-size: 14px; font-weight: 760; letter-spacing: .1px; }
+    .brand-sub { margin-top: 4px; color: var(--muted); font-size: 11px; }
+    .side-label { padding: 8px 11px; color: #65738a; font-size: 10px; font-weight: 750; letter-spacing: 1.5px; text-transform: uppercase; }
+    .nav { display: grid; gap: 5px; }
+    .nav-btn { display: flex; align-items: center; gap: 12px; width: 100%; padding: 11px 12px; border: 1px solid transparent; border-radius: 11px; background: transparent; color: #9aa8be; text-align: left; font-size: 13px; font-weight: 620; transition: .18s ease; }
+    .nav-btn:hover { background: rgba(255,255,255,.035); color: var(--text); }
+    .nav-btn.active { border-color: rgba(139,124,255,.2); background: rgba(139,124,255,.12); color: #c4bcff; }
+    .nav-icon { width: 18px; text-align: center; font-size: 15px; }
+    .side-spacer { flex: 1; }
+    .connection-card { margin: 12px 4px 14px; padding: 12px; border: 1px solid var(--line); border-radius: 13px; background: rgba(255,255,255,.025); }
+    .connection-row { display: flex; align-items: center; gap: 8px; color: var(--soft); font-size: 12px; font-weight: 650; }
+    .pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 4px rgba(52,211,153,.1); }
+    .connection-sub { margin: 7px 0 0 15px; color: var(--muted); font-size: 11px; }
+    .side-bottom { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 8px 0; border-top: 1px solid var(--line); }
+    .operator { min-width: 0; }
+    .operator-name { color: var(--soft); font-size: 12px; font-weight: 650; }
+    .operator-desc { margin-top: 3px; color: var(--muted); font-size: 10px; }
+    .icon-btn { display: grid; place-items: center; width: 34px; height: 34px; border: 1px solid var(--line); border-radius: 10px; background: transparent; color: var(--muted); }
+    .icon-btn:hover { color: var(--text); background: var(--panel-3); }
+    .main { min-width: 0; padding: 26px clamp(18px, 4vw, 48px) 48px; }
+    .topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 28px; }
+    .eyebrow { color: var(--accent-2); font-size: 10px; font-weight: 780; letter-spacing: 1.45px; text-transform: uppercase; }
+    .page-title { margin: 5px 0 0; font-size: clamp(23px, 3vw, 30px); letter-spacing: -.8px; }
+    .page-subtitle { margin: 6px 0 0; color: var(--muted); font-size: 13px; }
+    .top-actions { display: flex; align-items: center; gap: 12px; }
+    .server-picker { min-width: 220px; max-width: 330px; }
+    .server-picker select { min-height: 42px; font-weight: 650; }
+    .page { display: none; animation: fade-in .22s ease; }
+    .page.active { display: block; }
+    @keyframes fade-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+    .grid { display: grid; gap: 16px; }
+    .stats { grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 18px; }
+    .stat-card, .card { border: 1px solid var(--line); border-radius: var(--radius); background: linear-gradient(145deg, rgba(20,28,43,.94), rgba(15,21,33,.94)); box-shadow: 0 10px 34px rgba(0,0,0,.12); }
+    .stat-card { min-height: 122px; padding: 18px 19px; }
+    .stat-head { display: flex; align-items: center; justify-content: space-between; color: var(--muted); font-size: 12px; font-weight: 620; }
+    .stat-icon { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 9px; background: rgba(139,124,255,.12); color: var(--accent-2); }
+    .stat-value { margin-top: 15px; font-size: 29px; line-height: 1; letter-spacing: -.8px; font-weight: 750; }
+    .stat-note { margin-top: 7px; color: var(--muted); font-size: 11px; }
+    .two-col { grid-template-columns: minmax(0, 1.45fr) minmax(275px, .9fr); align-items: start; }
+    .card { padding: 20px; }
+    .card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; margin-bottom: 17px; }
+    .card-title { margin: 0; font-size: 15px; font-weight: 730; letter-spacing: -.15px; }
+    .card-desc { margin: 5px 0 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
+    .subtle { color: var(--muted); font-size: 11px; }
+    .guild-list { display: grid; gap: 8px; }
+    .guild-row { display: flex; align-items: center; gap: 12px; padding: 11px; border: 1px solid transparent; border-radius: 12px; background: rgba(255,255,255,.025); cursor: pointer; transition: .18s ease; }
+    .guild-row:hover { border-color: rgba(139,124,255,.2); background: rgba(139,124,255,.07); }
+    .guild-avatar { display: grid; flex: 0 0 36px; place-items: center; width: 36px; height: 36px; border-radius: 12px; background: #302e52; color: #d5cfff; font-size: 13px; font-weight: 750; overflow: hidden; }
+    .guild-avatar img { width: 100%; height: 100%; object-fit: cover; }
+    .guild-info { min-width: 0; flex: 1; }
+    .guild-name { overflow: hidden; color: var(--text); font-size: 12px; font-weight: 680; text-overflow: ellipsis; white-space: nowrap; }
+    .guild-meta { margin-top: 4px; color: var(--muted); font-size: 10px; }
+    .guild-count { color: var(--soft); font-size: 11px; white-space: nowrap; }
+    .quick-actions { display: grid; gap: 10px; }
+    .quick-action { display: flex; align-items: center; gap: 12px; padding: 13px; border: 1px solid var(--line); border-radius: 12px; background: rgba(255,255,255,.02); color: var(--text); text-align: left; transition: .18s ease; }
+    .quick-action:hover { border-color: rgba(139,124,255,.35); background: rgba(139,124,255,.07); }
+    .quick-action .qicon { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; background: rgba(139,124,255,.12); color: var(--accent-2); }
+    .quick-action strong { display: block; font-size: 12px; }
+    .quick-action small { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; }
+    .toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 15px; }
+    .toolbar h2 { margin: 0; font-size: 17px; }
+    .toolbar p { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
+    .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .field { min-width: 0; }
+    .field.full { grid-column: 1 / -1; }
+    .field label { display: flex; justify-content: space-between; gap: 10px; margin: 0 0 7px; color: var(--soft); font-size: 12px; font-weight: 650; }
+    .field .hint { color: var(--muted); font-size: 10px; font-weight: 450; }
+    input, select, textarea { width: 100%; min-height: 42px; padding: 10px 12px; border: 1px solid rgba(156,174,205,.15); border-radius: 10px; outline: none; background: #0d1421; color: var(--text); transition: border-color .15s ease, box-shadow .15s ease; }
+    input::placeholder, textarea::placeholder { color: #637189; }
+    input:focus, select:focus, textarea:focus { border-color: rgba(139,124,255,.7); box-shadow: 0 0 0 3px rgba(139,124,255,.12); }
+    select { color-scheme: dark; }
+    textarea { min-height: 190px; resize: vertical; line-height: 1.6; }
+    .btn { min-height: 40px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 9px 14px; border: 1px solid transparent; border-radius: 10px; background: linear-gradient(135deg, #8c7eff, #6759e8); color: white; font-size: 12px; font-weight: 720; box-shadow: 0 5px 18px rgba(110,94,240,.2); transition: transform .15s ease, filter .15s ease; }
+    .btn:hover { transform: translateY(-1px); filter: brightness(1.08); }
+    .btn:disabled { cursor: wait; opacity: .55; transform: none; }
+    .btn.secondary { border-color: var(--line); background: rgba(255,255,255,.04); color: var(--soft); box-shadow: none; }
+    .btn.secondary:hover { background: rgba(255,255,255,.08); color: white; }
+    .btn.danger { border-color: rgba(251,113,133,.2); background: rgba(251,113,133,.1); color: #ffa8b4; box-shadow: none; }
+    .btn.small { min-height: 31px; padding: 6px 10px; border-radius: 8px; font-size: 10px; }
+    .form-actions { display: flex; align-items: center; justify-content: flex-end; gap: 9px; margin-top: 16px; }
+    .member-search { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+    .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; }
+    table { width: 100%; border-collapse: collapse; min-width: 680px; }
+    th { padding: 11px 13px; background: rgba(255,255,255,.025); color: #7f8ea6; font-size: 10px; font-weight: 760; letter-spacing: .8px; text-align: left; text-transform: uppercase; white-space: nowrap; }
+    td { padding: 12px 13px; border-top: 1px solid var(--line); color: var(--soft); font-size: 11px; vertical-align: middle; }
+    tbody tr:hover { background: rgba(255,255,255,.018); }
+    .member-cell { display: flex; align-items: center; gap: 9px; color: var(--text); font-weight: 650; }
+    .member-pic { width: 27px; height: 27px; border-radius: 9px; background: #28294a; object-fit: cover; }
+    .tag { display: inline-flex; align-items: center; gap: 6px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 999px; color: var(--soft); font-size: 10px; white-space: nowrap; }
+    .tag.success { border-color: rgba(52,211,153,.2); background: rgba(52,211,153,.07); color: #73e4ba; }
+    .tag.warn { border-color: rgba(244,189,80,.2); background: rgba(244,189,80,.07); color: #f4ce79; }
+    .tag.muted { background: rgba(255,255,255,.025); color: var(--muted); }
+    .empty { padding: 30px 18px; color: var(--muted); text-align: center; font-size: 12px; }
+    .empty strong { display: block; margin-bottom: 5px; color: var(--soft); font-size: 13px; }
+    .inline-status { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: rgba(255,255,255,.025); }
+    .inline-status .status-icon { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 9px; background: rgba(52,211,153,.1); color: var(--green); }
+    .inline-status.disabled .status-icon { background: rgba(244,189,80,.1); color: var(--yellow); }
+    .inline-status strong { display: block; font-size: 12px; }
+    .inline-status span { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; }
+    .rules-top { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(250px, .7fr); gap: 16px; align-items: start; }
+    .rules-tip { padding: 16px; border: 1px solid rgba(139,124,255,.18); border-radius: 13px; background: rgba(139,124,255,.06); color: #c6c1fa; font-size: 11px; line-height: 1.6; }
+    .rules-tip strong { display: block; margin-bottom: 6px; color: #dedaff; font-size: 12px; }
+    .banner { display: flex; gap: 11px; align-items: flex-start; margin-bottom: 18px; padding: 13px 15px; border: 1px solid rgba(244,189,80,.2); border-radius: 12px; background: rgba(244,189,80,.055); color: #e8ce94; font-size: 11px; line-height: 1.5; }
+    .banner strong { color: #f7daa0; }
+    .toast { position: fixed; z-index: 10; right: 22px; bottom: 22px; max-width: min(420px, calc(100vw - 44px)); padding: 13px 16px; border: 1px solid rgba(52,211,153,.24); border-radius: 12px; background: #14251f; color: #c9f7e5; box-shadow: 0 16px 50px rgba(0,0,0,.32); font-size: 12px; opacity: 0; transform: translateY(8px); pointer-events: none; transition: .22s ease; }
+    .toast.error { border-color: rgba(251,113,133,.27); background: #2a1820; color: #ffd1d8; }
+    .toast.show { opacity: 1; transform: translateY(0); }
+    .loading { padding: 30px; color: var(--muted); text-align: center; font-size: 12px; }
+    .bot-avatar { width: 34px; height: 34px; border-radius: 12px; object-fit: cover; background: #242d43; }
+    .toolbar-right { display: flex; gap: 8px; }
+    .stat-dot { color: var(--green); }
+    @media (max-width: 1000px) {
+      .shell { grid-template-columns: 210px minmax(0, 1fr); }
+      .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .two-col { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 700px) {
+      .shell { display: block; }
+      .sidebar { position: static; height: auto; padding: 12px 14px 10px; border-right: 0; border-bottom: 1px solid var(--line); }
+      .brand { padding: 0 4px 12px; }
+      .side-label, .connection-card, .side-bottom { display: none; }
+      .nav { display: flex; overflow-x: auto; gap: 5px; padding-bottom: 1px; }
+      .nav-btn { flex: 0 0 auto; width: auto; padding: 9px 11px; font-size: 11px; }
+      .nav-icon { width: auto; }
+      .main { padding: 19px 14px 35px; }
+      .topbar { align-items: flex-start; flex-direction: column; margin-bottom: 20px; }
+      .top-actions, .server-picker { width: 100%; max-width: none; }
+      .top-actions { justify-content: space-between; }
+      .stats { gap: 9px; }
+      .stat-card { min-height: 108px; padding: 14px; }
+      .stat-value { font-size: 24px; }
+      .card { padding: 15px; }
+      .form-grid, .rules-top { grid-template-columns: 1fr; }
+      .field.full { grid-column: auto; }
+      .form-actions { flex-wrap: wrap; }
+    }
+  </style>
+</head>
+<body>
+  <section id="login-view" class="login-wrap hidden">
+    <form id="login-form" class="login-card">
+      <div class="brand-mark">⚖</div>
+      <h1>Server Console</h1>
+      <p>Sign in with the local dashboard key to manage your bot's servers, punishments, rules, and settings.</p>
+      <label for="dashboard-key">Dashboard key</label>
+      <input id="dashboard-key" type="password" autocomplete="current-password" placeholder="Paste your dashboard key" required>
+      <button class="btn" type="submit">Unlock console <span aria-hidden="true">→</span></button>
+      <div id="login-error" class="login-foot">Your key is stored locally by the bot. Retrieve it with <code>python bot.py --dashboard-token</code> on the bot host.</div>
+    </form>
+  </section>
+
+  <div id="app-view" class="shell hidden">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">⚖</div>
+        <div><div class="brand-title">Punishment Manager</div><div class="brand-sub">Server Console</div></div>
+      </div>
+      <div class="side-label">Workspace</div>
+      <nav class="nav" aria-label="Dashboard sections">
+        <button class="nav-btn active" data-page="overview"><span class="nav-icon">◈</span> Overview</button>
+        <button class="nav-btn" data-page="punishments"><span class="nav-icon">⛨</span> Punishments</button>
+        <button class="nav-btn" data-page="rules"><span class="nav-icon">☷</span> Rules & reactions</button>
+        <button class="nav-btn" data-page="settings"><span class="nav-icon">⚙</span> Server settings</button>
+        <button class="nav-btn" data-page="activity"><span class="nav-icon">◷</span> History</button>
+      </nav>
+      <div class="side-spacer"></div>
+      <div class="connection-card">
+        <div class="connection-row"><i id="connection-pulse" class="pulse"></i><span id="connection-label">Connecting to Discord</span></div>
+        <div id="connection-sub" class="connection-sub">Checking bot status…</div>
+      </div>
+      <div class="side-bottom">
+        <div class="operator"><div class="operator-name">Local administrator</div><div class="operator-desc">Authenticated dashboard session</div></div>
+        <button id="logout-button" class="icon-btn" title="Sign out" aria-label="Sign out">↗</button>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <div id="page-eyebrow" class="eyebrow">Control center</div>
+          <h1 id="page-title" class="page-title">Overview</h1>
+          <p id="page-subtitle" class="page-subtitle">Monitor connected servers and active moderation.</p>
+        </div>
+        <div class="top-actions">
+          <img id="bot-avatar" class="bot-avatar hidden" alt="Bot avatar">
+          <label class="server-picker"><select id="server-select" aria-label="Select Discord server"><option value="">Loading servers…</option></select></label>
+        </div>
+      </header>
+
+      <section id="page-overview" class="page active">
+        <div class="grid stats">
+          <article class="stat-card"><div class="stat-head">Connected servers <span class="stat-icon">◎</span></div><div id="stat-guilds" class="stat-value">—</div><div class="stat-note">Discord communities</div></article>
+          <article class="stat-card"><div class="stat-head">Active cases <span class="stat-icon">⛨</span></div><div id="stat-punishments" class="stat-value">—</div><div class="stat-note">Across all connected servers</div></article>
+          <article class="stat-card"><div class="stat-head">Selected members <span class="stat-icon">♙</span></div><div id="stat-members" class="stat-value">—</div><div class="stat-note">In the current server</div></article>
+          <article class="stat-card"><div class="stat-head">Rules gate <span class="stat-icon">✓</span></div><div id="stat-rules" class="stat-value">—</div><div class="stat-note">Reaction role status</div></article>
+        </div>
+        <div class="grid two-col">
+          <article class="card">
+            <div class="card-head"><div><h2 class="card-title">Connected servers</h2><p class="card-desc">Choose a server to configure the bot or review moderation.</p></div><span id="server-total" class="tag muted">0 servers</span></div>
+            <div id="guild-list" class="guild-list"><div class="loading">Loading Discord servers…</div></div>
+          </article>
+          <article class="card">
+            <div class="card-head"><div><h2 class="card-title">Quick actions</h2><p class="card-desc">Jump into common server operations.</p></div></div>
+            <div class="quick-actions">
+              <button class="quick-action" data-jump="punishments"><span class="qicon">＋</span><span><strong>Apply a punishment</strong><small>Set a duration and reason</small></span></button>
+              <button class="quick-action" data-jump="rules"><span class="qicon">✓</span><span><strong>Publish server rules</strong><small>Enable the rules acceptance role</small></span></button>
+              <button class="quick-action" data-jump="settings"><span class="qicon">⚙</span><span><strong>Review server settings</strong><small>Roles, staff channel, and DMs</small></span></button>
+            </div>
+            <div style="height:14px"></div>
+            <div class="inline-status"><div class="status-icon">i</div><div><strong>Server-side controls</strong><span>Actions run through the bot and are recorded in its database.</span></div></div>
+          </article>
+        </div>
+      </section>
+
+      <section id="page-punishments" class="page">
+        <div class="toolbar"><div><h2>Active punishments</h2><p>Apply a timed role change or pardon an active case.</p></div><button id="refresh-punishments" class="btn secondary">↻ Refresh</button></div>
+        <div class="grid two-col">
+          <article class="card">
+            <div class="card-head"><div><h2 class="card-title">Apply punishment</h2><p class="card-desc">Uses the server's configured punish and post-punish roles.</p></div><span class="tag warn">Admin action</span></div>
+            <form id="punishment-form">
+              <div class="field"><label for="member-query">Find member <span class="hint">Name or user ID</span></label><div class="member-search"><input id="member-query" autocomplete="off" placeholder="Search this server…"><button id="member-search-button" class="btn secondary" type="button">Search</button></div></div>
+              <div class="field" style="margin-top:13px"><label for="member-select">Member</label><select id="member-select" required><option value="">Search for a member first</option></select></div>
+              <div class="form-grid" style="margin-top:13px">
+                <div class="field"><label for="punish-duration">Duration</label><input id="punish-duration" placeholder="30m, 2h, 1d" required></div>
+                <div class="field"><label for="punish-reason">Reason</label><input id="punish-reason" maxlength="900" placeholder="Reason for this action"></div>
+              </div>
+              <div class="form-actions"><button class="btn" type="submit">Apply punishment</button></div>
+            </form>
+          </article>
+          <article class="card">
+            <div class="card-head"><div><h2 class="card-title">Safety checks</h2><p class="card-desc">The dashboard uses the same role protections as the Discord commands.</p></div></div>
+            <div class="quick-actions">
+              <div class="inline-status"><div class="status-icon">✓</div><div><strong>Protected members stay protected</strong><span>Admins, moderators, staff, bots, and higher roles are rejected.</span></div></div>
+              <div class="inline-status"><div class="status-icon">◷</div><div><strong>Timers persist across restarts</strong><span>Active cases are stored in the bot's SQLite database.</span></div></div>
+              <div class="inline-status"><div class="status-icon">↗</div><div><strong>Dashboard audit marker</strong><span>Web actions are marked as dashboard-originated in the reason and logs.</span></div></div>
+            </div>
+          </article>
+        </div>
+        <article class="card" style="margin-top:16px">
+          <div class="card-head"><div><h2 class="card-title">Current cases</h2><p class="card-desc">Remaining time is calculated from the persisted expiry.</p></div><span id="punishment-total" class="tag muted">0 active</span></div>
+          <div id="punishment-table" class="table-wrap"><div class="empty">Loading cases…</div></div>
+        </article>
+      </section>
+
+      <section id="page-rules" class="page">
+        <div class="toolbar"><div><h2>Rules & reaction roles</h2><p>Publish an agreement post and choose the role granted when members react.</p></div></div>
+        <div class="grid rules-top">
+          <article class="card">
+            <div class="card-head"><div><h2 class="card-title">Active rules post</h2><p class="card-desc">Only reactions on the active bot post are processed.</p></div><span id="rules-state" class="tag muted">Not configured</span></div>
+            <div id="rules-status" class="inline-status disabled"><div class="status-icon">!</div><div><strong>No active acceptance post</strong><span>Publish rules below to configure the reaction role.</span></div></div>
+          </article>
+          <aside class="rules-tip"><strong>How the reaction gate works</strong>Members react with ✅ to receive the selected role. Removing the reaction removes that role. The role cannot have moderation or server-management permissions and must be below the bot's role.</aside>
+        </div>
+        <article class="card" style="margin-top:16px">
+          <div class="card-head"><div><h2 class="card-title">Publish or replace rules</h2><p class="card-desc">The previous active bot post is retired after the new one is saved.</p></div></div>
+          <form id="rules-form">
+            <div class="form-grid">
+              <div class="field"><label for="rules-channel">Post channel</label><select id="rules-channel" required><option value="">Choose a text channel</option></select></div>
+              <div class="field"><label for="rules-role">Acceptance role</label><select id="rules-role" required><option value="">Choose a role</option></select></div>
+              <div class="field full"><label for="rules-text">Rules text <span id="rules-count" class="hint">0 / 4096</span></label><textarea id="rules-text" maxlength="4096" placeholder="Write the server rules…" required></textarea></div>
+            </div>
+            <div class="form-actions"><button id="disable-rules-button" class="btn danger hidden" type="button">Disable reaction role</button><button class="btn" type="submit">Publish rules</button></div>
+          </form>
+        </article>
+      </section>
+
+      <section id="page-settings" class="page">
+        <div class="toolbar"><div><h2>Server configuration</h2><p>Configure punishment roles, staff notifications, and user DMs.</p></div></div>
+        <div class="banner"><span>ⓘ</span><span><strong>Role hierarchy matters.</strong> The bot's role must be above the punish and post-punishment roles. The staff channel and DM setting are saved for the selected server.</span></div>
+        <article class="card">
+          <form id="settings-form">
+            <div class="form-grid">
+              <div class="field"><label for="settings-punish-role">Punish role</label><select id="settings-punish-role" required><option value="">Choose a role</option></select></div>
+              <div class="field"><label for="settings-post-role">Post-punishment role</label><select id="settings-post-role" required><option value="">Choose a role</option></select></div>
+              <div class="field"><label for="settings-staff-role">Protected staff role <span class="hint">Optional</span></label><select id="settings-staff-role"><option value="">No staff role</option></select></div>
+              <div class="field"><label for="settings-staff-channel">Staff log channel <span class="hint">Optional</span></label><select id="settings-staff-channel"><option value="">No staff channel</option></select></div>
+              <div class="field full"><label for="settings-dm-user">DM members about punishment actions</label><select id="settings-dm-user"><option value="true">Enabled</option><option value="false">Disabled</option></select></div>
+            </div>
+            <div class="form-actions"><button class="btn" type="submit">Save server settings</button></div>
+          </form>
+        </article>
+        <article class="card" style="margin-top:16px">
+          <div class="card-head"><div><h2 class="card-title">Application commands</h2><p class="card-desc">Refresh this server's slash command list and clear stale global duplicates.</p></div><button id="sync-commands" class="btn secondary">↻ Fix & sync commands</button></div>
+          <div class="subtle">Use this if slash commands are missing or appear more than once. Discord may take a moment to refresh its client cache.</div>
+        </article>
+      </section>
+
+      <section id="page-activity" class="page">
+        <div class="toolbar"><div><h2>Punishment history</h2><p>Recently completed or pardoned actions for the selected server.</p></div><button id="refresh-history" class="btn secondary">↻ Refresh</button></div>
+        <article class="card"><div id="history-table" class="table-wrap"><div class="empty">Loading history…</div></div></article>
+      </section>
+    </main>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script>
+    (() => {
+      const titles = {
+        overview: ["Control center", "Overview", "Monitor connected servers and active moderation."],
+        punishments: ["Moderation", "Punishments", "Manage timed role actions and active cases."],
+        rules: ["Community", "Rules & reactions", "Publish rules and configure the acceptance reaction role."],
+        settings: ["Configuration", "Server settings", "Set role flow, staff alerts, and member notifications."],
+        activity: ["Audit trail", "History", "Review recent completed and pardoned cases."],
+      };
+      const state = { csrf: "", guildId: sessionStorage.getItem("pm.guild") || "", page: "overview", overview: null, detail: null, toastTimer: null };
+      const $ = (id) => document.getElementById(id);
+      const escapeHtml = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+      async function api(url, options = {}) {
+        const method = (options.method || "GET").toUpperCase();
+        const headers = { ...(options.headers || {}) };
+        if (options.body !== undefined) headers["Content-Type"] = "application/json";
+        if (!["GET", "HEAD"].includes(method) && state.csrf) headers["X-CSRF-Token"] = state.csrf;
+        const response = await fetch(url, { credentials: "same-origin", ...options, method, headers });
+        let result = {};
+        try { result = await response.json(); } catch (_) { result = {}; }
+        if (response.status === 401 && url !== "/api/login") {
+          lockConsole();
+          throw new Error(result.error || "Session expired. Sign in again.");
+        }
+        if (!response.ok) throw new Error(result.error || `Request failed (${response.status}).`);
+        return result;
+      }
+
+      function showToast(message, error = false) {
+        const toast = $("toast");
+        toast.textContent = message;
+        toast.classList.toggle("error", error);
+        toast.classList.add("show");
+        clearTimeout(state.toastTimer);
+        state.toastTimer = setTimeout(() => toast.classList.remove("show"), 3600);
+      }
+
+      function lockConsole() {
+        state.csrf = "";
+        $("app-view").classList.add("hidden");
+        $("login-view").classList.remove("hidden");
+      }
+
+      async function unlockConsole(csrf) {
+        state.csrf = csrf;
+        $("login-error").textContent = "Authenticated session. The browser session expires after a period of inactivity.";
+        $("login-view").classList.add("hidden");
+        $("app-view").classList.remove("hidden");
+        await loadOverview();
+      }
+
+      $("login-form").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const button = event.submitter;
+        button.disabled = true;
+        try {
+          const result = await api("/api/login", { method: "POST", body: JSON.stringify({ token: $("dashboard-key").value }) });
+          $("dashboard-key").value = "";
+          await unlockConsole(result.csrfToken);
+        } catch (error) {
+          $("login-error").textContent = error.message || "Could not sign in.";
+        } finally { button.disabled = false; }
+      });
+
+      $("logout-button").addEventListener("click", async () => {
+        try { await api("/api/logout", { method: "POST", body: "{}" }); } catch (_) {}
+        lockConsole();
+        $("dashboard-key").focus();
+      });
+
+      document.querySelectorAll(".nav-btn").forEach((button) => button.addEventListener("click", () => goTo(button.dataset.page)));
+      document.querySelectorAll("[data-jump]").forEach((button) => button.addEventListener("click", () => goTo(button.dataset.jump)));
+
+      function goTo(page) {
+        if (!titles[page]) return;
+        state.page = page;
+        document.querySelectorAll(".nav-btn").forEach((button) => button.classList.toggle("active", button.dataset.page === page));
+        document.querySelectorAll(".page").forEach((section) => section.classList.toggle("active", section.id === `page-${page}`));
+        $("page-eyebrow").textContent = titles[page][0];
+        $("page-title").textContent = titles[page][1];
+        $("page-subtitle").textContent = titles[page][2];
+        if (state.guildId) loadPageData(page).catch((error) => showToast(error.message, true));
+      }
+
+      $("server-select").addEventListener("change", async (event) => {
+        state.guildId = event.target.value;
+        sessionStorage.setItem("pm.guild", state.guildId);
+        await loadGuildDetail();
+        await loadPageData(state.page);
+      });
+
+      async function loadOverview() {
+        try {
+          state.overview = await api("/api/overview");
+          const bot = state.overview.bot || {};
+          $("stat-guilds").textContent = bot.guildCount ?? 0;
+          $("stat-punishments").textContent = bot.activePunishments ?? 0;
+          $("connection-label").textContent = bot.ready ? "Discord connected" : "Bot is connecting";
+          $("connection-sub").textContent = bot.name || "Punishment Manager";
+          $("connection-pulse").style.background = bot.ready ? "var(--green)" : "var(--yellow)";
+          if (bot.avatar) { $("bot-avatar").src = bot.avatar; $("bot-avatar").classList.remove("hidden"); }
+          const guilds = state.overview.guilds || [];
+          $("server-total").textContent = `${guilds.length} server${guilds.length === 1 ? "" : "s"}`;
+          const select = $("server-select");
+          const selectedStillExists = guilds.some((g) => String(g.id) === state.guildId);
+          if (!selectedStillExists) state.guildId = guilds.length ? String(guilds[0].id) : "";
+          select.innerHTML = guilds.length ? guilds.map((g) => `<option value="${g.id}" ${String(g.id) === state.guildId ? "selected" : ""}>${escapeHtml(g.name)}</option>`).join("") : `<option value="">No connected servers</option>`;
+          sessionStorage.setItem("pm.guild", state.guildId);
+          $("guild-list").innerHTML = guilds.length ? guilds.map((g) => `
+            <div class="guild-row" data-guild="${g.id}">
+              <div class="guild-avatar">${g.icon ? `<img src="${escapeHtml(g.icon)}" alt="">` : escapeHtml((g.name || "?").slice(0,1).toUpperCase())}</div>
+              <div class="guild-info"><div class="guild-name">${escapeHtml(g.name)}</div><div class="guild-meta">${Number(g.memberCount || 0).toLocaleString()} members</div></div>
+              <div class="guild-count">${g.activePunishments || 0} active</div>
+            </div>`).join("") : `<div class="empty"><strong>No Discord servers yet</strong>Invite the bot to a server to manage it here.</div>`;
+          document.querySelectorAll(".guild-row").forEach((row) => row.addEventListener("click", async () => {
+            state.guildId = row.dataset.guild; select.value = state.guildId; sessionStorage.setItem("pm.guild", state.guildId);
+            await loadGuildDetail(); goTo("punishments");
+          }));
+          if (state.guildId) {
+            await loadGuildDetail();
+            await loadPageData(state.page);
+          } else {
+            $("stat-members").textContent = "—";
+            $("stat-rules").textContent = "—";
+          }
+        } catch (error) { showToast(error.message, true); }
+      }
+
+      async function loadGuildDetail() {
+        if (!state.guildId) return;
+        state.detail = await api(`/api/guilds/${encodeURIComponent(state.guildId)}`);
+        const guild = state.detail.guild || {};
+        $("stat-members").textContent = guild.memberCount == null ? "—" : Number(guild.memberCount).toLocaleString();
+        $("stat-rules").textContent = state.detail.rules?.enabled ? "Active" : "Off";
+        const select = $("server-select");
+        if (select.value !== state.guildId) select.value = state.guildId;
+        fillSelect("rules-channel", state.detail.channels, state.detail.rules?.channelId, "Choose a text channel");
+        fillSelect("rules-role", state.detail.roles, state.detail.rules?.roleId, "Choose a role");
+        $("rules-text").value = state.detail.rules?.text || "";
+        updateRulesStatus(state.detail.rules || {});
+        fillSelect("settings-punish-role", state.detail.roles, state.detail.settings?.punishRoleId, "Choose a role");
+        fillSelect("settings-post-role", state.detail.roles, state.detail.settings?.postRoleId, "Choose a role");
+        fillSelect("settings-staff-role", state.detail.roles, state.detail.settings?.staffRoleId, "No staff role");
+        fillSelect("settings-staff-channel", state.detail.channels, state.detail.settings?.staffChannelId, "No staff channel");
+        $("settings-dm-user").value = String(state.detail.settings?.dmUser !== false);
+        $("rules-count").textContent = `${($("rules-text").value || "").length} / 4096`;
+      }
+
+      function fillSelect(id, items, selected, placeholder) {
+        const select = $(id);
+        if (!select) return;
+        const options = (items || []).map((item) => {
+          const label = item.category ? `${item.category} / #${item.name}` : (item.position !== undefined ? `${item.name} · role` : `#${item.name}`);
+          return `<option value="${item.id}" ${String(item.id) === String(selected ?? "") ? "selected" : ""}>${escapeHtml(label)}</option>`;
+        }).join("");
+        select.innerHTML = `<option value="">${escapeHtml(placeholder)}</option>${options}`;
+        if (selected != null) select.value = String(selected);
+      }
+
+      function updateRulesStatus(rules) {
+        const box = $("rules-status");
+        const tag = $("rules-state");
+        const disable = $("disable-rules-button");
+        if (rules.enabled) {
+          box.classList.remove("disabled");
+          box.querySelector(".status-icon").textContent = "✓";
+          box.querySelector("strong").textContent = "Rules acceptance is active";
+          const channel = (state.detail?.channels || []).find((x) => String(x.id) === String(rules.channelId));
+          const role = (state.detail?.roles || []).find((x) => String(x.id) === String(rules.roleId));
+          box.querySelector("span").textContent = `Posted in #${channel?.name || "unknown channel"} · grants ${role?.name || "configured role"}`;
+          tag.textContent = "Active"; tag.className = "tag success"; disable.classList.remove("hidden");
+        } else {
+          box.classList.add("disabled");
+          box.querySelector(".status-icon").textContent = "!";
+          box.querySelector("strong").textContent = "No active acceptance post";
+          box.querySelector("span").textContent = "Publish rules below to configure the reaction role.";
+          tag.textContent = "Not configured"; tag.className = "tag muted"; disable.classList.add("hidden");
+        }
+      }
+
+      async function loadPageData(page) {
+        if (!state.guildId) return;
+        if (page === "overview" || page === "punishments") await loadPunishments();
+        if (page === "activity") await loadHistory();
+        if (page === "rules" || page === "settings") await loadGuildDetail();
+      }
+
+      async function loadPunishments() {
+        const result = await api(`/api/guilds/${encodeURIComponent(state.guildId)}/punishments`);
+        const items = result.punishments || [];
+        $("punishment-total").textContent = `${items.length} active`;
+        const root = $("punishment-table");
+        if (!items.length) { root.innerHTML = `<div class="empty"><strong>No active punishments</strong>New cases will appear here.</div>`; return; }
+        root.innerHTML = `<table><thead><tr><th>Member</th><th>Stage</th><th>Reason</th><th>Time left</th><th>Action</th></tr></thead><tbody>${items.map((p) => `
+          <tr><td><div class="member-cell">${p.memberAvatar ? `<img class="member-pic" src="${escapeHtml(p.memberAvatar)}" alt="">` : ""}<span>${escapeHtml(p.memberName)}</span></div><div class="subtle">ID ${escapeHtml(p.user_id)}</div></td>
+          <td><span class="tag ${p.stage === "punished" ? "warn" : "muted"}">${escapeHtml(p.stage)}</span></td><td>${escapeHtml(p.reason || "No reason provided")}</td><td>${escapeHtml(p.remainingLabel)}</td>
+          <td><button class="btn danger small pardon-btn" data-user="${p.user_id}">Pardon</button></td></tr>`).join("")}</tbody></table>`;
+        root.querySelectorAll(".pardon-btn").forEach((button) => button.addEventListener("click", () => pardon(button.dataset.user)));
+      }
+
+      async function loadHistory() {
+        const result = await api(`/api/guilds/${encodeURIComponent(state.guildId)}/history`);
+        const rows = result.history || [];
+        const root = $("history-table");
+        if (!rows.length) { root.innerHTML = `<div class="empty"><strong>No history recorded</strong>Completed and pardoned cases will appear here.</div>`; return; }
+        root.innerHTML = `<table><thead><tr><th>Member</th><th>Moderator ID</th><th>Duration</th><th>Started</th><th>Ended</th><th>Outcome</th><th>Reason</th></tr></thead><tbody>${rows.map((r) => `
+          <tr><td>${escapeHtml(r.memberName)}<div class="subtle">ID ${escapeHtml(r.user_id)}</div></td><td>${escapeHtml(r.moderator_id)}</td><td>${escapeHtml(r.durationLabel)}</td>
+          <td>${escapeHtml(formatDate(r.started_at))}</td><td>${escapeHtml(formatDate(r.ended_at))}</td><td><span class="tag muted">${escapeHtml(r.ended_reason || "completed")}</span></td><td>${escapeHtml(r.reason || "—")}</td></tr>`).join("")}</tbody></table>`;
+      }
+
+      function formatDate(value) {
+        if (!value) return "—";
+        const date = new Date(value);
+        return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
+      }
+
+      $("member-search-button").addEventListener("click", searchMembers);
+      $("member-query").addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); searchMembers(); } });
+      async function searchMembers() {
+        const query = $("member-query").value.trim();
+        if (query.length < 2) return showToast("Enter at least two characters to search.", true);
+        const button = $("member-search-button"); button.disabled = true;
+        try {
+          const result = await api(`/api/guilds/${encodeURIComponent(state.guildId)}/members?q=${encodeURIComponent(query)}`);
+          const select = $("member-select");
+          select.innerHTML = result.members?.length ? result.members.map((m) => `<option value="${m.id}">${escapeHtml(m.name)} · ${escapeHtml(m.username)} · ${m.id}</option>`).join("") : `<option value="">No members found</option>`;
+          if (result.members?.length) showToast(`Found ${result.members.length} member${result.members.length === 1 ? "" : "s"}.`);
+          else showToast("No members found for that search.", true);
+        } catch (error) { showToast(error.message, true); }
+        finally { button.disabled = false; }
+      }
+
+      $("punishment-form").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const button = event.submitter; button.disabled = true;
+        try {
+          const userId = $("member-select").value;
+          if (!userId) throw new Error("Choose a member first.");
+          await api(`/api/guilds/${encodeURIComponent(state.guildId)}/punishments`, {
+            method: "POST",
+            body: JSON.stringify({ userId, duration: $("punish-duration").value.trim(), reason: $("punish-reason").value.trim() }),
+          });
+          $("punish-duration").value = ""; $("punish-reason").value = "";
+          showToast("Punishment applied."); await loadPunishments(); await loadOverview();
+        } catch (error) { showToast(error.message, true); }
+        finally { button.disabled = false; }
+      });
+
+      async function pardon(userId) {
+        if (!confirm("Pardon this member and remove the punishment roles?")) return;
+        try {
+          await api(`/api/guilds/${encodeURIComponent(state.guildId)}/punishments/${encodeURIComponent(userId)}/pardon`, { method: "POST", body: "{}" });
+          showToast("Member pardoned."); await loadPunishments(); await loadHistory(); await loadOverview();
+        } catch (error) { showToast(error.message, true); }
+      }
+
+      $("rules-text").addEventListener("input", () => { $("rules-count").textContent = `${$("rules-text").value.length} / 4096`; });
+      $("rules-form").addEventListener("submit", async (event) => {
+        event.preventDefault(); const button = event.submitter; button.disabled = true;
+        try {
+          await api(`/api/guilds/${encodeURIComponent(state.guildId)}/rules`, {
+            method: "PUT",
+            body: JSON.stringify({ channelId: $("rules-channel").value, roleId: $("rules-role").value, text: $("rules-text").value }),
+          });
+          showToast("Rules published and reaction role activated."); await loadGuildDetail(); await loadOverview();
+        } catch (error) { showToast(error.message, true); }
+        finally { button.disabled = false; }
+      });
+
+      $("disable-rules-button").addEventListener("click", async () => {
+        if (!confirm("Disable rules reactions? Existing role assignments will stay as they are.")) return;
+        try { await api(`/api/guilds/${encodeURIComponent(state.guildId)}/rules`, { method: "DELETE" }); showToast("Rules reaction role disabled."); await loadGuildDetail(); await loadOverview(); }
+        catch (error) { showToast(error.message, true); }
+      });
+
+      $("settings-form").addEventListener("submit", async (event) => {
+        event.preventDefault(); const button = event.submitter; button.disabled = true;
+        try {
+          await api(`/api/guilds/${encodeURIComponent(state.guildId)}/settings`, {
+            method: "POST",
+            body: JSON.stringify({
+              punishRoleId: $("settings-punish-role").value,
+              postRoleId: $("settings-post-role").value,
+              staffRoleId: $("settings-staff-role").value || null,
+              staffChannelId: $("settings-staff-channel").value || null,
+              dmUser: $("settings-dm-user").value === "true",
+            }),
+          });
+          showToast("Server settings saved."); await loadGuildDetail();
+        } catch (error) { showToast(error.message, true); }
+        finally { button.disabled = false; }
+      });
+
+      $("sync-commands").addEventListener("click", async (event) => {
+        const button = event.currentTarget; button.disabled = true;
+        try { const result = await api(`/api/guilds/${encodeURIComponent(state.guildId)}/sync`, { method: "POST", body: "{}" }); showToast(result.synced ? "Commands refreshed for this server." : "Command sync will retry on reconnect.", !result.synced); }
+        catch (error) { showToast(error.message, true); }
+        finally { button.disabled = false; }
+      });
+      $("refresh-punishments").addEventListener("click", () => loadPunishments().catch((e) => showToast(e.message, true)));
+      $("refresh-history").addEventListener("click", () => loadHistory().catch((e) => showToast(e.message, true)));
+
+      async function initialize() {
+        try {
+          const session = await api("/api/session");
+          await unlockConsole(session.csrfToken);
+        } catch (_) { lockConsole(); $("dashboard-key").focus(); }
+      }
+      initialize();
+    })();
+  </script>
+</body>
+</html>

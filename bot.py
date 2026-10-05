@@ -24,6 +24,8 @@ from discord.ext import commands, tasks
 
 
 import paths
+from dashboard import DashboardServer, ensure_dashboard_token
+from rules import RulesCog
 
 
 # --------------------------------------------------------------------------- #
@@ -242,6 +244,13 @@ DEFAULT_CONFIG: dict = {
     # --- legacy / shared ---
     "token": "",
     "guilds": {},
+    "rules": {},              # per-guild published rules + reaction-role config
+    "dashboard_enabled": True,
+    "dashboard_host": "127.0.0.1",
+    "dashboard_port": 8765,
+    "dashboard_secure_cookie": False,
+    "dashboard_allowed_hosts": [],
+    "dashboard_token": "",
     "default_duration_minutes": 30,
     "log_channel_id": None,
 }
@@ -308,45 +317,76 @@ def save_config(cfg: dict) -> None:
 
 
 def get_guild_config(cfg: dict, guild_id: int) -> Optional[dict]:
-    """Return the per-guild config dict. Prefers the new single-server
-    shape (server_id == guild_id) and falls back to the legacy
-    `guilds` map so existing setups keep working.
+    """Return effective settings for a guild, including legacy fallbacks.
+
+    Punishment roles live in the per-guild ``guilds`` map for multi-server
+    installs, or in the top-level fields for the configured primary guild.
+    Staff channel and DM preferences support per-guild overrides while keeping
+    older top-level values as defaults.
     """
-    if cfg.get("server_id") and int(cfg["server_id"]) == int(guild_id):
-        return {
+    guild_id = int(guild_id)
+    guilds = cfg.get("guilds", {})
+    per_guild = guilds.get(str(guild_id)) if isinstance(guilds, dict) else None
+    if not isinstance(per_guild, dict):
+        per_guild = None
+
+    try:
+        is_primary = bool(cfg.get("server_id")) and int(cfg["server_id"]) == guild_id
+    except (TypeError, ValueError):
+        is_primary = False
+
+    if not is_primary and per_guild is None:
+        return None
+
+    if is_primary:
+        result = {
             "punish_role_id": cfg.get("punish_role_id"),
             "post_role_id": cfg.get("post_role_id"),
             "staff_role_id": cfg.get("staff_role_id"),
         }
-    legacy = cfg.get("guilds", {}).get(str(guild_id))
-    if legacy is not None:
+    else:
         # Drop the legacy normal_role_id key from the in-memory view so
         # callers don't trip over it.
-        legacy = {k: v for k, v in legacy.items() if k != "normal_role_id"}
-        # If a staff_role_id is set at the top level, fall through to that.
-        if "staff_role_id" not in legacy and cfg.get("staff_role_id"):
-            legacy["staff_role_id"] = cfg.get("staff_role_id")
-    return legacy
+        result = {k: v for k, v in per_guild.items() if k != "normal_role_id"}
+
+    # A guild entry wins over top-level defaults when that key was explicitly
+    # saved (including an explicit null used to clear an optional setting).
+    if per_guild is not None:
+        for key in ("staff_role_id", "staff_channel_id", "dm_user"):
+            if key in per_guild:
+                result[key] = per_guild[key]
+
+    result.setdefault("staff_role_id", cfg.get("staff_role_id"))
+    result.setdefault(
+        "staff_channel_id",
+        cfg.get("staff_channel_id") or cfg.get("log_channel_id"),
+    )
+    result.setdefault("dm_user", cfg.get("dm_user", True))
+    return result
 
 
-def get_staff_role_id(cfg: dict) -> Optional[int]:
-    """The id of the role that marks a user as 'staff' (protected from
-    punishment). Returns None if not configured.
-    """
-    val = cfg.get("staff_role_id")
-    if val:
-        return int(val)
-    return None
+def get_staff_role_id(
+    cfg: dict, guild_id: Optional[int] = None
+) -> Optional[int]:
+    """The staff role protected from punishment, optionally guild-specific."""
+    guild_cfg = get_guild_config(cfg, guild_id) if guild_id is not None else None
+    val = (
+        guild_cfg.get("staff_role_id")
+        if guild_cfg is not None
+        else cfg.get("staff_role_id")
+    )
+    return int(val) if val else None
 
 
-def get_staff_channel_id(cfg: dict) -> Optional[int]:
-    """Resolve the staff/log channel id from either the new or legacy
-    config key.
-    """
-    val = cfg.get("staff_channel_id")
-    if val:
-        return int(val)
-    return cfg.get("log_channel_id")
+def get_staff_channel_id(cfg: dict, guild_id: Optional[int] = None) -> Optional[int]:
+    """Resolve the staff/log channel with per-guild and legacy fallbacks."""
+    guild_cfg = get_guild_config(cfg, guild_id) if guild_id is not None else None
+    val = (
+        guild_cfg.get("staff_channel_id")
+        if guild_cfg is not None
+        else cfg.get("staff_channel_id") or cfg.get("log_channel_id")
+    )
+    return int(val) if val else None
 
 
 def is_protected_member(
@@ -367,7 +407,7 @@ def is_protected_member(
     if perms.moderate_members or perms.manage_guild or perms.kick_members or perms.ban_members:
         return "That user has moderation permissions and is protected."
     # Holding the configured staff role.
-    staff_role_id = get_staff_role_id(cfg)
+    staff_role_id = get_staff_role_id(cfg, guild.id)
     if staff_role_id is not None:
         staff_role = guild.get_role(staff_role_id)
         if staff_role and staff_role in member.roles:
@@ -378,8 +418,11 @@ def is_protected_member(
     return None
 
 
-def should_dm_user(cfg: dict) -> bool:
-    """Whether the bot should DM the punished user about the action."""
+def should_dm_user(cfg: dict, guild_id: Optional[int] = None) -> bool:
+    """Whether the bot should DM users, with an optional per-guild override."""
+    guild_cfg = get_guild_config(cfg, guild_id) if guild_id is not None else None
+    if guild_cfg is not None and "dm_user" in guild_cfg:
+        return bool(guild_cfg["dm_user"])
     return bool(cfg.get("dm_user", True))
 
 
@@ -467,6 +510,7 @@ def format_duration(seconds: int) -> str:
 intents = discord.Intents.default()
 intents.members = True       # required to read/modify members
 intents.guilds = True
+intents.reactions = True     # rules acceptance / reaction-role events
 
 
 class PunishmentBot(commands.Bot):
@@ -477,6 +521,20 @@ class PunishmentBot(commands.Bot):
             help_command=None,
         )
         self.config = config
+        self.dashboard = DashboardServer(
+            self,
+            save_config=save_config,
+            db_fetchall=db_fetchall,
+            db_fetchone=db_fetchone,
+            db_execute=db_execute,
+            archive_punishment=archive_punishment,
+            get_guild_config=get_guild_config,
+            get_staff_channel_id=get_staff_channel_id,
+            should_dm_user=should_dm_user,
+            is_protected_member=is_protected_member,
+            parse_duration=parse_duration,
+            format_duration=format_duration,
+        )
         self.scheduler_task: Optional[asyncio.Task] = None
         self._guild_sync_lock = asyncio.Lock()
         self._guild_commands_copied: set[int] = set()
@@ -484,6 +542,10 @@ class PunishmentBot(commands.Bot):
         # Set once the duplicate-prone *global* command registry has been
         # emptied. Retried on the next READY if that request failed.
         self._global_registry_cleared = False
+
+    async def close(self) -> None:
+        await self.dashboard.close()
+        await super().close()
 
     async def _log_local_commands(self) -> None:
         """Log every slash command that's about to be registered. Useful
@@ -786,7 +848,7 @@ class PunishmentBot(commands.Bot):
             )
 
     async def _log_event(self, guild: discord.Guild, message: str) -> None:
-        channel_id = self.config.get("log_channel_id")
+        channel_id = get_staff_channel_id(self.config, guild.id)
         if not channel_id:
             return
         channel = guild.get_channel(channel_id)
@@ -963,7 +1025,7 @@ class PunishmentBot(commands.Bot):
         content: Optional[str] = None,
     ) -> None:
         """Post an embed in the configured staff channel. Never raises."""
-        channel_id = get_staff_channel_id(self.config)
+        channel_id = get_staff_channel_id(self.config, guild.id)
         if not channel_id:
             return
         channel = guild.get_channel(channel_id)
@@ -1298,7 +1360,7 @@ class PunishmentCog(commands.Cog):
         await self.bot._send_staff_embed(interaction.guild, staff_embed)
 
         # DM the punished user.
-        if should_dm_user(self.bot.config):
+        if should_dm_user(self.bot.config, interaction.guild_id):
             dm_embed = self.bot._build_punish_dm_embed(
                 guild_name=interaction.guild.name,
                 moderator_name=str(interaction.user),
@@ -1377,7 +1439,7 @@ class PunishmentCog(commands.Cog):
         )
         await self.bot._send_staff_embed(interaction.guild, staff_embed)
         # DM the user.
-        if should_dm_user(self.bot.config):
+        if should_dm_user(self.bot.config, interaction.guild_id):
             dm_embed = self.bot._build_pardon_dm_embed(
                 guild_name=interaction.guild.name,
                 moderator_name=str(interaction.user),
@@ -1405,25 +1467,39 @@ class PunishmentCog(commands.Cog):
             )
             return
 
-        # Mirror to both the legacy per-guild map (for multi-server setups)
-        # and the new top-level fields (for single-server setups).
-        self.bot.config.setdefault("guilds", {})[str(interaction.guild_id)] = {
+        # Store complete per-guild settings and mirror to the installer shape
+        # for the configured primary server. Per-guild overrides are preferred
+        # by the helpers above, so one server can be configured independently.
+        guilds = self.bot.config.get("guilds", {})
+        if not isinstance(guilds, dict):
+            guilds = {}
+            self.bot.config["guilds"] = guilds
+        guild_key = str(interaction.guild_id)
+        guild_cfg = guilds.get(guild_key, {})
+        guild_cfg = dict(guild_cfg) if isinstance(guild_cfg, dict) else {}
+        guild_cfg.update({
             "punish_role_id": punish_role.id,
             "post_role_id": post_role.id,
-        }
-        if (
-            self.bot.config.get("server_id")
-            and int(self.bot.config["server_id"]) == int(interaction.guild_id)
-        ):
+        })
+        if staff_role is not None:
+            guild_cfg["staff_role_id"] = staff_role.id
+        if staff_channel is not None:
+            guild_cfg["staff_channel_id"] = staff_channel.id
+        if dm_user is not None:
+            guild_cfg["dm_user"] = bool(dm_user)
+        guilds[guild_key] = guild_cfg
+
+        try:
+            is_primary = bool(self.bot.config.get("server_id")) and int(
+                self.bot.config["server_id"]
+            ) == int(interaction.guild_id)
+        except (TypeError, ValueError):
+            is_primary = False
+        if is_primary:
             self.bot.config["punish_role_id"] = punish_role.id
             self.bot.config["post_role_id"] = post_role.id
-        if staff_role is not None:
-            self.bot.config["staff_role_id"] = staff_role.id
-            # Also store per-guild so multi-server setups respect it.
-            self.bot.config["guilds"][str(interaction.guild_id)]["staff_role_id"] = (
-                staff_role.id
-            )
-
+            if staff_role is not None:
+                self.bot.config["staff_role_id"] = staff_role.id
         if staff_channel is not None:
             self.bot.config["staff_channel_id"] = staff_channel.id
             self.bot.config["log_channel_id"] = staff_channel.id  # legacy key
@@ -1516,7 +1592,7 @@ class PunishmentCog(commands.Cog):
             return
         punish = interaction.guild.get_role(cfg["punish_role_id"])
         post = interaction.guild.get_role(cfg["post_role_id"])
-        staff_role_id = get_staff_role_id(self.bot.config)
+        staff_role_id = get_staff_role_id(self.bot.config, interaction.guild_id)
         staff_role = (
             interaction.guild.get_role(staff_role_id) if staff_role_id else None
         )
@@ -1644,7 +1720,10 @@ class PunishmentCog(commands.Cog):
 # Add the cog to the bot. We do this BEFORE setup_hook runs (so the
 # tree has the commands by the time it syncs).
 async def _register_cog() -> None:
-    await bot.add_cog(PunishmentCog(bot))
+    if bot.get_cog("PunishmentCog") is None:
+        await bot.add_cog(PunishmentCog(bot))
+    if bot.get_cog("RulesCog") is None:
+        await bot.add_cog(RulesCog(bot, save_config))
 
 
 # --------------------------------------------------------------------------- #
@@ -1701,6 +1780,10 @@ _original_setup_hook = PunishmentBot.setup_hook
 async def setup_hook(self: PunishmentBot) -> None:
     await _register_cog()
     await _original_setup_hook(self)
+    try:
+        await self.dashboard.start()
+    except Exception:
+        logger.exception("Could not start the server dashboard; the Discord bot will keep running.")
 
 
 PunishmentBot.setup_hook = setup_hook  # type: ignore[assignment]
@@ -1742,6 +1825,7 @@ def _print_help() -> None:
         "  --uninstall-service\n"
         "                    Remove the background service.\n"
         "  --paths           Print where config, database and logs live.\n"
+        "  --dashboard-token Print or initialize the dashboard login key.\n"
         "  --version         Print the version of this build.\n"
         "  --help, -h        Show this message.\n"
         "\n"
@@ -2090,6 +2174,14 @@ if __name__ == "__main__":
         sys.stdout.write(f"Punishment Manager {paths.app_version()}\n")
         sys.stdout.write(paths.describe() + "\n")
         sys.exit(0)
+
+    if args and args[0] == "--dashboard-token":
+        try:
+            sys.stdout.write(ensure_dashboard_token(bot.config, save_config) + "\n")
+            sys.exit(0)
+        except (OSError, ValueError) as exc:
+            sys.stderr.write(f"ERROR: could not initialize dashboard key: {exc}\n")
+            sys.exit(1)
 
     if args and args[0] in ("--install", "--reinstall"):
         from installer import run_installer

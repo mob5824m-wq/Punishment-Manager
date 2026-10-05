@@ -2,7 +2,8 @@
 
 A cross-platform [discord.py](https://discordpy.readthedocs.io/) bot that
 temporarily swaps a user's role and posts Discord embeds to staff and the
-punished user.
+punished user. It also includes an authenticated server-side web dashboard for
+managing connected servers, punishments, rules, configuration, and history.
 
 **Role flow**
 
@@ -71,13 +72,18 @@ build pipeline, and the `VERSION` file for where the number comes from.
 * A Discord application + bot token — see
   <https://discord.com/developers/applications>.
 * The bot must be invited with at minimum:
-  * **Manage Roles**
-  * **Moderate Members** *(required by `/punish` for the runtime check)*
-  * **Send Messages** *(for staff-channel embeds)*
+  * **Manage Roles** *(for punishment and rules-acceptance roles)*
+  * **Moderate Members** *(required by `/punish`)*
+  * **Send Messages** *(for staff-channel embeds and rules posts)*
+  * **Embed Links** and **Add Reactions** *(for rules posts)*
   * **Use Application Commands**
 
-> **Role order matters.** Drag the bot's role *above* all three configured
-> roles in *Server Settings → Roles*, otherwise it cannot give or take them.
+Enable **Server Members Intent** in the Discord Developer Portal under
+*Bot → Privileged Gateway Intents*; the bot uses it for member/role updates.
+
+> **Role order matters.** Drag the bot's role *above* the punish, post-punish,
+> and rules-acceptance roles in *Server Settings → Roles*, otherwise it cannot
+> give or take them.
 
 ---
 
@@ -162,6 +168,26 @@ This writes `config.json` with everything the bot needs.
    `staff_role`, `staff_channel`, and `dm_user` are optional; the two
    role arguments are required.
 
+### Configure rules and a reaction role
+
+1. Create a basic `Verified` / `Member` role. Keep it below the bot's role and
+   do not give it moderation or server-management permissions.
+2. As a server administrator, publish the rules:
+
+   ```text
+   /rules publish channel:#rules role:@Verified rules_text:"1. Be respectful. 2. No spam or harassment."
+   ```
+
+   The bot posts an embed and adds a ✅ reaction. Members who react receive
+   the configured role; removing their reaction removes that role. Publishing
+   again replaces the previous active bot post. Existing role assignments
+   are not changed by republishing; if you change the acceptance role, remove
+   the old role from existing members as needed. `/rules disable` turns off
+   reaction handling and leaves assignments unchanged.
+
+Rules text can be up to 4,096 characters. The bot stores the active post and
+role per server in `config.json`; no manual config edit is needed.
+
 ### Option C — edit `config.json` directly
 
 ```json
@@ -172,14 +198,20 @@ This writes `config.json` with everything the bot needs.
   "post_role_id":     333333333333333333,
   "staff_role_id":    555555555555555555,
   "staff_channel_id": 444444444444444444,
-  "dm_user":          true
+  "dm_user":          true,
+  "rules":            {},
+  "dashboard_enabled": true,
+  "dashboard_host":    "127.0.0.1",
+  "dashboard_port":    8765
 }
 ```
 
 The `bot_token`, `server_id`, and role ids go at the top level
 (single-server shape). `server_id` is optional for command syncing; if it is
-omitted, use `/setup` to associate role settings with each server. The
-`guilds` / `token` / `log_channel_id` keys below them are a legacy
+omitted, use `/setup` to associate role settings with each server. The bot
+fills the `rules` map automatically when `/rules publish` is used and generates
+`dashboard_token` on first startup. Keep `config.json` private; it contains
+credentials. The `guilds`, `token`, and `log_channel_id` keys are a legacy
 multi-server shape and are still respected for backwards compatibility.
 
 To find ids: enable Developer Mode in *Settings -> Advanced*, then
@@ -203,8 +235,40 @@ You should see:
 [INFO] punishment_manager: Database initialised at data/punishments.db
 [INFO] punishment_manager: Global command registry was already empty (startup; commands are registered per guild).
 [INFO] punishment_manager: Logged in as YourBot (id=...)
-[INFO] punishment_manager: Synced 3 command(s) to guild X (instant).
+[INFO] punishment_manager: Synced 4 command(s) to guild X (instant).
 ```
+
+### Server-side web dashboard
+
+When the bot is running, open **<http://127.0.0.1:8765>** on the bot host.
+The dashboard covers connected servers, active punishments, pardon/apply
+actions, rules and reaction roles, server role/channel settings, slash-command
+sync, and punishment history.
+
+The first startup generates a private dashboard key and saves it in
+`config.json`. Retrieve it from the same machine/account with:
+
+```bash
+python3 bot.py --dashboard-token
+# installed build:
+punishment-manager --dashboard-token
+```
+
+The default listener is loopback-only; the key has access to **every server
+connected to this bot**, so treat it like a bot-owner credential. For a remote
+server, prefer an SSH tunnel rather than opening a port:
+
+```bash
+ssh -L 8765:127.0.0.1:8765 user@your-server
+```
+
+Then open <http://127.0.0.1:8765> on your workstation. If you deliberately
+place it behind an HTTPS reverse proxy, set `dashboard_host` to `0.0.0.0`, set
+`dashboard_secure_cookie` to `true`, and set `dashboard_allowed_hosts` to the
+proxy's exact hostname. Restrict it with a firewall and **never expose the
+plain-HTTP dashboard directly to the internet**. Dashboard moderation entries
+are tagged `[Dashboard]`; since the dashboard uses a host key rather than
+Discord OAuth, its moderator ID is recorded as the server owner.
 
 Slash commands are registered **per server only** — that is the scope that
 appears immediately, so they show up without waiting and without setting
@@ -223,14 +287,17 @@ and the admin-only `/fixcommands` command does the same thing on demand.
 
 ## 5. Commands
 
-The bot uses a single slash command group plus two admin commands.
+The bot provides punishment commands, rules/reaction-role commands, and
+admin setup utilities.
 
 | Command              | Who can use it                  | What it does |
 |----------------------|---------------------------------|--------------|
 | `/punish apply`      | Members with *Moderate Members* | Adds the punish role for the configured duration. Posts a staff embed and DMs the user. |
 | `/punish pardon`     | Members with *Moderate Members* | Ends the punishment early and removes the punish / post-punish role. Posts a staff embed and DMs the user. |
 | `/punish status`     | Anyone                          | Shows the server configuration and a list of active punishments. Pass a `user` to see that user's active status + history. |
-| `/setup`             | Server administrators           | Configures the three roles, the staff channel, and DM behavior. |
+| `/rules publish`     | Server administrators           | Posts the rules and sets the active ✅ acceptance reaction role. |
+| `/rules disable`     | Server administrators           | Stops handling reactions on the active rules post. Existing roles are unchanged. |
+| `/setup`             | Server administrators           | Configures the punishment roles, staff channel, and DM behavior. |
 | `/fixcommands`       | Server administrators           | Removes duplicated slash commands (e.g. doubled `/punish` entries) and re-syncs this server. |
 
 ### `/punish apply` options
@@ -297,9 +364,9 @@ is no cross-compile.
 | Linux    | `build/build_linux.sh`       | `dist/punishment-manager_1.0.0_amd64.deb`|
 | Windows  | `build\build_windows.bat`    | `dist\PunishmentManager-Setup-1.0.0.exe` |
 
-All three flow through `build/pyinstaller.spec` which bundles
-`bot.py` + `installer.py` into a single self-contained binary, then
-wraps that binary in the OS-native installer format.
+All three flow through `build/pyinstaller.spec`, which bundles `bot.py` and
+its imported modules, plus `installer.py` and `dashboard.html`, into a
+self-contained build before wrapping it in the OS-native installer format.
 
 ### Cutting a release
 
@@ -473,7 +540,10 @@ installer tells you when that's the case).
 
 ```
 Punishment-Manager/
-├── bot.py                  # the bot
+├── bot.py                  # bot entry point and command registration
+├── dashboard.py            # authenticated server-side dashboard/API
+├── dashboard.html          # dashboard UI
+├── rules.py                # rules publishing and reaction-role module
 ├── installer.py            # interactive first-run installer
 ├── paths.py                # where config/db/logs live at runtime
 ├── requirements.txt
@@ -500,6 +570,9 @@ Punishment-Manager/
 │   └── windows/
 │       └── installer.nsi
 ├── tests/
+│   ├── test_commands.py     # slash-command descriptions and guild sync
+│   ├── test_dashboard.py    # dashboard login/session security
+│   ├── test_rules.py        # rules acceptance/reaction-role behavior
 │   └── test_paths.py        # packaged-install path resolution (read-only app dir)
 └── data/                    # created at runtime, source checkouts only
     ├── punishments.db
@@ -507,7 +580,8 @@ Punishment-Manager/
 ```
 
 ```bash
-python3 -m pytest tests/test_paths.py -q   # or: python3 tests/test_paths.py
+python3 -m pytest -q                 # run the full test suite
+python3 tests/test_dashboard.py      # run dashboard auth tests alone
 ```
 
 ## 9. Troubleshooting
@@ -535,6 +609,14 @@ python3 -m pytest tests/test_paths.py -q   # or: python3 tests/test_paths.py
 * **`Missing Permissions`** when running `/punish apply` — the bot's
   role isn't above the configured roles. Move it up in
   *Server Settings → Roles*.
+* **`/rules publish` can't post or react** — grant the bot **View Channel**,
+  **Send Messages**, **Embed Links**, and **Add Reactions** in the selected
+  channel. The acceptance role must be below the bot's role and must not have
+  moderation or server-management permissions.
+* **Dashboard won't open** — it binds to `127.0.0.1:8765` by default, so open
+  it on the bot host or use the documented SSH tunnel. Retrieve the key with
+  `punishment-manager --dashboard-token`; check `data/bot.log` for a port or
+  config error. Remote reverse-proxy hosts must be in `dashboard_allowed_hosts`.
 * **The user never receives the DM** — they have DMs disabled or the
   bot is blocked. Set `dm_user: false` in `/setup` to suppress the DM
   attempt, or ask the user to enable DMs.
