@@ -1,9 +1,9 @@
-; NSIS installer script for the Punishment Manager.
+; NSIS installer script for the Sentinel.
 ;
 ; Build with build_windows.bat, which passes the version from the VERSION file:
-;   makensis /DVERSION=1.0.1 /DOUTFILE="dist\PunishmentManager-Setup-1.0.1.exe" build/windows/installer.nsi
+;   makensis /DVERSION=1.0.1 /DOUTFILE="dist\Sentinel-Setup-1.0.1.exe" build/windows/installer.nsi
 ;
-; The PyInstaller COLLECT output (dist\punishment-manager\) is wrapped
+; The PyInstaller COLLECT output (dist\sentinel\) is wrapped
 ; into a single Setup.exe that installs to %ProgramFiles64%.
 
 Unicode True
@@ -12,9 +12,9 @@ SetDatablockOptimize on
 ShowInstDetails hide
 ShowUninstDetails hide
 
-!define APPNAME "Punishment Manager"
+!define APPNAME "Sentinel"
 !define COMPANYNAME "Arena"
-!define DESCRIPTION "Discord bot for temporary role-based punishments."
+!define DESCRIPTION "Discord server management bot: moderation, rules, roles and a web dashboard."
 
 !ifndef VERSION
     ; Only reached when makensis is run by hand: build_windows.bat always
@@ -22,7 +22,7 @@ ShowUninstDetails hide
     !define VERSION "0.0.0+unknown"
 !endif
 !ifndef OUTFILE
-    !define OUTFILE "dist\PunishmentManager-Setup-${VERSION}.exe"
+    !define OUTFILE "dist\Sentinel-Setup-${VERSION}.exe"
 !endif
 
 Name "${APPNAME} ${VERSION}"
@@ -56,18 +56,18 @@ Section "Install"
 
     ; Copy the PyInstaller output.
     SetOutPath "$INSTDIR"
-    File /r "..\..\dist\punishment-manager\*"
+    File /r "..\..\dist\sentinel\*"
 
     ; Start Menu shortcuts.
     CreateDirectory "$SMPROGRAMS\${APPNAME}"
     CreateShortcut "$SMPROGRAMS\${APPNAME}\${APPNAME}.lnk" \
-        "$INSTDIR\punishment-manager.exe" "" "$INSTDIR\punishment-manager.exe" 0
+        "$INSTDIR\sentinel.exe" "" "$INSTDIR\sentinel.exe" 0
     CreateShortcut "$SMPROGRAMS\${APPNAME}\Uninstall.lnk" \
         "$INSTDIR\uninstall.exe"
 
     ; Desktop shortcut.
     CreateShortcut "$DESKTOP\${APPNAME}.lnk" \
-        "$INSTDIR\punishment-manager.exe"
+        "$INSTDIR\sentinel.exe"
 
     ; Note: We do not add $INSTDIR to the system PATH because the
     ; EnVar plugin (which NSIS's PATH-modification macros use) is
@@ -78,7 +78,7 @@ Section "Install"
 
     ; Optional: install as a Windows Service via NSSM (if present).
     ;
-    ; nsExec::ExecToLog '"$INSTDIR\punishment-manager.exe" --install-service'
+    ; nsExec::ExecToLog '"$INSTDIR\sentinel.exe" --install-service'
 
     ; Write the uninstaller.
     WriteUninstaller "$INSTDIR\uninstall.exe"

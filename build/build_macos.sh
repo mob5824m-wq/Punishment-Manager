@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build a .dmg of the Punishment Manager on macOS.
+# Build a .dmg of the Sentinel on macOS.
 #
 # Requirements:
 #   - Python 3.9+ on PATH
@@ -7,7 +7,7 @@
 #   - Either `create-dmg` (brew install create-dmg) or the built-in
 #     `hdiutil` (always present on macOS).
 #
-# Output: dist/PunishmentManager-<VERSION>.dmg  (version from VERSION file)
+# Output: dist/Sentinel-<VERSION>.dmg  (version from VERSION file)
 set -euo pipefail
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
@@ -15,10 +15,10 @@ PROJECT_ROOT="$( cd "$SCRIPT_DIR/.." && pwd )"
 cd "$PROJECT_ROOT"
 
 # shellcheck disable=SC1091
-. "$PROJECT_ROOT/scripts/pm_version.sh"
-VERSION="$(pm_version "$PROJECT_ROOT")"
-APP_NAME="Punishment Manager"
-DMG_NAME="PunishmentManager-${VERSION}.dmg"
+. "$PROJECT_ROOT/scripts/version.sh"
+VERSION="$(app_version "$PROJECT_ROOT")"
+APP_NAME="Sentinel"
+DMG_NAME="Sentinel-${VERSION}.dmg"
 
 echo "==> Cleaning previous PyInstaller output (keeps build/ source dir)"
 rm -rf dist

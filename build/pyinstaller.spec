@@ -1,14 +1,14 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
-PyInstaller spec for the Punishment Manager.
+PyInstaller spec for the Sentinel.
 
 Builds `bot.py` and its imported modules (`rules.py`, `reaction_roles.py`,
 `dashboard.py`), plus
 its companion `installer.py` and dashboard UI, into a self-contained binary:
 
-  Linux:   dist/punishment-manager/punishment-manager
-  macOS:   dist/Punishment Manager.app/Contents/MacOS/punishment-manager
-  Windows: dist/punishment-manager/punishment-manager.exe
+  Linux:   dist/sentinel/sentinel
+  macOS:   dist/Sentinel.app/Contents/MacOS/sentinel
+  Windows: dist/sentinel/sentinel.exe
 
 The native installer scripts (build_macos.sh, build_windows.bat,
 build_linux.sh) wrap that output into .dmg / .exe / .deb.
@@ -37,7 +37,7 @@ SOURCES = [
 def _read_version() -> str:
     """Version for this bundle, from the VERSION file at the project root.
 
-    It is also bundled as a data file so `punishment-manager --version`
+    It is also bundled as a data file so `sentinel --version`
     reports the version of the build that is actually installed, not of
     whatever source tree happens to be around.
     """
@@ -63,9 +63,9 @@ DATA_FILES = [
 # 'build/<os>/'). The app tree itself is read-only at install time, so these
 # are read-only inputs - never write next to them.
 for _rel in (
-    ('build/linux/punishment-manager.service', 'build/linux'),
-    ('build/linux/punishment-manager.desktop', 'build/linux'),
-    ('build/macos/com.arena.punishment-manager.plist', 'build/macos'),
+    ('build/linux/sentinel.service', 'build/linux'),
+    ('build/linux/sentinel.desktop', 'build/linux'),
+    ('build/macos/com.arena.sentinel.plist', 'build/macos'),
 ):
     _src = PROJECT_ROOT / _rel[0]
     if _src.exists():
@@ -103,6 +103,9 @@ a = Analysis(
         # installer.py is bundled as a data file (not analysed), so list the
         # module explicitly to be safe.
         'paths',
+        # The shared /manage command group lives in its own module so
+        # bot.py and rules.py can both import it.
+        'command_tree',
         # Rules-Markdown renderer used by the dashboard's rules preview.
         'discord_markdown',
         'rules',
@@ -127,7 +130,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='punishment-manager',
+    name='sentinel',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -148,22 +151,22 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name='punishment-manager',
+    name='sentinel',
 )
 
 # On macOS, wrap the COLLECT output into a real .app bundle.
 if IS_MACOS:
     app = BUNDLE(
         coll,
-        name='Punishment Manager.app',
+        name='Sentinel.app',
         icon=str(ICON_ICNS) if ICON_ICNS.exists() else None,
-        bundle_identifier='com.arena.punishment-manager',
+        bundle_identifier='com.arena.sentinel',
         info_plist={
-            'CFBundleName': 'Punishment Manager',
-            'CFBundleDisplayName': 'Punishment Manager',
+            'CFBundleName': 'Sentinel',
+            'CFBundleDisplayName': 'Sentinel',
             'CFBundleShortVersionString': VERSION,
             'CFBundleVersion': VERSION,
-            'CFBundleExecutable': 'punishment-manager',
+            'CFBundleExecutable': 'sentinel',
             'NSHighResolutionCapable': True,
             'LSMinimumSystemVersion': '10.13',
             # Show in Dock (False would make it a faceless background app).

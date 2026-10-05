@@ -5,7 +5,7 @@ These exist because packaged builds used to derive every path from
 ``Path(__file__).parent`` and died at import time with::
 
     PermissionError: [Errno 13] Permission denied:
-        '/opt/punishment-manager/_internal/data'
+        '/opt/sentinel/_internal/data'
 
 so the core assertion everywhere is: *with a read-only app directory, the bot
 still resolves a writable data dir and starts*.
@@ -49,7 +49,7 @@ class _Sandbox:
         # Windows C:\\Users\\RUNNER~1), so compare canonical paths on both sides.
         self.tmp = Path(tempfile.mkdtemp(prefix="pm-paths-test-")).resolve()
         self.home = self.tmp / "home"
-        self.app = self.tmp / "opt" / "punishment-manager"
+        self.app = self.tmp / "opt" / "sentinel"
         self.bundle = self.app / "_internal"
         for d in (self.home, self.app, self.bundle):
             d.mkdir(parents=True)
@@ -57,6 +57,8 @@ class _Sandbox:
             "bot.py", "paths.py", "rules.py", "reaction_roles.py",
             "discord_markdown.py", "dashboard.py", "dashboard.html",
             "installer.py",
+            # The shared /manage group: bot.py and rules.py both import it.
+            "command_tree.py",
         ):
             shutil.copy2(REPO_ROOT / name, self.bundle / name)
         if not app_writable:
@@ -73,9 +75,9 @@ class _Sandbox:
             "XDG_CONFIG_HOME": str(self.home / ".config"),
             "PATH": os.environ.get("PATH", ""),
             # Don't let the ambient (dev) config/data leak into the test.
-            "PUNISHMENT_MANAGER_HOME": "",
-            "PUNISHMENT_MANAGER_DATA": "",
-            "PUNISHMENT_MANAGER_CONFIG": "",
+            "SENTINEL_HOME": "",
+            "SENTINEL_DATA": "",
+            "SENTINEL_CONFIG": "",
             "PYTHONIOENCODING": "utf-8",
         }
 
@@ -102,7 +104,7 @@ class _Sandbox:
 
         For the frozen case, sys.frozen / _MEIPASS / sys.executable are
         patched before the imports so paths.py believes it is running from
-        /opt/punishment-manager/_internal like a PyInstaller onedir build.
+        /opt/sentinel/_internal like a PyInstaller onedir build.
         """
         prelude = ""
         if self.frozen:
@@ -110,8 +112,8 @@ class _Sandbox:
                 "import sys\n"
                 f"sys.frozen = True\n"
                 f"sys._MEIPASS = {str(self.bundle)!r}\n"
-                f"sys.executable = {str(self.app / 'punishment-manager')!r}\n"
-                f"sys.argv = [{str(self.app / 'punishment-manager')!r}]\n"
+                f"sys.executable = {str(self.app / 'sentinel')!r}\n"
+                f"sys.argv = [{str(self.app / 'sentinel')!r}]\n"
             )
         env = {**self.env, **(extra_env or {})}
         env["PYTHONPATH"] = str(self.bundle)
@@ -181,7 +183,7 @@ class ReadOnlyAppDirTests(unittest.TestCase):
             if p.name not in {
                 "bot.py", "paths.py", "rules.py", "reaction_roles.py",
                 "discord_markdown.py", "dashboard.py", "dashboard.html",
-                "installer.py", "__pycache__",
+                "installer.py", "command_tree.py", "__pycache__",
             }
         )
         self.assertEqual(leftovers, [])
@@ -251,7 +253,7 @@ class FrozenBuildTests(unittest.TestCase):
             "print(json.dumps(open(written).read() and 'ok'))\n"
         )
         res = self.sb.run_python(
-            code, extra_env={"PUNISHMENT_MANAGER_CONFIG": str(etc / "config.json")}
+            code, extra_env={"SENTINEL_CONFIG": str(etc / "config.json")}
         )
         self.assertEqual(res.returncode, 0, msg=res.stderr or res.stdout)
         lines = res.stdout.splitlines()
@@ -268,7 +270,7 @@ class InaccessibleCandidateTests(unittest.TestCase):
 
     Before Python 3.13, ``Path.exists()`` / ``is_file()`` raise PermissionError
     for a path under a directory we can't traverse - e.g. the .deb's ``0750
-    root:punishment-manager`` ``/etc/punishment-manager`` as seen by a user
+    root:sentinel`` ``/etc/sentinel`` as seen by a user
     outside that group who runs a portable build. v2.1.0 let that escape the
     candidate loops: every later candidate was dropped (the portable install's
     own ``config.json``, the remaining state dirs) and the import-time guard
@@ -302,7 +304,7 @@ class InaccessibleCandidateTests(unittest.TestCase):
         self.sb.lock_readonly(self.sb.app)
         # ...and a system config dir this user can't look into, which sorts
         # *before* it in config_candidates().
-        etc = self.sb.tmp / "etc-punishment-manager"
+        etc = self.sb.tmp / "etc-sentinel"
         etc.mkdir()
         self.sb.write_config({"bot_token": "from-system"}, where=etc)
         self.lock(etc)
@@ -329,7 +331,7 @@ class InaccessibleCandidateTests(unittest.TestCase):
 
     def test_inaccessible_state_dir_candidate_is_skipped_not_fatal(self) -> None:
         # Lock the parents of the per-user state dirs on Linux (~/.local/...)
-        # and macOS (~/Library/...). The next candidate, ~/.punishment-manager,
+        # and macOS (~/Library/...). The next candidate, ~/.sentinel,
         # must win - not the temp-dir fallback, and not a "resolution failed".
         self.lock(self.sb.home / ".local")
         self.lock(self.sb.home / "Library")
@@ -343,10 +345,10 @@ class InaccessibleCandidateTests(unittest.TestCase):
         res = self.sb.run_python(code)
         self.assertEqual(res.returncode, 0, msg=res.stderr or res.stdout)
         data_dir, cfg_path, notes = res.stdout.splitlines()[:3]
-        self.assertEqual(Path(data_dir), self.sb.home / ".punishment-manager")
+        self.assertEqual(Path(data_dir), self.sb.home / ".sentinel")
         self.assertTrue(Path(data_dir).is_dir())
         self.assertEqual(Path(cfg_path).parent, Path(data_dir))
-        self.assertNotEqual(Path(data_dir), Path(tempfile.gettempdir()) / "punishment-manager")
+        self.assertNotEqual(Path(data_dir), Path(tempfile.gettempdir()) / "sentinel")
         self.assertIn("cannot be accessed", notes)
         self.assertNotIn("resolution failed", notes)
         self.assertNotIn("temporary", notes)
@@ -357,7 +359,7 @@ class InaccessibleCandidateTests(unittest.TestCase):
         import paths
 
         locked = self.lock(self.sb.tmp / "locked")
-        self.assertIsNone(paths.ensure_writable(locked / "state" / "punishment-manager"))
+        self.assertIsNone(paths.ensure_writable(locked / "state" / "sentinel"))
         self.assertIsNone(paths.ensure_writable(locked))
         self.assertEqual(paths._inspect(locked / "anything"), ("inaccessible", "Permission denied"))
         self.assertEqual(paths._inspect(self.sb.tmp / "nope" / "config.json"), ("missing", ""))
@@ -376,7 +378,7 @@ class EnvOverrideTests(unittest.TestCase):
     def test_home_override(self) -> None:
         base = self.sb.home / "pm-state"
         code = "import paths; print(paths.DATA_DIR)"
-        res = self.sb.run_python(code, extra_env={"PUNISHMENT_MANAGER_HOME": str(base)})
+        res = self.sb.run_python(code, extra_env={"SENTINEL_HOME": str(base)})
         self.assertEqual(res.returncode, 0, msg=res.stderr or res.stdout)
         self.assertEqual(Path(res.stdout.strip()), base)
         self.assertTrue(base.is_dir())
@@ -389,7 +391,7 @@ class EnvOverrideTests(unittest.TestCase):
             "import os, paths, stat\n"
             "print(oct(stat.S_IMODE(os.stat(paths.DATA_DIR).st_mode)))\n"
         )
-        res = self.sb.run_python(code, extra_env={"PUNISHMENT_MANAGER_HOME": str(base)})
+        res = self.sb.run_python(code, extra_env={"SENTINEL_HOME": str(base)})
         self.assertEqual(res.returncode, 0, msg=res.stderr or res.stdout)
         if os.name != "nt":
             self.assertEqual(res.stdout.strip(), "0o700")
@@ -405,8 +407,8 @@ class EnvOverrideTests(unittest.TestCase):
             "print(paths.load_config_dict()['bot_token'])\n"
         )
         res = self.sb.run_python(code, extra_env={
-            "PUNISHMENT_MANAGER_DATA": str(data),
-            "PUNISHMENT_MANAGER_CONFIG": str(cfg),
+            "SENTINEL_DATA": str(data),
+            "SENTINEL_CONFIG": str(cfg),
         })
         self.assertEqual(res.returncode, 0, msg=res.stderr or res.stdout)
         lines = res.stdout.splitlines()
@@ -468,7 +470,7 @@ class WriteSafetyTests(unittest.TestCase):
             "    paths._write_json(locked / 'config.json', {})\n"
             "    print('no error')\n"
             "except PermissionError as exc:\n"
-            "    print('PUNISHMENT_MANAGER_CONFIG' in str(exc))\n"
+            "    print('SENTINEL_CONFIG' in str(exc))\n"
             "finally:\n"
             "    locked.chmod(0o755)\n"
         )

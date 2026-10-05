@@ -51,8 +51,8 @@ Live releases:
 
 | Tag | Installers | Notes |
 |-----|-----------|-------|
-| `v2.1.1` | `.deb`, `.dmg`, `.exe` attached by CI | Current. Path resolution skips a candidate the user can't access instead of stopping there: portable installs next to a `.deb`'s `0750 /etc/punishment-manager` find their own `config.json` again, and the startup note names the skipped candidate instead of saying "resolution failed". |
-| `v2.1.0` | `.deb`, `.dmg`, `.exe` attached by CI | Fixes packaged installs crashing at startup (`PermissionError` on `/opt/punishment-manager/_internal/data`). Safe to run; superseded by v2.1.1. |
+| `v2.1.1` | `.deb`, `.dmg`, `.exe` attached by CI | Current. Path resolution skips a candidate the user can't access instead of stopping there: portable installs next to a `.deb`'s `0750 /etc/sentinel` find their own `config.json` again, and the startup note names the skipped candidate instead of saying "resolution failed". |
+| `v2.1.0` | `.deb`, `.dmg`, `.exe` attached by CI | Fixes packaged installs crashing at startup (`PermissionError` on `/opt/sentinel/_internal/data`). Safe to run; superseded by v2.1.1. |
 | `v2.0.0` | attached by CI | **Broken for installed builds** — crashes on first launch; superseded by v2.1.0. |
 | `v1.0.0` | source archives only | Created by hand before `release.yml` worked. |
 

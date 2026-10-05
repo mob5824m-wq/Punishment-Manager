@@ -1,46 +1,46 @@
 """
-Punishment Manager - runtime filesystem locations.
+Sentinel - runtime filesystem locations.
 
 Why this module exists
 ----------------------
 Packaged builds used to derive every path from ``Path(__file__).resolve().parent``.
 For a PyInstaller build that is the *read-only application tree*
-(``/opt/punishment-manager/_internal`` on Linux, ``C:\\Program Files\\Punishment
-Manager`` on Windows), so the bot died at import time with::
+(``/opt/sentinel/_internal`` on Linux, ``C:\\Program Files\\Sentinel`` on
+Windows), so the bot died at import time with::
 
-    PermissionError: [Errno 13] Permission denied: '/opt/punishment-manager/_internal/data'
+    PermissionError: [Errno 13] Permission denied: '/opt/sentinel/_internal/data'
 
 Writable state (the SQLite db and the log file) and the user's config now live
 in a platform-appropriate location chosen once, at import, here.
 
 Data directory, first usable candidate wins
-    1. ``$PUNISHMENT_MANAGER_DATA`` (or ``$PUNISHMENT_MANAGER_HOME``)
+    1. ``$SENTINEL_DATA`` (or ``$SENTINEL_HOME``)
     2. running from source: ``<repo>/data``  (unchanged dev behaviour)
     3. packaged builds: the platform state dir
-       Linux   ``/var/lib/punishment-manager`` (the .deb's state dir),
-               ``$XDG_STATE_HOME/punishment-manager``,
-               ``~/.local/state/punishment-manager``, ``~/.local/share/...``
-       macOS   ``~/Library/Application Support/Punishment Manager``
-       Windows ``%LOCALAPPDATA%\\Punishment Manager``, ``%APPDATA%\\...``
+       Linux   ``/var/lib/sentinel`` (the .deb's state dir),
+               ``$XDG_STATE_HOME/sentinel``,
+               ``~/.local/state/sentinel``, ``~/.local/share/...``
+       macOS   ``~/Library/Application Support/Sentinel``
+       Windows ``%LOCALAPPDATA%\\Sentinel``, ``%APPDATA%\\...``
     4. packaged builds: ``<dir containing the executable>/data`` so portable /
        unzipped installs keep working
     5. a temp dir - the bot still starts, and says where it put its files
 
 Config file, first that exists wins (so the .deb's read-only
-``/etc/punishment-manager/config.json`` is honoured), otherwise created in the
+``/etc/sentinel/config.json`` is honoured), otherwise created in the
 data dir. A config found in a read-only place is *copied on write* into the
 data dir, which then takes precedence on later runs.
 
 A candidate we cannot even look at - because it sits under a directory we may
-not traverse, e.g. the .deb's ``0750 root:punishment-manager``
-``/etc/punishment-manager`` seen by a user outside that group running a
+not traverse, e.g. the .deb's ``0750 root:sentinel``
+``/etc/sentinel`` seen by a user outside that group running a
 portable build - is skipped with a note and the search continues with the
-later candidates (``<app dir>/config.json``, ``~/.punishment-manager``, ...).
+later candidates (``<app dir>/config.json``, ``~/.sentinel``, ...).
 It never aborts the search or demotes the bot to the temp-dir fallback.
 
 Everything here is standard-library only and import-safe: it never raises, and
 never writes outside a directory it has verified is writable. Call ``describe()``
-or run ``punishment-manager --paths`` to see the resolved locations.
+or run ``sentinel --paths`` to see the resolved locations.
 """
 
 from __future__ import annotations
@@ -76,12 +76,12 @@ __all__ = [
     "write_config",
 ]
 
-APP_NAME = "punishment-manager"          # lower-case, used for unix dirs
-APP_TITLE = "Punishment Manager"          # display name, used for win/mac dirs
+APP_NAME = "sentinel"          # lower-case, used for unix dirs
+APP_TITLE = "Sentinel"          # display name, used for win/mac dirs
 
 # Directory under which the shipped service-unit / launchd-plist resources
 # are looked up in a packaged install (see build/pyinstaller.spec).
-_RESOURCE_ROOTS_POSIX = ("/usr/share/punishment-manager", "/usr/local/share/punishment-manager")
+_RESOURCE_ROOTS_POSIX = ("/usr/share/sentinel", "/usr/local/share/sentinel")
 
 
 # --------------------------------------------------------------------------- #
@@ -170,7 +170,7 @@ def _inspect(path: Path) -> tuple[str, str]:
     ``kind`` is ``"dir"``, ``"file"`` or ``"other"`` when the path exists,
     ``"missing"`` when it doesn't, and ``"inaccessible"`` when we can't even
     tell - typically ``EACCES`` from a parent directory we may not traverse
-    (the .deb's ``0750 root:punishment-manager`` ``/etc/punishment-manager``
+    (the .deb's ``0750 root:sentinel`` ``/etc/sentinel``
     as seen by a user outside that group). ``reason`` is the OS error text
     for that last case, for the startup note.
 
@@ -305,9 +305,9 @@ def _platform_state_dirs() -> list[Path]:
 
 def data_dir_candidates() -> list[Path]:
     """Ordered, de-duplicated data-dir candidates (writable or creatable)."""
-    override = _env_path("PUNISHMENT_MANAGER_DATA")
+    override = _env_path("SENTINEL_DATA")
     if override is None:
-        home_override = _env_path("PUNISHMENT_MANAGER_HOME")
+        home_override = _env_path("SENTINEL_HOME")
         override = home_override if home_override is not None else None
     cands: list[Path] = []
     if override is not None:
@@ -328,7 +328,7 @@ def _tighten_private_dir(data_dir: Path) -> None:
     The db (punishment reasons, user ids) and the log move out of a private
     repo checkout onto shared machines, so don't leave them readable by every
     local user. Only ever applies to a directory we own inside $HOME: shared
-    system state dirs like /var/lib/punishment-manager are group-managed by
+    system state dirs like /var/lib/sentinel are group-managed by
     the package and must keep their permissions.
     """
     if os.name == "nt":
@@ -374,7 +374,7 @@ def _pick_data_dir() -> tuple[Path, list[str]]:
     if fallback is not None:
         notes.append(
             f"WARNING: no per-user state directory was usable, so data and logs are in "
-            f"{fallback} (temporary!). Point PUNISHMENT_MANAGER_DATA at a writable directory."
+            f"{fallback} (temporary!). Point SENTINEL_DATA at a writable directory."
         )
         return fallback, notes
     # Truly nothing: leave paths pointed at the first candidate and let the
@@ -383,7 +383,7 @@ def _pick_data_dir() -> tuple[Path, list[str]]:
     target = cands[0] if cands else Path(tempfile.gettempdir()) / APP_NAME
     notes.append(
         f"WARNING: cannot create a writable data directory (tried: {', '.join(str(c) for c in cands)}). "
-        "Set PUNISHMENT_MANAGER_DATA to a writable path."
+        "Set SENTINEL_DATA to a writable path."
     )
     return target, notes
 
@@ -423,7 +423,7 @@ def _import_legacy_state(data_dir: Path, notes: list[str]) -> None:
 # Config file
 # --------------------------------------------------------------------------- #
 def system_config_dir() -> Optional[Path]:
-    """Packaged read-only system config location (``/etc/punishment-manager``)."""
+    """Packaged read-only system config location (``/etc/sentinel``)."""
     if os.name == "nt":
         base = os.environ.get("PROGRAMDATA", "").strip()
         return Path(base) / APP_TITLE if base else None
@@ -434,7 +434,7 @@ def system_config_dir() -> Optional[Path]:
 
 def config_candidates(data_dir: Path) -> list[Path]:
     """Ordered config.json candidates; the first that exists is read."""
-    override = _env_path("PUNISHMENT_MANAGER_CONFIG")
+    override = _env_path("SENTINEL_CONFIG")
     if override is not None:
         return [override]
     cands = [data_dir / "config.json"]
@@ -450,8 +450,8 @@ def _pick_config_path(data_dir: Path) -> tuple[Path, list[str]]:
 
     A candidate we can't read - or can't even look at, because it sits in a
     directory we may not traverse (a portable build run by a user outside
-    the .deb's ``punishment-manager`` group, next to its ``0750``
-    ``/etc/punishment-manager``) - is skipped with a note, and the search
+    the .deb's ``sentinel`` group, next to its ``0750``
+    ``/etc/sentinel``) - is skipped with a note, and the search
     carries on to the later candidates such as ``<app dir>/config.json``.
     """
     notes: list[str] = []
@@ -515,7 +515,7 @@ def write_config(cfg: dict[str, Any]) -> Path:
     """Atomically write config.json to a writable location; returns it.
 
     Reads may come from a read-only location (the packaged
-    ``/etc/punishment-manager/config.json``). In that case the first save
+    ``/etc/sentinel/config.json``). In that case the first save
     copies the config into the writable data dir, which then takes
     precedence for later runs.
     """
@@ -536,7 +536,7 @@ def _write_json(target: Path, cfg: dict[str, Any]) -> None:
     if ensure_writable(target.parent) is None:
         raise PermissionError(
             f"Cannot write {target} - its directory is not writable. "
-            f"Set PUNISHMENT_MANAGER_CONFIG (or PUNISHMENT_MANAGER_DATA) to a writable path."
+            f"Set SENTINEL_CONFIG (or SENTINEL_DATA) to a writable path."
         )
     prev = target.stat() if target.exists() else None
     tmp = target.with_name(f".{target.name}.{os.getpid()}.tmp")
@@ -562,7 +562,7 @@ def _secure(target: Path, prev: Optional[os.stat_result]) -> None:
       (logrotate-style: replacing the file must not change who can read it);
     * otherwise 0600, so the token isn't world-readable on multi-user hosts;
     * but when the file lives in a directory we don't own - root running
-      `punishment-manager --install` into the service's state dir, or a config
+      `sentinel --install` into the service's state dir, or a config
       in a group-owned /etc dir - hand it to that owner/group, or the service
       user can't read its own config back.
     """

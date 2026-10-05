@@ -1,15 +1,15 @@
 [Unit]
-Description=Punishment Manager Discord bot
+Description=Sentinel Discord bot
 Documentation=https://github.com/mob5824m-wq/Punishment-Manager
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=punishment-manager
-Group=punishment-manager
-WorkingDirectory=/opt/punishment-manager
-ExecStart=/opt/punishment-manager/punishment-manager
+User=sentinel
+Group=sentinel
+WorkingDirectory=/opt/sentinel
+ExecStart=/opt/sentinel/sentinel
 Restart=on-failure
 RestartSec=10
 
@@ -18,12 +18,12 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/punishment-manager /etc/punishment-manager
+ReadWritePaths=/var/lib/sentinel /etc/sentinel
 
 # Logging.
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=punishment-manager
+SyslogIdentifier=sentinel
 
 [Install]
 WantedBy=multi-user.target

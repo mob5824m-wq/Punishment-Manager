@@ -1,48 +1,64 @@
-# Punishment Manager
+# Sentinel
 
-A cross-platform [discord.py](https://discordpy.readthedocs.io/) bot that
-temporarily swaps a user's role and posts Discord embeds to staff and the
-punished user. It also includes warnings for quick, role-free moderation and
-an authenticated server-side web dashboard for managing connected servers,
-punishments, warnings, the rules post, reaction-role menus, configuration, and
-history.
+A cross-platform [discord.py](https://discordpy.readthedocs.io/) server
+management bot: timed punishment roles, warnings, a published rules post with
+reaction-role acceptance, reaction-role menus, and an authenticated
+server-side web dashboard for managing connected servers, moderation,
+warnings, rules, configuration and history.
 
-**Role flow**
+Everything is one slash-command tree, `/manage` — so a moderator can learn the
+whole bot by typing `/manage` and reading the list:
 
 ```
-(any roles) ──/punish apply──▶  Punish role  ──timer──▶  Post-punish role
-(any roles) ──/punish warn───▶  unchanged roles + a recorded warning
+/manage punish        /manage warnings     /manage rules publish
+/manage pardon        /manage status       /manage rules disable
+/manage warn          /manage setup        /manage rules list
+                                           /manage fixcommands
 ```
 
-* When a moderator runs `/punish apply`, the bot **adds the punish
-  role** on top of whatever the user already has. The user keeps all
+**Moderation: the role flow**
+
+```
+(any roles) ──/manage punish──▶  Punish role  ──timer──▶  Post-punish role
+(any roles) ──/manage warn───▶  unchanged roles + a recorded warning
+```
+
+* When a moderator runs `/manage punish`, the bot **adds the punish
+  role** on top of whatever the member already has. The member keeps all
   their other roles.
 * The bot posts a **staff embed** in the configured staff channel and
-  **DMs the punished user an embed** with the same info.
+  **DMs the punished member an embed** with the same info.
 * When the timer expires, the bot **removes the punish role** and
   **adds the post-punish role**, and posts a final staff embed.
-* `/punish pardon` ends the punishment early by removing the punish /
+* `/manage pardon` ends the punishment early by removing the punish /
   post-punish role and posts a final "pardon" embed to staff and a
-  DM to the user.
+  DM to the member.
 
-**Protected users**
+**Protected members**
 
 The bot refuses to punish:
 * bots
 * the bot itself
-* users with the **Administrator** permission
-* users with any **moderation permission** (`Moderate Members`,
+* members with the **Administrator** permission
+* members with any **moderation permission** (`Moderate Members`,
   `Manage Guild`, `Kick Members`, `Ban Members`)
-* users whose top role is equal to or higher than the bot's top role
-* users holding the configured **staff role**
+* members whose top role is equal to or higher than the bot's top role
+* members holding the configured **staff role**
 
-These checks run in `/punish apply` before any role change is made, so
+These checks run in `/manage punish` before any role change is made, so
 even if a mod mis-clicks, nothing happens.
 
 All active punishments are stored in a local SQLite database, so timers
 survive a bot restart. Warnings and completed punishments live in the same
-database, which is what `/punish status`, `/punish warnings`, and the
+database, which is what `/manage status`, `/manage warnings`, and the
 dashboard's history read from.
+
+**Who can run what**
+
+`/manage` is visible to members with **Moderate Members**. The administrative
+commands — `/manage setup`, `/manage fixcommands` and everything under
+`/manage rules` — check for **Administrator** when they run, because Discord
+applies a single permission to a whole command group.
 
 ---
 
@@ -54,9 +70,9 @@ Pre-built native installers are attached to every GitHub release:
 
 | Platform | File | Notes |
 |----------|------|-------|
-| **macOS**   | `PunishmentManager-X.Y.Z.dmg`             | Open the `.dmg`, drag the `.app` into `/Applications` |
-| **Linux**   | `punishment-manager_X.Y.Z_amd64.deb`      | `sudo dpkg -i ...` and you're done |
-| **Windows** | `PunishmentManager-Setup-X.Y.Z.exe`       | Run the installer; it adds the bot to your Start Menu |
+| **macOS**   | `Sentinel-X.Y.Z.dmg`             | Open the `.dmg`, drag the `.app` into `/Applications` |
+| **Linux**   | `sentinel_X.Y.Z_amd64.deb`      | `sudo dpkg -i ...` and you're done |
+| **Windows** | `Sentinel-Setup-X.Y.Z.exe`       | Run the installer; it adds the bot to your Start Menu |
 | **Source**  | `Source code (zip)` / `Source code (tar.gz)` | For everyone who'd rather run from source |
 
 Releases are produced automatically by GitHub Actions whenever a
@@ -65,9 +81,25 @@ build pipeline, and the `VERSION` file for where the number comes from.
 
 > **Use v2.1.0 or newer.** The v1.0.0 and v2.0.0 installers crash on first
 > launch on a packaged install (`PermissionError: [Errno 13] Permission
-> denied: '/opt/punishment-manager/_internal/data'`), because they tried to
+> denied: '/opt/sentinel/_internal/data'`), because they tried to
 > create their database and log inside the read-only install directory. v2.1.0
 > stores that state in a writable per-platform location instead.
+
+### Upgrading from Punishment Manager (v2)
+
+Sentinel is Punishment Manager with a new name, one `/manage` command tree and
+a reskinned dashboard. v3.0.0 is a clean cut rather than an in-place
+migration, so give it five minutes:
+
+| What changed                        | What to do |
+|-------------------------------------|------------|
+| Commands moved under `/manage`      | Nothing: the new tree is synced to every connected server at startup. `/punish apply` is now `/manage punish`, `/setup` is `/manage setup`, `/rules …` is `/manage rules …`. |
+| Data moved to a `sentinel` directory (`/var/lib/sentinel`, `~/Library/Application Support/Sentinel`, `%LOCALAPPDATA%\Sentinel`, …) | Copy the old `config.json` and `punishments.db` into the new data dir, or re-run `sentinel --install`. |
+| Service names are `sentinel` / `com.arena.sentinel` | Uninstall the old service first (`sudo punishment-manager --uninstall-service`), then `sudo sentinel --install-service`. |
+| Environment variables are `SENTINEL_*` (were `PUNISHMENT_MANAGER_*`) | Update service units, containers and scripts. |
+
+`sentinel --paths` prints the exact locations this build uses, and the log
+names any location it had to fall back to.
 
 ---
 
@@ -78,7 +110,7 @@ build pipeline, and the `VERSION` file for where the number comes from.
   <https://discord.com/developers/applications>.
 * The bot must be invited with at minimum:
   * **Manage Roles** *(for punishment and rules-acceptance roles)*
-  * **Moderate Members** *(required by `/punish`)*
+  * **Moderate Members** *(required by `/manage`)*
   * **Send Messages** *(for staff-channel embeds and rules posts)*
   * **Embed Links** and **Add Reactions** *(for rules posts)*
   * **Use Application Commands**
@@ -147,7 +179,7 @@ launcher will skip the token prompt.
 ## 3. Configure the bot
 
 You can configure the bot two ways: with the interactive installer
-(recommended for first-time setup), or with the in-Discord `/setup`
+(recommended for first-time setup), or with the in-Discord `/manage setup`
 command (for tweaking things later).
 
 ### Option A — interactive installer
@@ -158,7 +190,7 @@ python3 installer.py
 
 This writes `config.json` with everything the bot needs.
 
-### Option B — in-Discord `/setup` (easiest to change roles later)
+### Option B — in-Discord `/manage setup` (easiest to change roles later)
 
 1. Create the punish and post-punish roles in your server, e.g. `Punished`, `Suspended`.
 2. (Optional) Create a `Staff` role - anyone with this role will be protected from punishment.
@@ -166,7 +198,7 @@ This writes `config.json` with everything the bot needs.
 4. As a server administrator, run:
 
    ```
-   /setup punish_role:@Punished post_role:@Suspended
+   /manage setup punish_role:@Punished post_role:@Suspended
               staff_role:@Staff staff_channel:#staff-logs dm_user:true
    ```
 
@@ -180,7 +212,7 @@ This writes `config.json` with everything the bot needs.
 2. As a server administrator, publish the rules:
 
    ```text
-   /rules publish channel:#rules role:@Verified rules_text:"1. Be respectful. 2. No spam or harassment."
+   /manage rules publish channel:#rules role:@Verified rules_text:"1. Be respectful. 2. No spam or harassment."
    ```
 
    The bot posts this message, an embed containing the rules, and adds a ✅
@@ -192,7 +224,7 @@ This writes `config.json` with everything the bot needs.
    removes that role. Publishing again under the same name replaces that set's
    post. Existing role assignments are not changed by republishing; if you
    change the acceptance role, remove the old role from existing members as
-   needed. `/rules disable` turns off reaction handling for a set and leaves
+   needed. `/manage rules disable` turns off reaction handling for a set and leaves
    assignments unchanged.
 
 #### Several rule sets on one server
@@ -202,23 +234,23 @@ short "Event rules" or "Contest rules" post, each with its own channel, role
 and text. Give each set a name and it stays independent:
 
 ```text
-/rules publish channel:#rules role:@Verified name:"Server rules" rules_text:"1. Be respectful. 2. No spam."
-/rules publish channel:#events role:@Events name:"Event rules" rules_text:"1. Keep chat on topic. 2. No spoilers."
+/manage rules publish channel:#rules role:@Verified name:"Server rules" rules_text:"1. Be respectful. 2. No spam."
+/manage rules publish channel:#events role:@Events name:"Event rules" rules_text:"1. Keep chat on topic. 2. No spoilers."
 ```
 
-* `/rules publish` with an existing name (case-insensitive) replaces only that
+* `/manage rules publish` with an existing name (case-insensitive) replaces only that
   set's post; other sets are untouched. The default name is `Server rules`, so
   existing single-post installs are unchanged.
-* `/rules disable name:"Event rules"` disables one set — its post is marked
+* `/manage rules disable name:"Event rules"` disables one set — its post is marked
   disabled and its ✅ is removed, but roles already granted are left alone.
   With only one set published, `name` can be omitted.
-* `/rules list` shows every set, its channel, its role and its message id.
+* `/manage rules list` shows every set, its channel, its role and its message id.
 * Reactions are routed by message, so ✅ on the "Event rules" post grants the
   events role and never the server-rules role.
 * Up to 25 sets per server.
 
 The prompt sentence lives in `rules.py` as `RULES_POST_CONTENT`, so
-`/rules publish` and the dashboard's publish button always post the same
+`/manage rules publish` and the dashboard's publish button always post the same
 wording (edit it there to change it everywhere). Rules text can be up to
 4,096 characters. The bot stores every set per server in `config.json`; no
 manual config edit is needed, and a config written by an older version (a
@@ -347,7 +379,7 @@ to `rules`, so it survives restarts:
 
 The `bot_token`, `server_id`, and role ids go at the top level
 (single-server shape). `server_id` is optional for command syncing; if it is
-omitted, use `/setup` to associate role settings with each server. The bot
+omitted, use `/manage setup` to associate role settings with each server. The bot
 fills the `rules` map when a rule set is published (a list of named sets per
 server), the `reaction_roles` map when a reaction-role post is published from
 the dashboard, and generates `dashboard_token` on first startup. Keep `config.json` private; it contains
@@ -389,10 +421,10 @@ scripts\run_windows.bat
 You should see:
 
 ```
-[INFO] punishment_manager: Database initialised at data/punishments.db
-[INFO] punishment_manager: Global command registry was already empty (startup; commands are registered per guild).
-[INFO] punishment_manager: Logged in as YourBot (id=...)
-[INFO] punishment_manager: Synced 4 command(s) to guild X (instant).
+[INFO] sentinel: Database initialised at data/punishments.db
+[INFO] sentinel: Global command registry was already empty (startup; commands are registered per guild).
+[INFO] sentinel: Logged in as YourBot (id=...)
+[INFO] sentinel: Synced 1 command(s) to guild X (instant).
 ```
 
 ### Server-side web dashboard
@@ -410,11 +442,11 @@ the command for your install:
 
 | How the bot is installed | Command |
 |--------------------------|---------|
-| Packaged build (`.dmg`, `.deb`, Windows Setup) | `punishment-manager --dashboard-token` |
+| Packaged build (`.dmg`, `.deb`, Windows Setup) | `sentinel --dashboard-token` |
 | Running from source | `python3 bot.py --dashboard-token` |
 
 The command prints the key on a single line (and creates it if it doesn't
-exist yet). Not sure where `config.json` lives? `punishment-manager --paths`
+exist yet). Not sure where `config.json` lives? `sentinel --paths`
 (or `python3 bot.py --paths`) prints the resolved config, database, and log
 paths. The dashboard key is **not** the Discord bot token — pasting the bot
 token into the dashboard will not work.
@@ -443,36 +475,40 @@ available.
 Discord keeps *two* independent command registries per app (the global one
 and the per-guild one) and the Discord client lists a command from each of
 them, so registering a command in both is exactly what makes every
-`/punish` and `/setup` entry appear **twice**. That is why the bot never
+`/manage` entry appear **twice**. That is why the bot never
 uploads commands globally; if an older version left any behind, startup
 deletes them (you will see a "Removed N duplicate global command(s)" line),
-and the admin-only `/fixcommands` command does the same thing on demand.
+and the admin-only `/manage fixcommands` command does the same thing on demand.
 
 ---
 
 ## 5. Commands
 
-The bot provides punishment commands, rules commands, and admin setup
-utilities. Reaction-role menus are configured from the dashboard (see
+Everything lives under `/manage`. Reaction-role menus are configured from
+the dashboard (see
 [Reaction role menus](#reaction-role-menus-dashboard)) rather than a command,
 since they need a message box, a live preview, and one role picker per emoji.
 
 | Command              | Who can use it                  | What it does |
 |----------------------|---------------------------------|--------------|
-| `/punish apply`      | Members with *Moderate Members* | Adds the punish role for the configured duration. Posts a staff embed and DMs the user. |
-| `/punish warn`       | Members with *Moderate Members* | Records a warning (reason + moderator + time). No role is changed. Posts a staff embed and DMs the user. |
-| `/punish warnings`   | Members with *Moderate Members* | Lists a user's recorded warnings. Pass `clear:true` to delete them all (this is logged to the staff channel). |
-| `/punish pardon`     | Members with *Moderate Members* | Ends the punishment early and removes the punish / post-punish role. Posts a staff embed and DMs the user. |
-| `/punish status`     | Anyone                          | Shows the server configuration and a list of active punishments. Pass a `user` to see that user's active status, history, and warnings. |
-| `/rules publish`     | Server administrators           | Posts a named rule set and sets its ✅ acceptance reaction role. Publishing the same name replaces that set. |
-| `/rules disable`     | Server administrators           | Stops handling reactions for one rule set (pass `name` when several exist). Existing roles are unchanged. |
-| `/rules list`        | Server administrators           | Lists the published rule sets with their channel, role and message. |
-| `/setup`             | Server administrators           | Configures the punishment roles, staff channel, and DM behavior. |
-| `/fixcommands`       | Server administrators           | Removes duplicated slash commands (e.g. doubled `/punish` entries) and re-syncs this server. |
+| `/manage punish`      | Members with *Moderate Members* | Adds the punish role for the configured duration. Posts a staff embed and DMs the member. |
+| `/manage warn`       | Members with *Moderate Members* | Records a warning (reason + moderator + time). No role is changed. Posts a staff embed and DMs the member. |
+| `/manage warnings`   | Members with *Moderate Members* | Lists a member's recorded warnings. Pass `clear:true` to delete them all (this is logged to the staff channel). |
+| `/manage pardon`     | Members with *Moderate Members* | Ends the punishment early and removes the punish / post-punish role. Posts a staff embed and DMs the member. |
+| `/manage status`     | Members with *Moderate Members* | Shows the server configuration and a list of active punishments. Pass a `user` to see that member's active status, history, and warnings. |
+| `/manage rules publish`     | Server administrators           | Posts a named rule set and sets its ✅ acceptance reaction role. Publishing the same name replaces that set. |
+| `/manage rules disable`     | Server administrators           | Stops handling reactions for one rule set (pass `name` when several exist). Existing roles are unchanged. |
+| `/manage rules list`        | Server administrators           | Lists the published rule sets with their channel, role and message. |
+| `/manage setup`             | Server administrators           | Configures the punishment roles, staff channel, and DM behavior. |
+| `/manage fixcommands`       | Server administrators           | Removes duplicated slash commands (e.g. doubled `/manage` entries) and re-syncs this server. |
 
-### `/punish apply` options
+Discord offers the whole group to anyone with **Moderate Members**, so the
+administrator rows above are enforced *when the command runs*: a moderator
+who tries `/manage setup` gets an ephemeral "administrators only" reply.
 
-* `user` — the user to punish.
+### `/manage punish` options
+
+* `user` — the member to punish.
 * `duration` — how long. Examples: `30m`, `2h`, `1d`, `1d12h`, `90`
   *(bare numbers are interpreted as minutes)*.
 * `reason` — optional, shown in the staff embed, the DM embed, and the DB.
@@ -481,18 +517,18 @@ The maximum duration is 30 days. The minimum is 5 seconds.
 
 ### Warnings
 
-`/punish warn <user> <reason>` is the light-weight option: unlike
-`/punish apply` it changes **no roles** and has no timer. Each warning is
+`/manage warn <user> <reason>` is the light-weight option: unlike
+`/manage punish` it changes **no roles** and has no timer. Each warning is
 stored permanently in the bot's database with its reason, moderator, and
 timestamp, so a member's record survives restarts and pardons.
 
-* `/punish warnings <user>` lists a user's warnings (newest first) with the
-  running total. Moderators can send the same command with `clear:true` to
+* `/manage warnings <user>` lists a member's warnings (newest first) with
+  the running total. Moderators can send the same command with `clear:true` to
   delete every warning for that member; the clear is announced in the staff
   channel so it is never silent.
-* `/punish status <user>` includes the warning total and the three most recent
+* `/manage status <user>` includes the warning total and the three most recent
   warnings next to the punishment history.
-* The dashboard's **Punishments** page has the same two actions:
+* The dashboard's **Moderation** page has the same two actions:
   a *Warn a member* form and a *Recent warnings* table with a **Clear**
   button per member. Dashboard warnings are tagged `[Dashboard]` and are
   attributed to the server owner, exactly like dashboard punishments.
@@ -506,7 +542,7 @@ Warnings are DMed to the member and posted to the staff channel using the same
 
 ## 6. Embeds
 
-**Staff channel embed** (on `/punish apply`):
+**Staff channel embed** (on `/manage punish`):
 
 * Title: "Member punished"
 * Color: orange
@@ -515,22 +551,22 @@ Warnings are DMed to the member and posted to the staff channel using the same
 * Thumbnail: the punished user's avatar
 * Footer: "User ID: ..."
 
-**Punished-user DM embed** (on `/punish apply`):
+**Punished-user DM embed** (on `/manage punish`):
 
 * Title: "You've been punished in `<server name>`"
 * Color: red
 * Fields: Duration, Reason, Started, Ends, Issued by
-* Friendly message pointing the user to talk to a mod if they think it
+* Friendly message pointing the member to talk to a mod if they think it
   was a mistake
 
 **Staff channel embed** (on timer expiry):
 
 * Title: "Punishment timer expired"
 * Color: blue
-* Description showing the user moved from punish -> post role
+* Description showing the member moved from punish -> post role
 * Started (relative time)
 
-**Staff channel embed** (on `/punish pardon`):
+**Staff channel embed** (on `/manage pardon`):
 
 * Title: "Member pardoned"
 * Color: green
@@ -543,7 +579,7 @@ Warnings are DMed to the member and posted to the staff channel using the same
 * Description confirming roles are restored
 * "Issued by" field
 
-**Staff channel embed** (on `/punish warn`):
+**Staff channel embed** (on `/manage warn`):
 
 * Title: "Member warned"
 * Color: gold
@@ -551,14 +587,14 @@ Warnings are DMed to the member and posted to the staff channel using the same
 * Thumbnail: the warned user's avatar
 * Footer: "User ID: ..."
 
-**Warned-user DM embed** (on `/punish warn`):
+**Warned-user DM embed** (on `/manage warn`):
 
 * Title: "You've been warned in `<server name>`"
 * Color: gold
 * Fields: Reason, Total warnings, Time, Issued by
 * Friendly message about repeated warnings and talking to a moderator
 
-**Staff channel embed** (on `/punish warnings clear:true` and the dashboard's
+**Staff channel embed** (on `/manage warnings clear:true` and the dashboard's
 **Clear** button):
 
 * Title: "Warnings cleared"
@@ -575,9 +611,9 @@ is no cross-compile.
 
 | Platform | Build script                | Output                                  |
 |----------|------------------------------|------------------------------------------|
-| macOS    | `build/build_macos.sh`       | `dist/PunishmentManager-1.0.0.dmg`       |
-| Linux    | `build/build_linux.sh`       | `dist/punishment-manager_1.0.0_amd64.deb`|
-| Windows  | `build\build_windows.bat`    | `dist\PunishmentManager-Setup-1.0.0.exe` |
+| macOS    | `build/build_macos.sh`       | `dist/Sentinel-1.0.0.dmg`       |
+| Linux    | `build/build_linux.sh`       | `dist/sentinel_1.0.0_amd64.deb`|
+| Windows  | `build\build_windows.bat`    | `dist\Sentinel-Setup-1.0.0.exe` |
 
 All three flow through `build/pyinstaller.spec`, which bundles `bot.py` and
 its imported modules, plus `installer.py` and `dashboard.html`, into a
@@ -589,7 +625,7 @@ The release workflow is fully automated. The version lives in one place -
 the `VERSION` file at the project root - which every build script reads
 (`build_linux.sh`, `build_macos.sh`, `build_windows.bat`,
 `build/pyinstaller.spec`), so the `.deb`/`.dmg`/`.exe` filenames, the `.app`
-plist, the NSIS metadata and `punishment-manager --version` can never disagree
+plist, the NSIS metadata and `sentinel --version` can never disagree
 with the release they belong to.
 
 Bump it, then push a semver tag from the `main` branch:
@@ -627,13 +663,13 @@ Requirements: Python 3.9+, `pyinstaller`, optionally `create-dmg`
 
 ```bash
 build/build_macos.sh
-open dist/PunishmentManager-1.0.0.dmg
+open dist/Sentinel-1.0.0.dmg
 ```
 
-The result is a real `.app` bundle (`Punishment Manager.app`) inside a
+The result is a real `.app` bundle (`Sentinel.app`) inside a
 `.dmg` that users can drag into `/Applications`. The bundle id is
-`com.arena.punishment-manager` and the binary is at
-`Punishment Manager.app/Contents/MacOS/punishment-manager`.
+`com.arena.sentinel` and the binary is at
+`Sentinel.app/Contents/MacOS/sentinel`.
 
 To codesign, uncomment the `codesign` lines in `build_macos.sh` and
 set `CODESIGN_IDENTITY` to your Developer ID.
@@ -645,13 +681,13 @@ Requirements: Python 3.9+, `pyinstaller`, `dpkg`, `fakeroot`,
 
 ```bash
 build/build_linux.sh
-sudo dpkg -i dist/punishment-manager_1.0.0_amd64.deb
-sudo systemctl start punishment-manager
+sudo dpkg -i dist/sentinel_1.0.0_amd64.deb
+sudo systemctl start sentinel
 ```
 
-The package installs the bot to `/opt/punishment-manager/`, symlinks
+The package installs the bot to `/opt/sentinel/`, symlinks
 the binary into `/usr/bin/`, registers a desktop entry, and installs
-a systemd unit (`/lib/systemd/system/punishment-manager.service`).
+a systemd unit (`/lib/systemd/system/sentinel.service`).
 The unit is enabled (not started) by `postinst`; the user runs the
 bot once to configure it, then enables the service.
 
@@ -661,11 +697,11 @@ Requirements: Python 3.9+, `pyinstaller`, NSIS 3.x in PATH.
 
 ```
 build\build_windows.bat
-dist\PunishmentManager-Setup-1.0.0.exe
+dist\Sentinel-Setup-1.0.0.exe
 ```
 
 The NSIS installer copies the PyInstaller output to
-`%ProgramFiles64%\Punishment Manager`, creates Start Menu and Desktop
+`%ProgramFiles64%\Sentinel`, creates Start Menu and Desktop
 shortcuts, adds the install dir to `PATH`, and registers an
 uninstaller in Add/Remove Programs.
 
@@ -678,17 +714,17 @@ After install, the bot can be configured to start automatically:
 
 ```bash
 # Linux (after sudo dpkg -i ...):
-sudo punishment-manager --install-service
-sudo systemctl start punishment-manager
-sudo systemctl enable punishment-manager
+sudo sentinel --install-service
+sudo systemctl start sentinel
+sudo systemctl enable sentinel
 
 # macOS:
-sudo punishment-manager --install-service
-launchctl load -w ~/Library/LaunchAgents/com.arena.punishment-manager.plist
+sudo sentinel --install-service
+launchctl load -w ~/Library/LaunchAgents/com.arena.sentinel.plist
 
 # Windows (run as Administrator):
-punishment-manager.exe --install-service
-sc start PunishmentManager
+sentinel.exe --install-service
+sc start Sentinel
 ```
 
 The `--install-service` command registers the bot with the OS service
@@ -705,24 +741,24 @@ arguments — it will auto-run the installer on first launch.
 
 Running from a source checkout keeps everything in the repo (`./data`,
 `./config.json`). A **packaged install must not write next to the binary** -
-`/opt/punishment-manager`, `C:\Program Files\Punishment Manager` and the
+`/opt/sentinel`, `C:\Program Files\Sentinel` and the
 macOS `.app` are read-only (and world-readable, which would leak the token),
 so `paths.py` picks a writable location at startup:
 
 | Install          | Data (db + log)                                             | Config read from                                        |
 |------------------|-------------------------------------------------------------|----------------------------------------------------------|
 | source checkout  | `./data/`                                                    | `./config.json`                                          |
-| Linux (`.deb`)   | `/var/lib/punishment-manager`, else `$XDG_STATE_HOME/punishment-manager`, else `~/.local/state/punishment-manager` | `~/.local/state/.../config.json`, then `/etc/punishment-manager/config.json` |
-| macOS (`.dmg`)   | `~/Library/Application Support/Punishment Manager`           | there, else `/Library/Application Support/Punishment Manager` |
-| Windows          | `%LOCALAPPDATA%\Punishment Manager`, else the install dir    | there, else `config.json` next to `punishment-manager.exe` |
+| Linux (`.deb`)   | `/var/lib/sentinel`, else `$XDG_STATE_HOME/sentinel`, else `~/.local/state/sentinel` | `~/.local/state/.../config.json`, then `/etc/sentinel/config.json` |
+| macOS (`.dmg`)   | `~/Library/Application Support/Sentinel`           | there, else `/Library/Application Support/Sentinel` |
+| Windows          | `%LOCALAPPDATA%\Sentinel`, else the install dir    | there, else `config.json` next to `sentinel.exe` |
 
 The first writable candidate wins; if none is writable it falls back to a
 temp dir and says so in the log. A config that exists but is read-only (the
-`.deb` ships one in `/etc`, mode `0640 root:punishment-manager`) is read from
+`.deb` ships one in `/etc`, mode `0640 root:sentinel`) is read from
 there, and the first save copies it to the writable data dir - which then
 takes precedence. A candidate the current user can't even look into (for
-example the `.deb`'s `0750` `/etc/punishment-manager` when a portable build is
-run by a user outside the `punishment-manager` group) is skipped with a note
+example the `.deb`'s `0750` `/etc/sentinel` when a portable build is
+run by a user outside the `sentinel` group) is skipped with a note
 in the log, and the later candidates - such as `config.json` next to the
 executable - are still tried (v2.1.1; v2.1.0 stopped at the first such
 candidate).
@@ -730,32 +766,33 @@ candidate).
 Print the resolved locations any time:
 
 ```bash
-punishment-manager --paths        # or: python3 bot.py --paths
-punishment-manager --version      # which build is actually installed
+sentinel --paths        # or: python3 bot.py --paths
+sentinel --version      # which build is actually installed
 ```
 
 Or pin them explicitly (useful for containers and custom service units):
 
 ```bash
-PUNISHMENT_MANAGER_HOME=/srv/pm punishment-manager      # data + config base
-PUNISHMENT_MANAGER_DATA=/srv/pm/data ...                # db + log dir only
-PUNISHMENT_MANAGER_CONFIG=/etc/punishment-manager/config.json ...
+SENTINEL_HOME=/srv/sentinel sentinel              # data + config base
+SENTINEL_DATA=/srv/sentinel/data ...             # db + log dir only
+SENTINEL_CONFIG=/etc/sentinel/config.json ...    # config.json path
 ```
 
-Because the systemd service runs as the `punishment-manager` user, configure
+Because the systemd service runs as the `sentinel` user, configure
 it with `sudo` so the file lands where the service can read it:
 
 ```bash
-sudo punishment-manager --install     # writes /var/lib or /etc, service-visible
-sudo systemctl start punishment-manager
+sudo sentinel --install     # writes /var/lib or /etc, service-visible
+sudo systemctl start sentinel
 ```
 
 Running the installer as your own user only configures *your* user (the
 installer tells you when that's the case).
 
 ```
-Punishment-Manager/
+Sentinel/
 ├── bot.py                  # bot entry point and command registration
+├── command_tree.py         # the shared /manage group + admin check
 ├── dashboard.py            # authenticated server-side dashboard/API
 ├── dashboard.html          # dashboard UI
 ├── rules.py                # rules publishing and the acceptance reaction role
@@ -775,14 +812,14 @@ Punishment-Manager/
 │   ├── build_linux.sh
 │   ├── build_windows.bat
 │   ├── linux/
-│   │   ├── punishment-manager.service
-│   │   ├── punishment-manager.desktop
+│   │   ├── sentinel.service
+│   │   ├── sentinel.desktop
 │   │   ├── postinst
 │   │   ├── prerm
 │   │   └── postrm
 │   ├── macos/
 │   │   ├── Info.plist
-│   │   └── com.arena.punishment-manager.plist
+│   │   └── com.arena.sentinel.plist
 │   └── windows/
 │       └── installer.nsi
 ├── tests/
@@ -804,36 +841,36 @@ python3 tests/test_dashboard.py      # run dashboard auth tests alone
 ## 9. Troubleshooting
 
 * **`PermissionError: [Errno 13] Permission denied:
-  '/opt/punishment-manager/_internal/data'`** at startup, usually followed by
+  '/opt/sentinel/_internal/data'`** at startup, usually followed by
   `[PYI-...:ERROR] Failed to execute script 'bot'` — that build predates
   `paths.py` and tried to create its data directory inside the read-only
   install tree. Update to a build that ships `paths.py` (state then lives in
-  `/var/lib/punishment-manager`, or your user's state dir). On the old build
+  `/var/lib/sentinel`, or your user's state dir). On the old build
   you can work around it:
 
   ```bash
-  sudo mkdir -p /var/lib/punishment-manager
-  sudo chown punishment-manager:punishment-manager /var/lib/punishment-manager
-  sudo PUNISHMENT_MANAGER_DATA=/var/lib/punishment-manager punishment-manager
+  sudo mkdir -p /var/lib/sentinel
+  sudo chown sentinel:sentinel /var/lib/sentinel
+  sudo SENTINEL_DATA=/var/lib/sentinel sentinel
   ```
 
-  `punishment-manager --paths` prints where the current build keeps its
+  `sentinel --paths` prints where the current build keeps its
   files.
 * **"Installer exited without saving a config"** — re-run
   `python3 installer.py` and answer the prompts. If your terminal hides
   input (e.g. when piping from a file), the token will be read as empty
   and you'll be asked again.
-* **`Missing Permissions`** when running `/punish apply` — the bot's
+* **`Missing Permissions`** when running `/manage punish` — the bot's
   role isn't above the configured roles. Move it up in
   *Server Settings → Roles*.
-* **`/rules publish` can't post or react** — grant the bot **View Channel**,
+* **`/manage rules publish` can't post or react** — grant the bot **View Channel**,
   **Send Messages**, **Embed Links**, and **Add Reactions** in the selected
   channel. The acceptance role must be below the bot's role and must not have
   moderation or server-management permissions.
-* **A rule set doesn't grant its role** — check `/rules list`: the set's
+* **A rule set doesn't grant its role** — check `/manage rules list`: the set's
   message id changes when you republish or move it, so an old post stops
   reacting on purpose. Reactions are matched per message, and each set grants
-  only its own role. If `/rules disable` says nothing was configured, the set
+  only its own role. If `/manage rules disable` says nothing was configured, the set
   was already removed from `config.json`.
 * **A reaction-role post doesn't grant roles** — the same limits as the
   acceptance role apply: the role must sit below the bot's role, the bot needs
@@ -849,27 +886,27 @@ python3 tests/test_dashboard.py      # run dashboard auth tests alone
   `dashboard_allowed_hosts`.
 * **Dashboard login says "Invalid dashboard key"** — you are entering the
   wrong credential. The login key is printed by
-  `punishment-manager --dashboard-token` (packaged build) or
+  `sentinel --dashboard-token` (packaged build) or
   `python3 bot.py --dashboard-token` (source) and is stored as
   `dashboard_token` in the bot's `config.json`; the Discord **bot token**
   will not work. `--paths` shows where `config.json` is.
-* **The user never receives the DM** — they have DMs disabled or the
-  bot is blocked. Set `dm_user: false` in `/setup` to suppress the DM
-  attempt, or ask the user to enable DMs.
+* **The member never receives the DM** — they have DMs disabled or the
+  bot is blocked. Set `dm_user: false` in `/manage setup` to suppress the DM
+  attempt, or ask the member to enable DMs.
 * **Slash commands don't appear** — the bot syncs instantly to every
   connected server, so `server_id` is not required. Make sure the bot was
   invited with the `applications.commands` scope and check `data/bot.log`
   for a "Synced N command(s) to guild X" line for your server.
-* **Slash commands appear twice / doubled** (`/punish` and `/setup` listed
-  two or three times) — Discord is showing the same command from both of its
+* **Slash commands appear twice / doubled** (`/manage` listed two or three
+  times) — Discord is showing the same command from both of its
   command registries. This is what older versions of the bot caused by
   syncing globally *and* per server; it is fixed now. Startup deletes the
   duplicate global registrations automatically (look for a "Removed N
   duplicate global command(s)" line in `data/bot.log`), or an admin can run
-  `/fixcommands` to do it on the spot. Discord can take a few minutes to
+  `/manage fixcommands` to do it on the spot. Discord can take a few minutes to
   refresh the command list — restarting Discord (Ctrl+R) shows it
   immediately. If the duplicates come back, another copy of the bot is still
-  running with the same token; stop it and run `/fixcommands` again.
+  running with the same token; stop it and run `/manage fixcommands` again.
 * **No token / Login failed** — make sure `DISCORD_TOKEN` is set or
   `config.json` has a non-empty `bot_token` (or the legacy `token`).
 * **`.deb` build complains about `dpkg-deb` or `fakeroot`** — install

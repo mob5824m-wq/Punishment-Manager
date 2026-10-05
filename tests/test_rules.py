@@ -17,7 +17,7 @@ from rules import (  # noqa: E402
     MAX_RULESET_NAME_LENGTH,
     RULES_ACCEPT_EMOJI,
     RULES_POST_CONTENT,
-    RulesCog,
+    RulesMixin,
     find_ruleset,
     find_ruleset_by_message,
     find_ruleset_by_name,
@@ -196,7 +196,7 @@ class ReactionRoleTests(unittest.IsolatedAsyncioTestCase):
             }
         }
         self.bot = FakeBot(config, self.guild)
-        self.cog = RulesCog(self.bot, lambda _config: None)
+        self.cog = RulesMixin(self.bot, lambda _config: None)
 
     def payload(self, *, message_id=67, emoji=RULES_ACCEPT_EMOJI, user_id=321, member=None):
         return SimpleNamespace(
@@ -339,7 +339,7 @@ class RulesPublishTests(unittest.IsolatedAsyncioTestCase):
         guild._channel = channel
 
         bot = FakeBot({"rules": {}}, guild)
-        cog = RulesCog(bot, self.saved.append)
+        cog = RulesMixin(bot, self.saved.append)
         interaction = SimpleNamespace(
             guild=guild,
             user=SimpleNamespace(id=7, guild_permissions=_Permissions(administrator=True)),
@@ -445,7 +445,7 @@ class _RulesHarness:
         self.guild.roles = [self.role, self.second_role]
         self.guild._channel = self.channel
         self.bot = FakeBot(config, self.guild, bot_user_id=self.BOT_USER_ID)
-        self.cog = RulesCog(self.bot, self.saved.append)
+        self.cog = RulesMixin(self.bot, self.saved.append)
         self.interaction = SimpleNamespace(
             guild=self.guild,
             user=SimpleNamespace(id=7, guild_permissions=_Permissions(administrator=True)),
