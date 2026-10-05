@@ -40,7 +40,15 @@
     .login-card label { display: block; margin-bottom: 8px; color: var(--soft); font-size: 13px; font-weight: 650; }
     .login-card input { width: 100%; }
     .login-card .btn { width: 100%; margin-top: 14px; }
-    .login-foot { margin-top: 22px; padding-top: 17px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; line-height: 1.5; }
+    .login-card .login-error { margin: 12px 0 0; padding: 10px 12px; border: 1px solid rgba(251,113,133,.38); border-radius: 10px; background: rgba(251,113,133,.1); color: #ffb4c0; font-size: 12px; font-weight: 620; line-height: 1.5; }
+    .key-help { margin-top: 22px; padding-top: 17px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; line-height: 1.5; }
+    .key-help-title { margin-bottom: 10px; color: var(--soft); font-size: 12px; font-weight: 720; }
+    .key-help ol { margin: 0; padding-left: 19px; display: grid; gap: 10px; }
+    .key-help li { padding-left: 2px; }
+    .key-cmd { display: block; margin-top: 7px; }
+    .key-cmd code { display: block; padding: 8px 10px; border: 1px solid var(--line); border-radius: 9px; background: rgba(255,255,255,.04); color: #ccd7ea; font-size: 11.5px; white-space: nowrap; overflow-x: auto; }
+    .key-cmd span { display: block; margin-top: 4px; color: #65738a; font-size: 10.5px; }
+    .login-card .key-help-note { margin: 14px 0 0; color: var(--muted); font-size: 11px; line-height: 1.55; }
     .shell { min-height: 100vh; display: grid; grid-template-columns: 248px minmax(0, 1fr); }
     .sidebar { position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; padding: 23px 16px 16px; border-right: 1px solid var(--line); background: rgba(12,16,26,.88); backdrop-filter: blur(16px); }
     .brand { display: flex; align-items: center; gap: 12px; padding: 0 8px 24px; }
@@ -191,8 +199,20 @@
       <p>Sign in with the local dashboard key to manage your bot's servers, punishments, rules, and settings.</p>
       <label for="dashboard-key">Dashboard key</label>
       <input id="dashboard-key" type="password" autocomplete="current-password" placeholder="Paste your dashboard key" required>
+      <p id="login-error" class="login-error hidden" role="alert"></p>
       <button class="btn" type="submit">Unlock console <span aria-hidden="true">→</span></button>
-      <div id="login-error" class="login-foot">Your key is stored locally by the bot. Retrieve it with <code>python bot.py --dashboard-token</code> on the bot host.</div>
+      <div class="key-help">
+        <div class="key-help-title">🔑 Where do I find the dashboard key?</div>
+        <ol>
+          <li>Open a terminal <strong>on the machine that runs the bot</strong> (this page only listens there).</li>
+          <li>Run the command for your install:
+            <span class="key-cmd"><code>punishment-manager --dashboard-token</code><span>Installed app (.dmg, .deb, Windows Setup)</span></span>
+            <span class="key-cmd"><code>python3 bot.py --dashboard-token</code><span>Running from source</span></span>
+          </li>
+          <li>Copy the key that is printed (the first run creates it if needed) and paste it above.</li>
+        </ol>
+        <p class="key-help-note">The key is also saved as <code>dashboard_token</code> in the bot's <code>config.json</code> — run <code>punishment-manager --paths</code> (or <code>python3 bot.py --paths</code>) to see where that file lives. This is <strong>not</strong> your Discord bot token.</p>
+      </div>
     </form>
   </section>
 
@@ -378,15 +398,22 @@
         state.toastTimer = setTimeout(() => toast.classList.remove("show"), 3600);
       }
 
+      function setLoginError(message) {
+        const box = $("login-error");
+        box.textContent = message || "";
+        box.classList.toggle("hidden", !message);
+      }
+
       function lockConsole() {
         state.csrf = "";
+        setLoginError("");
         $("app-view").classList.add("hidden");
         $("login-view").classList.remove("hidden");
       }
 
       async function unlockConsole(csrf) {
         state.csrf = csrf;
-        $("login-error").textContent = "Authenticated session. The browser session expires after a period of inactivity.";
+        setLoginError("");
         $("login-view").classList.add("hidden");
         $("app-view").classList.remove("hidden");
         await loadOverview();
@@ -401,7 +428,7 @@
           $("dashboard-key").value = "";
           await unlockConsole(result.csrfToken);
         } catch (error) {
-          $("login-error").textContent = error.message || "Could not sign in.";
+          setLoginError(error.message || "Could not sign in. Check that the key matches the one printed by --dashboard-token.");
         } finally { button.disabled = false; }
       });
 

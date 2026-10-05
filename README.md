@@ -245,14 +245,22 @@ The dashboard covers connected servers, active punishments, pardon/apply
 actions, rules and reaction roles, server role/channel settings, slash-command
 sync, and punishment history.
 
-The first startup generates a private dashboard key and saves it in
-`config.json`. Retrieve it from the same machine/account with:
+**Finding the dashboard key.** The first startup generates a private
+dashboard key and saves it as `dashboard_token` in the bot's `config.json`.
+Until you paste that key into the login screen, the dashboard stays locked.
+To retrieve it, open a terminal **on the machine that runs the bot** and run
+the command for your install:
 
-```bash
-python3 bot.py --dashboard-token
-# installed build:
-punishment-manager --dashboard-token
-```
+| How the bot is installed | Command |
+|--------------------------|---------|
+| Packaged build (`.dmg`, `.deb`, Windows Setup) | `punishment-manager --dashboard-token` |
+| Running from source | `python3 bot.py --dashboard-token` |
+
+The command prints the key on a single line (and creates it if it doesn't
+exist yet). Not sure where `config.json` lives? `punishment-manager --paths`
+(or `python3 bot.py --paths`) prints the resolved config, database, and log
+paths. The dashboard key is **not** the Discord bot token — pasting the bot
+token into the dashboard will not work.
 
 The default listener is loopback-only; the key has access to **every server
 connected to this bot**, so treat it like a bot-owner credential. For a remote
@@ -614,9 +622,15 @@ python3 tests/test_dashboard.py      # run dashboard auth tests alone
   channel. The acceptance role must be below the bot's role and must not have
   moderation or server-management permissions.
 * **Dashboard won't open** — it binds to `127.0.0.1:8765` by default, so open
-  it on the bot host or use the documented SSH tunnel. Retrieve the key with
-  `punishment-manager --dashboard-token`; check `data/bot.log` for a port or
-  config error. Remote reverse-proxy hosts must be in `dashboard_allowed_hosts`.
+  it on the bot host or use the documented SSH tunnel. Check `data/bot.log`
+  for a port or config error; remote reverse-proxy hosts must be in
+  `dashboard_allowed_hosts`.
+* **Dashboard login says "Invalid dashboard key"** — you are entering the
+  wrong credential. The login key is printed by
+  `punishment-manager --dashboard-token` (packaged build) or
+  `python3 bot.py --dashboard-token` (source) and is stored as
+  `dashboard_token` in the bot's `config.json`; the Discord **bot token**
+  will not work. `--paths` shows where `config.json` is.
 * **The user never receives the DM** — they have DMs disabled or the
   bot is blocked. Set `dm_user: false` in `/setup` to suppress the DM
   attempt, or ask the user to enable DMs.

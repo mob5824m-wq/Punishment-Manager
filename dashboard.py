@@ -152,9 +152,14 @@ class DashboardServer:
         self._runner = runner
         self._site = site
         logger.info(
-            "Admin dashboard listening at http://%s:%d/ (use --dashboard-token to retrieve its login key).",
+            "Admin dashboard listening at http://%s:%d/.",
             self._host,
             self._port,
+        )
+        logger.info(
+            "Dashboard login key: run 'punishment-manager --dashboard-token' on the bot host "
+            "(from source: 'python3 bot.py --dashboard-token'); it is also saved as "
+            "'dashboard_token' in the bot's config.json."
         )
         return True
 
