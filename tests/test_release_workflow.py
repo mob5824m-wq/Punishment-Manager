@@ -472,9 +472,56 @@ class WorkflowWiringTests(unittest.TestCase):
             ".github/workflows/merge-release.yml",
             ".github/scripts/publish-merge-release.sh",
             ".github/scripts/publish-tag-release.sh",
+            ".github/scripts/annotate-test-failures.py",
+            "../../scripts/arch.sh",
+            "../../scripts/check_arch.py",
+            "../../scripts/check_glibc.py",
         ):
             with self.subTest(file=name):
                 self.assertIn(name, helper)
+
+    def test_the_test_steps_report_failures_as_annotations(self) -> None:
+        reusable = without_comments(self.files["build-installers.yml"])
+        # One per platform: the report has to be written, and the annotator has
+        # to run when (and only when) the suite failed.
+        self.assertEqual(reusable.count("--junitxml=test-results.xml"), 3)
+        self.assertEqual(reusable.count("annotate-test-failures.py"), 3)
+        self.assertEqual(reusable.count("if: failure()"), 3)
+
+    def test_the_annotator_summarises_a_junit_report(self) -> None:
+        script = REPO_ROOT / ".github" / "scripts" / "annotate-test-failures.py"
+        self.assertTrue(script.is_file())
+        report = tempfile.NamedTemporaryFile("w", suffix=".xml", delete=False)
+        self.addCleanup(os.unlink, report.name)
+        report.write(
+            '<testsuites><testsuite name="pytest" tests="2" failures="1">'
+            '<testcase classname="test_x.SomeTests" name="test_a">'
+            '<failure message="assert 1 == 2">Traceback (most recent call last):'
+            '\n  File &quot;tests/test_x.py&quot;, line 10\nAssertionError</failure>'
+            "</testcase>"
+            '<testcase classname="test_x.SomeTests" name="test_b" />'
+            "</testsuite></testsuites>"
+        )
+        report.close()
+        result = subprocess.run(
+            [sys.executable, str(script), report.name],
+            capture_output=True, text=True,
+        )
+        # Reporting must not change the job's result: pytest already failed it.
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("1 failing test(s)", result.stdout)
+        self.assertIn("::error title=test_x.SomeTests.test_a::", result.stdout)
+        self.assertIn("assert 1 == 2", result.stdout)
+        self.assertNotIn("test_b", result.stdout.split("::error")[1].splitlines()[0])
+
+    def test_the_annotator_survives_a_missing_report(self) -> None:
+        result = subprocess.run(
+            [sys.executable, str(REPO_ROOT / ".github" / "scripts" / "annotate-test-failures.py"),
+             str(REPO_ROOT / "does-not-exist.xml")],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("nothing to annotate", result.stdout)
 
 
 def main() -> int:

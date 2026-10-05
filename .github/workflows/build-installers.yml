@@ -86,7 +86,13 @@ jobs:
       - name: Run the test suite
         run: |
           python -m pip install -q pytest
-          python -m pytest tests -q --tb=short
+          python -m pytest tests -q --tb=short --junitxml=test-results.xml
+      - name: Annotate test failures
+        # Run logs live behind an authenticated blob store, which is not always
+        # reachable (a restricted network, `gh` in CI tooling). Annotations are
+        # plain API data, so a red leg can be diagnosed without them.
+        if: failure()
+        run: python .github/scripts/annotate-test-failures.py test-results.xml
       - name: Build .deb
         run: build/build_linux.sh
       - name: Check the glibc floor
@@ -164,7 +170,13 @@ jobs:
       - name: Run the test suite
         run: |
           python -m pip install -q pytest
-          python -m pytest tests -q --tb=short
+          python -m pytest tests -q --tb=short --junitxml=test-results.xml
+      - name: Annotate test failures
+        # Run logs live behind an authenticated blob store, which is not always
+        # reachable (a restricted network, `gh` in CI tooling). Annotations are
+        # plain API data, so a red leg can be diagnosed without them.
+        if: failure()
+        run: python .github/scripts/annotate-test-failures.py test-results.xml
       - name: Build .dmg
         run: build/build_macos.sh
       - name: Verify .dmg
@@ -230,7 +242,13 @@ jobs:
       - name: Run the test suite
         run: |
           python -m pip install -q pytest
-          python -m pytest tests -q --tb=short
+          python -m pytest tests -q --tb=short --junitxml=test-results.xml
+      - name: Annotate test failures
+        # Run logs live behind an authenticated blob store, which is not always
+        # reachable (a restricted network, `gh` in CI tooling). Annotations are
+        # plain API data, so a red leg can be diagnosed without them.
+        if: failure()
+        run: python .github/scripts/annotate-test-failures.py test-results.xml
       - name: Install NSIS
         run: pwsh -File .github/scripts/install-nsis.ps1
       - name: Build .exe
