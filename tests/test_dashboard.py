@@ -17,7 +17,13 @@ if str(REPO_ROOT) not in sys.path:
 import discord  # noqa: E402
 from aiohttp.test_utils import TestClient, TestServer  # noqa: E402
 
-from dashboard import DashboardServer, _json_safe_ids, _snowflake, ensure_dashboard_token  # noqa: E402
+from dashboard import (  # noqa: E402
+    DashboardServer,
+    _json_safe_ids,
+    _reaction_post_payload,
+    _snowflake,
+    ensure_dashboard_token,
+)
 
 
 # A realistic Discord snowflake: larger than 2**53, so a JavaScript client
@@ -914,7 +920,10 @@ class DashboardReactionRolesTests(unittest.IsolatedAsyncioTestCase):
         stored = self._stored_posts[0]
         self.assertEqual(stored["message_id"], 777)
         self.assertEqual(stored["channel_id"], self.channel.id)
-        self.assertEqual(stored["entries"][0], {"emoji": "🎮", "role_id": self.role.id})
+        self.assertEqual(
+            stored["entries"][0],
+            {"emoji": "🎮", "role_id": self.role.id, "action": "add"},
+        )
         self.assertEqual(stored["entries"][1]["emoji"], "<:gaming:123456789>")
         self.assertEqual(self.saved[-1]["reaction_roles"][str(GUILD_ID)][0]["post_id"], payload["postId"])
 
@@ -924,6 +933,67 @@ class DashboardReactionRolesTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(listing["posts"][0]["entries"][0]["roleId"], str(self.role.id))
         self.assertEqual(listing["posts"][0]["channelId"], str(self.channel.id))
         self.assertTrue(listing["posts"][0]["useEmbed"])
+
+    async def test_pairs_can_give_or_remove_a_role(self) -> None:
+        with patch.object(discord, "TextChannel", _FakeReactionChannel):
+            async with TestClient(TestServer(self.server._build_app())) as client:
+                csrf = await self._login(client)
+                response = await client.put(
+                    f"/api/guilds/{GUILD_ID}/reaction-roles",
+                    json=self._post_body(
+                        entries=[
+                            {"emoji": "🎮", "roleId": str(self.role.id), "action": "add"},
+                            {"emoji": "🔕", "roleId": str(self.role.id), "action": "remove"},
+                        ]
+                    ),
+                    headers={"X-CSRF-Token": csrf},
+                )
+                self.assertEqual(response.status, 201)
+                listed = await client.get(f"/api/guilds/{GUILD_ID}/reaction-roles")
+                listing = await listed.json()
+
+        self.assertEqual(self.channel.reactions, ["🎮", "🔕"])
+        self.assertEqual(
+            self._stored_posts[0]["entries"],
+            [
+                {"emoji": "🎮", "role_id": self.role.id, "action": "add"},
+                {"emoji": "🔕", "role_id": self.role.id, "action": "remove"},
+            ],
+        )
+        self.assertEqual(
+            [entry["action"] for entry in listing["posts"][0]["entries"]],
+            ["add", "remove"],
+        )
+
+    async def test_a_bad_action_is_rejected_before_anything_is_posted(self) -> None:
+        with patch.object(discord, "TextChannel", _FakeReactionChannel):
+            async with TestClient(TestServer(self.server._build_app())) as client:
+                csrf = await self._login(client)
+                response = await client.put(
+                    f"/api/guilds/{GUILD_ID}/reaction-roles",
+                    json=self._post_body(
+                        entries=[
+                            {
+                                "emoji": "🎮",
+                                "roleId": str(self.role.id),
+                                "action": "strip",
+                            }
+                        ]
+                    ),
+                    headers={"X-CSRF-Token": csrf},
+                )
+                self.assertEqual(response.status, 400)
+                self.assertIn("strip", await response.text())
+
+        self.assertEqual(self.channel.sent, [])
+        self.assertEqual(self._stored_posts, [])
+
+    def test_a_stored_entry_without_an_action_is_reported_as_give(self) -> None:
+        # Posts saved before the Give/Remove option existed.
+        payload = _reaction_post_payload(
+            {"post_id": "abc123", "entries": [{"emoji": "🎮", "role_id": 89}]}
+        )
+        self.assertEqual(payload["entries"][0]["action"], "add")
 
     async def test_plain_posts_send_the_message_without_an_embed(self) -> None:
         with patch.object(discord, "TextChannel", _FakeReactionChannel):
@@ -984,7 +1054,10 @@ class DashboardReactionRolesTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(message.edits[-1]["embed"].description, "Updated text.")
         # The stale 🎮 reaction is dropped and the new 🎬 reaction is added.
         self.assertEqual([str(item.emoji) for item in message.reactions], ["🎬"])
-        self.assertEqual(self._stored_posts[0]["entries"], [{"emoji": "🎬", "role_id": self.role.id}])
+        self.assertEqual(
+            self._stored_posts[0]["entries"],
+            [{"emoji": "🎬", "role_id": self.role.id, "action": "add"}],
+        )
         self.assertEqual(len(self._stored_posts), 1, "an edit must not add a second post")
 
     async def test_update_moves_a_post_to_another_channel(self) -> None:

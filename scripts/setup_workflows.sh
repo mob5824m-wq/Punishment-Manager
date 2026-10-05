@@ -21,10 +21,11 @@
 #
 #   ...
 #
-# The three files that matter:
-#   - .github/workflows/release.yml       (release builds on v* tags)
-#   - .github/workflows/build.yml         (CI sanity build on push/PR)
-#   - .github/scripts/install-nsis.ps1    (NSIS install helper for Win)
+# The workflows that matter:
+#   - .github/workflows/build-installers.yml  (reusable .deb/.dmg/.exe build)
+#   - .github/workflows/build.yml             (CI sanity build on push/PR)
+#   - .github/workflows/release.yml           (release builds on v* tags)
+#   - .github/workflows/merge-release.yml     (a release per merge to main)
 #
 # Plus the helper scripts under .github/scripts/ which the workflows
 # call into. To regenerate everything, run this script and follow the
@@ -42,8 +43,12 @@ fi
 # Print the workflow files, then the helper scripts. These are the
 # files that the workflows depend on.
 files=(
+    ".github/workflows/build-installers.yml"
+    ".github/workflows/merge-release.yml"
     ".github/workflows/release.yml"
     ".github/workflows/build.yml"
+    ".github/scripts/publish-merge-release.sh"
+    ".github/scripts/publish-tag-release.sh"
     ".github/scripts/install-nsis.ps1"
     ".github/scripts/install-linux-deps.sh"
     ".github/scripts/install-windows-deps.ps1"

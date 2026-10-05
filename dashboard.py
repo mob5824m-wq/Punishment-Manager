@@ -30,6 +30,7 @@ from reaction_roles import (
     MAX_TITLE_LENGTH,
     build_post_content,
     emoji_key,
+    entry_action,
     find_reaction_post,
     get_guild_reaction_posts,
     message_limit,
@@ -1713,6 +1714,10 @@ def _reaction_post_payload(post: dict) -> dict:
                 {
                     "emoji": str(entry.get("emoji") or ""),
                     "roleId": _snowflake(entry.get("role_id")),
+                    # Always sent, defaulted for entries stored before the
+                    # Give/Remove option existed, so the editor always has a
+                    # value to show in its action dropdown.
+                    "action": entry_action(entry),
                     "label": str(entry.get("label") or ""),
                 }
             )

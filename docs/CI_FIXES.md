@@ -7,7 +7,7 @@
 | macOS `.dmg` | passing | `dist/PunishmentManager-X.Y.Z.dmg` |
 | Linux `.deb` | passing | `dist/punishment-manager_X.Y.Z_amd64.deb` |
 | Windows `.exe` | passing | `dist/PunishmentManager-Setup-X.Y.Z.exe` |
-| All artifacts | produced | Uploaded as workflow artifacts (3-day retention) |
+| All artifacts | produced | Workflow artifacts on PRs (3-day retention); published as releases on merges to `main` (see "Fixes 16") |
 
 The `build.yml` CI build is fully working on all three platforms, and so is
 `release.yml`: the matrix bug described under ~~"The open bug"~~ below was
@@ -29,6 +29,10 @@ git commit -am "chore: bump version to 2.1.1" && git push origin main
 # 2. Tag it - this runs release.yml end to end.
 ./scripts/make_release.sh 2.1.1     # refuses to tag if VERSION disagrees
 ```
+
+Versioned releases are for stability, not for shipping: `merge-release.yml`
+already built and published the commit you merged (rolling `latest-build` plus
+`v<VERSION>-build.<run>`), so a fix is downloadable before the bump. See fix 16.
 
 To fall back to a manual release (only needed if release.yml breaks again):
 
@@ -355,13 +359,57 @@ or token needed - and fails, naming the command, if any command, group,
 subcommand or option description is outside 1-100 characters. It also feeds the
 checker the string that broke sync, so the gate can't quietly become a no-op.
 
+### 16. Merges to main produced no downloadable build
+
+**Problem:** the installers only left CI when a maintainer bumped `VERSION` and
+pushed a tag, so a merged fix was not downloadable until someone cut a release
+— the merge itself built nothing a user could take. And the fix could not just
+be "also run the build on main": the platform steps were already duplicated
+between `build.yml` and `release.yml`, and a third copy for the merge build
+would have meant three places to update (three places for the version-drift bug
+of fix 13 to live in).
+
+**Fix:** the platform steps now live in one reusable workflow,
+`.github/workflows/build-installers.yml`, called by every workflow that needs
+installers (`workflow_call`). On top of it:
+
+- `merge-release.yml` runs on every push to `main` and publishes two
+  prereleases: the rolling `latest-build`, whose tag is force-moved to the
+  merge commit and whose assets are replaced (stale assets from an earlier
+  version are deleted), and `v<VERSION>-build.<run_number>`, one per merge so
+  an older build stays downloadable. Both are prereleases, so
+  `/releases/latest` still points at the newest *versioned* release.
+- `release.yml` keeps handling `v*` tags and skips the generated `-build.` tags
+  (`if:` guards on both jobs) so a build tag can never publish a second, empty
+  release. Tag pushes made with the workflow's own `GITHUB_TOKEN` do not
+  trigger workflows, which the guards make explicit rather than relying on.
+- `build.yml` still gates every pull request and `arena/*` push, but no longer
+  duplicates the main build.
+- Merges queue (`cancel-in-progress: false`) so a burst of merges publishes
+  every build instead of cancelling all but the last.
+
+The release plumbing lives in `.github/scripts/publish-merge-release.sh` and
+`.github/scripts/publish-tag-release.sh` rather than in inline `run:` blocks,
+because scripts can be executed offline.
+
+**Regression gate:** `tests/test_release_workflow.py` checks the workflow
+wiring (every workflow that builds calls the reusable one; the platform steps
+exist in exactly one file; merge-release triggers on `main` and is a
+prerelease-only publisher; `release.yml` still triggers on `v*` and skips
+`-build.` tags) and then runs both publish scripts against stubbed `gh`/`git`
+binaries, asserting the rolling tag move, the per-merge tag name
+(`v<VERSION>-build.<run>`), the asset clobber/upload calls, the stale-asset
+sweep, the tag-push fallback and the failures for missing installers or a
+missing tag.
+
 ## Test gate in CI
 
-`build.yml` (all three platforms) and `release.yml` (linux) run
-`python -m pytest tests`, which covers runtime path resolution (fixes 12 and 14),
-the version plumbing (fix 13) and the slash-command definitions (fix 15). The
-suites are plain `unittest`, so they also run standalone:
-`python tests/test_paths.py`.
+`build.yml` (all three platforms) and the Linux job of the reusable
+`build-installers.yml` run `python -m pytest tests`, which covers runtime path
+resolution (fixes 12 and 14), the version plumbing (fix 13), the slash-command
+definitions (fix 15), the reaction-role menus and the merge/tag release
+automation (fix 16). The suites are plain `unittest`, so they also run
+standalone: `python tests/test_paths.py`.
 
 ## Other notes
 

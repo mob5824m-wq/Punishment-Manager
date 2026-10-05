@@ -63,6 +63,19 @@ Releases are produced automatically by GitHub Actions whenever a
 `v*` tag is pushed. See `.github/workflows/release.yml` for the
 build pipeline, and the `VERSION` file for where the number comes from.
 
+Every merge to `main` is published too, without waiting for a version bump:
+
+| Release | What it is |
+|---------|------------|
+| [`latest-build`](https://github.com/mob5824m-wq/Punishment-Manager/releases/tag/latest-build) | Rolling prerelease whose three installers are replaced on every merge — one URL always has the newest build from `main` |
+| `v<VERSION>-build.<run>` | One prerelease per merge (e.g. `v2.5.0-build.42`), so a specific build stays downloadable afterwards |
+
+Both are marked *prerelease*, so
+[`releases/latest`](https://github.com/mob5824m-wq/Punishment-Manager/releases/latest)
+keeps pointing at the newest versioned release rather than at an unreleased
+build. `.github/workflows/merge-release.yml` runs this after each merge, and
+`build.yml` sanity-checks the same build on pull requests.
+
 > **Use v2.1.0 or newer.** The v1.0.0 and v2.0.0 installers crash on first
 > launch on a packaged install (`PermissionError: [Errno 13] Permission
 > denied: '/opt/punishment-manager/_internal/data'`), because they tried to
@@ -290,13 +303,27 @@ posts; each one is a separate bot message with its own mapping.
 4. Add the **emoji → role pairs** (up to 20 per post). Type or paste any emoji,
    or a custom emoji as `name:id` / `<:name:id>`; the quick-add row and
    **Insert emoji list** button write the role key into the message for you.
-5. Press **Publish post**. The bot posts the message and adds every reaction.
+5. Pick what each pair **does** when someone reacts:
 
-Reacting grants the paired role; removing the reaction removes it again, unless
-**Remove the role when a member removes their reaction** is cleared for that
-post. Roles are validated exactly like the acceptance role: they must sit below
-the bot's role, must not be managed by an integration, and must not carry
-moderation or server-management permissions.
+   | Action | Reacting | Un-reacting |
+   |--------|----------|-------------|
+   | **Give role** (default) | hands the member the role | takes it back |
+   | **Remove role** | strips the role from the member | hands it back |
+
+   *Give* is the ping-picker case. *Remove* is the opt-out case: an
+   "🔕 react to stop being pinged for events" emoji, or a "clear my own
+   access" reaction. Give and remove pairs mix freely on one post, and a
+   member who never reacts is never touched — the bot only ever changes the
+   role of the person who reacted.
+
+6. Press **Publish post**. The bot posts the message and adds every reaction.
+
+Un-reacting reverses whatever the pair did, whether it gave or removed the
+role, unless **Undo the change when a member removes their reaction** is
+cleared for that post (then reactions are one-way: they apply once and
+un-reacting does nothing). Roles are validated exactly like the acceptance
+role: they must sit below the bot's role, must not be managed by an
+integration, and must not carry moderation or server-management permissions.
 
 Each post listed under **Published reaction role posts** has **Edit** (change
 the text, the pairs, or the style — the message is updated in place and the
@@ -320,11 +347,18 @@ to `rules`, so it survives restarts:
       "message": "React below to pick your pings.",
       "use_embed": true,
       "remove_on_unreact": true,
-      "entries": [{ "emoji": "🎮", "role_id": 333333333333333333 }]
+      "entries": [
+        { "emoji": "🎮", "role_id": 333333333333333333, "action": "add" },
+        { "emoji": "🔕", "role_id": 444444444444444444, "action": "remove" }
+      ]
     }
   ]
 }
 ```
+
+`action` is `add` (give the role on react) or `remove` (take it away on
+react); an entry without the key is treated as `add`, so menus written by
+older versions keep working unchanged.
 
 ### Option C — edit `config.json` directly
 
@@ -607,6 +641,16 @@ tree, creates an annotated `v2.1.1` tag, and pushes it. Pushing the tag triggers
 which builds all three platforms in parallel and attaches the artifacts
 to a new GitHub Release.
 
+Main doesn't have to wait for that, though: every merge to `main` builds the
+same installers through `merge-release.yml` and publishes them as the rolling
+`latest-build` prerelease plus a `v<VERSION>-build.<run>` prerelease for that
+merge (see [Download](#download)). Those generated tags are skipped by
+`release.yml`, so only a tag you push can produce a versioned release.
+
+All three workflows call the same reusable build
+(`.github/workflows/build-installers.yml`), so the `.deb`/`.dmg`/`.exe` steps
+exist in exactly one file.
+
 You can also just run the same commands by hand:
 
 ```bash
@@ -786,11 +830,15 @@ Punishment-Manager/
 │   └── windows/
 │       └── installer.nsi
 ├── tests/
-│   ├── test_commands.py     # slash-command descriptions and guild sync
-│   ├── test_dashboard.py    # dashboard login/session security
-│   ├── test_rules.py        # rules acceptance/reaction-role behavior
-│   ├── test_reaction_roles.py  # reaction-role menus (storage, emoji, handler)
-│   └── test_paths.py        # packaged-install path resolution (read-only app dir)
+│   ├── test_commands.py         # slash-command descriptions and guild sync
+│   ├── test_dashboard.py        # dashboard login/session security + endpoints
+│   ├── test_markdown.py         # Discord Markdown renderer/linter
+│   ├── test_paths.py            # packaged-install path resolution (read-only app dir)
+│   ├── test_reaction_roles.py   # reaction-role menus (storage, emoji, give/remove)
+│   ├── test_release_workflow.py # merge/tag release publishing (workflows + scripts)
+│   ├── test_rules.py            # rules acceptance/reaction-role behavior
+│   ├── test_version.py          # VERSION plumbing (build scripts, tag, --version)
+│   └── test_warnings.py         # warning escalation behavior
 └── data/                    # created at runtime, source checkouts only
     ├── punishments.db
     └── bot.log
