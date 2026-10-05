@@ -192,6 +192,41 @@ This writes `config.json` with everything the bot needs.
 Rules text can be up to 4,096 characters. The bot stores the active post and
 role per server in `config.json`; no manual config edit is needed.
 
+#### Markdown in the rules
+
+The rules text is regular Discord Markdown, rendered by Discord's own client.
+Anything Discord supports inside an embed works:
+
+| Syntax | Result |
+|--------|--------|
+| `**bold**`, `*italic*` / `_italic_`, `__underline__`, `~~strikethrough~~`, `\|\|spoiler\|\|` | inline formatting |
+| `# Heading`, `## Heading`, `### Heading` | headings (`####` and more are shown as text) |
+| `- item`, `* item`, `1. item` | bulleted / numbered lists |
+| `> quote`, `>>> quote` | block quotes (the second quotes everything after it) |
+| `` `code` ``, ```` ```code``` ```` | inline code and code blocks |
+| `[label](https://example.com)`, `<https://example.com>` | clickable links |
+| `-# small note` | subtext |
+| `<@user>`, `<@&role>`, `<#channel>` | mentions (rendered, never pinged) |
+
+Discord does **not** render tables, images, task lists, horizontal rules
+(`---`), `####`+ headings or nested lists inside an embed — those are shown
+literally, so the bot's preview does not pretend otherwise.
+
+**In the dashboard.** The Rules page has a formatting toolbar (bold, italic,
+underline, strikethrough, spoiler, headings, lists, quote, code, code block,
+link — with `Ctrl`/`Cmd` + `B`, `I`, `E` shortcuts) and a **live preview** that
+shows the embed exactly as Discord renders it, including the embed title and
+footer. The preview is rendered by the bot (`discord_markdown.py`) rather than
+the browser, so what you see is what the published post looks like. While you
+type, the editor also flags syntax Discord would show as plain text — an
+unclosed `**`, a `####` heading, a missing space after `#`, or a non-http link.
+
+<sub>Want to verify the renderer without the browser?</sub>
+
+```bash
+python3 -c "from discord_markdown import render_markdown_html; print(render_markdown_html('# Rules\n**be kind**'))"
+```
+
 ### Option C — edit `config.json` directly
 
 ```json

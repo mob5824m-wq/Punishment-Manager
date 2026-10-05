@@ -102,6 +102,9 @@ a = Analysis(
         # installer.py is bundled as a data file (not analysed), so list the
         # module explicitly to be safe.
         'paths',
+        # Rules-Markdown renderer used by the dashboard's rules preview.
+        'discord_markdown',
+        'rules',
         # installer.py is bundled as a data file; import it via importlib.
     ],
     hookspath=[],

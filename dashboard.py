@@ -21,6 +21,7 @@ import discord
 from aiohttp import web
 
 import paths
+from discord_markdown import lint_markdown, render_markdown_html
 from rules import (
     MAX_RULES_LENGTH,
     PRIVILEGED_ROLE_PERMISSIONS,
@@ -260,6 +261,9 @@ class DashboardServer:
                 web.get("/api/guilds/{guild_id}/history", self.history),
                 web.get("/api/guilds/{guild_id}/rules", self.rules_status),
                 web.put("/api/guilds/{guild_id}/rules", self.publish_rules),
+                web.post(
+                    "/api/guilds/{guild_id}/rules/preview", self.preview_rules
+                ),
                 web.delete("/api/guilds/{guild_id}/rules", self.disable_rules),
                 web.post("/api/guilds/{guild_id}/sync", self.sync_commands),
             ]
@@ -906,6 +910,30 @@ class DashboardServer:
                 "messageId": _snowflake(settings.get("message_id")),
                 "roleId": _snowflake(settings.get("role_id")),
                 "text": settings.get("rules_text", ""),
+            }
+        )
+
+    async def preview_rules(self, request: web.Request) -> web.Response:
+        """Render rules Markdown the way Discord will show it.
+
+        A preview is side-effect free (nothing is published or saved), so it is
+        safe to call while typing. It shares the publish path's length limit,
+        and the returned notes describe syntax Discord renders literally rather
+        than rejecting it.
+        """
+        self._guild_from_request(request)  # 404 unless the bot is in this server
+        data = await self._json_body(request)
+        text = str(data.get("text", ""))
+        if len(text) > MAX_RULES_LENGTH:
+            raise web.HTTPBadRequest(
+                text=f"Rules are limited to {MAX_RULES_LENGTH} characters."
+            )
+        return web.json_response(
+            {
+                "html": render_markdown_html(text),
+                "warnings": lint_markdown(text),
+                "length": len(text),
+                "limit": MAX_RULES_LENGTH,
             }
         )
 

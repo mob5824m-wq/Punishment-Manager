@@ -155,6 +155,33 @@
     .rules-top { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(250px, .7fr); gap: 16px; align-items: start; }
     .rules-tip { padding: 16px; border: 1px solid rgba(139,124,255,.18); border-radius: 13px; background: rgba(139,124,255,.06); color: #c6c1fa; font-size: 11px; line-height: 1.6; }
     .rules-tip strong { display: block; margin-bottom: 6px; color: #dedaff; font-size: 12px; }
+    .rules-editor { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; align-items: start; }
+    .md-toolbar { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+    .md-tool { min-width: 34px; min-height: 30px; padding: 5px 9px; border: 1px solid var(--line); border-radius: 8px; background: rgba(255,255,255,.03); color: var(--soft); font-size: 11px; font-weight: 700; }
+    .md-tool:hover { border-color: rgba(139,124,255,.35); background: rgba(139,124,255,.09); color: white; }
+    .md-hints { display: grid; gap: 6px; margin-top: 10px; }
+    .md-hint { display: flex; gap: 8px; padding: 9px 11px; border: 1px solid rgba(244,189,80,.2); border-radius: 10px; background: rgba(244,189,80,.055); color: #e8ce94; font-size: 11px; line-height: 1.45; }
+    .discord-embed { min-height: 272px; padding: 15px 16px; border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 6px; background: #101320; font-size: 12.5px; line-height: 1.6; overflow-wrap: anywhere; }
+    .discord-embed-title { margin-bottom: 9px; color: #fff; font-size: 14px; font-weight: 750; }
+    .discord-embed-footer { margin-top: 12px; padding-top: 9px; border-top: 1px solid var(--line); color: var(--muted); font-size: 10px; }
+    .dm-empty { color: var(--muted); font-size: 11px; }
+    .dm-h1, .dm-h2, .dm-h3 { margin: 12px 0 6px; color: #fff; font-weight: 750; }
+    .dm-h1 { font-size: 17px; }
+    .dm-h2 { font-size: 15px; }
+    .dm-h3 { font-size: 13.5px; }
+    .discord-embed > :first-child { margin-top: 0; }
+    .dm-p { margin: 7px 0; }
+    .dm-list { margin: 7px 0; padding-left: 22px; }
+    .dm-list li { margin: 3px 0; }
+    .dm-quote { margin: 7px 0; padding: 2px 0 2px 11px; border-left: 3px solid #4e5a72; color: var(--soft); }
+    .dm-pre { margin: 9px 0; padding: 11px; border: 1px solid var(--line); border-radius: 8px; background: #0b0f1a; color: #cbd5e8; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; white-space: pre-wrap; }
+    .dm-code { padding: 1px 5px; border-radius: 5px; background: rgba(255,255,255,.07); color: #d9e2f5; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+    .dm-spoiler { border-radius: 4px; background: #1c2233; color: transparent; cursor: pointer; }
+    .dm-spoiler.revealed { background: rgba(255,255,255,.07); color: inherit; }
+    .dm-mention { padding: 1px 4px; border-radius: 4px; background: rgba(139,124,255,.16); color: #c7c0ff; font-weight: 650; }
+    .dm-link { color: var(--blue); text-decoration: none; }
+    .dm-link:hover { text-decoration: underline; }
+    .dm-subtext { color: var(--muted); font-size: 10.5px; }
     .banner { display: flex; gap: 11px; align-items: flex-start; margin-bottom: 18px; padding: 13px 15px; border: 1px solid rgba(244,189,80,.2); border-radius: 12px; background: rgba(244,189,80,.055); color: #e8ce94; font-size: 11px; line-height: 1.5; }
     .banner strong { color: #f7daa0; }
     .toast { position: fixed; z-index: 10; right: 22px; bottom: 22px; max-width: min(420px, calc(100vw - 44px)); padding: 13px 16px; border: 1px solid rgba(52,211,153,.24); border-radius: 12px; background: #14251f; color: #c9f7e5; box-shadow: 0 16px 50px rgba(0,0,0,.32); font-size: 12px; opacity: 0; transform: translateY(8px); pointer-events: none; transition: .22s ease; }
@@ -168,6 +195,7 @@
       .shell { grid-template-columns: 210px minmax(0, 1fr); }
       .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .two-col { grid-template-columns: 1fr; }
+      .rules-editor { grid-template-columns: 1fr; }
     }
     @media (max-width: 700px) {
       .shell { display: block; }
@@ -334,12 +362,42 @@
           <aside class="rules-tip"><strong>How the reaction gate works</strong>Members react with ✅ to receive the selected role. Removing the reaction removes that role. The role cannot have moderation or server-management permissions and must be below the bot's role.</aside>
         </div>
         <article class="card" style="margin-top:16px">
-          <div class="card-head"><div><h2 class="card-title">Publish or replace rules</h2><p class="card-desc">The previous active bot post is retired after the new one is saved.</p></div></div>
+          <div class="card-head"><div><h2 class="card-title">Publish or replace rules</h2><p class="card-desc">Discord Markdown is supported — the preview on the right shows the embed exactly as it will render. The previous active bot post is retired after the new one is saved.</p></div><span class="tag muted">Markdown</span></div>
           <form id="rules-form">
             <div class="form-grid">
               <div class="field"><label for="rules-channel">Post channel</label><select id="rules-channel" required><option value="">Choose a text channel</option></select></div>
               <div class="field"><label for="rules-role">Acceptance role</label><select id="rules-role" required><option value="">Choose a role</option></select></div>
-              <div class="field full"><label for="rules-text">Rules text <span id="rules-count" class="hint">0 / 4096</span></label><textarea id="rules-text" maxlength="4096" placeholder="Write the server rules…" required></textarea></div>
+            </div>
+            <div class="rules-editor" style="margin-top:14px">
+              <div class="field">
+                <label for="rules-text">Rules text <span id="rules-count" class="hint">0 / 4096</span></label>
+                <div class="md-toolbar" role="group" aria-label="Insert Discord Markdown">
+                  <button type="button" class="md-tool" data-md="bold" title="Bold — **text** (Ctrl+B)"><strong>B</strong></button>
+                  <button type="button" class="md-tool" data-md="italic" title="Italic — *text* (Ctrl+I)"><em>I</em></button>
+                  <button type="button" class="md-tool" data-md="underline" title="Underline — __text__"><u>U</u></button>
+                  <button type="button" class="md-tool" data-md="strike" title="Strikethrough — ~~text~~"><s>S</s></button>
+                  <button type="button" class="md-tool" data-md="spoiler" title="Spoiler — ||text||">▨</button>
+                  <button type="button" class="md-tool" data-md="h1" title="Heading 1 — # text">H1</button>
+                  <button type="button" class="md-tool" data-md="h2" title="Heading 2 — ## text">H2</button>
+                  <button type="button" class="md-tool" data-md="h3" title="Heading 3 — ### text">H3</button>
+                  <button type="button" class="md-tool" data-md="bullet" title="Bulleted list — - item">• List</button>
+                  <button type="button" class="md-tool" data-md="number" title="Numbered list — 1. item">1. List</button>
+                  <button type="button" class="md-tool" data-md="quote" title="Quote — > text">❝</button>
+                  <button type="button" class="md-tool" data-md="code" title="Inline code — `code` (Ctrl+E)">&lt;/&gt;</button>
+                  <button type="button" class="md-tool" data-md="codeblock" title="Code block — ``` … ```">&#96;&#96;&#96;</button>
+                  <button type="button" class="md-tool" data-md="link" title="Link — [label](https://…)">🔗</button>
+                </div>
+                <textarea id="rules-text" maxlength="4096" placeholder="Write the server rules…" required></textarea>
+                <div id="rules-hints" class="md-hints hidden"></div>
+              </div>
+              <div class="field">
+                <label>Live preview <span class="hint">As Discord renders the embed</span></label>
+                <div class="discord-embed">
+                  <div class="discord-embed-title" id="rules-preview-title">Rules</div>
+                  <div id="rules-preview"><span class="dm-empty">Start typing to preview…</span></div>
+                  <div class="discord-embed-footer">React with ✅ to accept the rules</div>
+                </div>
+              </div>
             </div>
             <div class="form-actions"><button id="disable-rules-button" class="btn danger hidden" type="button">Disable reaction role</button><button class="btn" type="submit">Publish rules</button></div>
           </form>
@@ -576,7 +634,8 @@
         fillSelect("settings-staff-role", state.detail.roles, state.detail.settings?.staffRoleId, "No staff role");
         fillSelect("settings-staff-channel", state.detail.channels, state.detail.settings?.staffChannelId, "No staff channel");
         $("settings-dm-user").value = String(state.detail.settings?.dmUser !== false);
-        $("rules-count").textContent = `${($("rules-text").value || "").length} / 4096`;
+        $("rules-preview-title").textContent = `${guild.name || "Server"} Rules`;
+        scheduleRulesPreview();
         if (state.detail.warningCount != null) $("warning-total").textContent = `${state.detail.warningCount} total`;
       }
 
@@ -736,7 +795,115 @@
         } catch (error) { showToast(friendlyError(error.message), true); }
       }
 
-      $("rules-text").addEventListener("input", () => { $("rules-count").textContent = `${$("rules-text").value.length} / 4096`; });
+      // ---- Rules Markdown editor ----------------------------------------- //
+      // The preview is rendered by the bot (discord_markdown.py) so it matches
+      // what Discord shows instead of what a generic Markdown parser would.
+      const MD_WRAPS = {
+        bold: ["**", "**", "bold text"],
+        italic: ["*", "*", "italic text"],
+        underline: ["__", "__", "underlined text"],
+        strike: ["~~", "~~", "strikethrough"],
+        spoiler: ["||", "||", "spoiler"],
+        code: ["`", "`", "code"],
+        codeblock: ["```\n", "\n```", "code block"],
+        link: ["[", "](https://example.com)", "link label"],
+      };
+      const MD_LINE_PREFIXES = { h1: "# ", h2: "## ", h3: "### ", bullet: "- ", quote: "> " };
+      const MD_LINE_MARKERS = { h1: /^#{1,3} /, h2: /^#{1,3} /, h3: /^#{1,3} /, bullet: /^[-*+] /, quote: /^> /, number: /^\d{1,3}[.)] / };
+      let previewTimer = null;
+      let previewRequest = 0;
+
+      function rulesSelection() {
+        const area = $("rules-text");
+        return { area, value: area.value, start: area.selectionStart, end: area.selectionEnd };
+      }
+
+      function wrapRulesSelection(open, close, placeholder) {
+        const { area, value, start, end } = rulesSelection();
+        const selected = value.slice(start, end) || placeholder;
+        area.value = value.slice(0, start) + open + selected + close + value.slice(end);
+        area.focus();
+        area.setSelectionRange(start + open.length, start + open.length + selected.length);
+        scheduleRulesPreview();
+      }
+
+      function prefixRulesLines(kind) {
+        const { area, value, start, end } = rulesSelection();
+        const lineStart = value.lastIndexOf("\n", start - 1) + 1;
+        const found = value.indexOf("\n", end);
+        const lineEnd = found === -1 ? value.length : found;
+        const block = value.slice(lineStart, lineEnd);
+        const lines = block.split("\n");
+        const marker = MD_LINE_MARKERS[kind];
+        const togglingOff = lines.every((line) => marker.test(line));
+        let counter = 0;
+        const updated = lines.map((line) => {
+          const bare = line.replace(/^\s*(?:[-*+] |\d{1,3}[.)] |#{1,3} |> )?/, "");
+          if (togglingOff) return bare;
+          if (kind === "number") { counter += 1; return `${counter}. ${bare}`; }
+          return `${MD_LINE_PREFIXES[kind]}${bare}`;
+        }).join("\n");
+        area.value = value.slice(0, lineStart) + updated + value.slice(lineEnd);
+        area.focus();
+        area.setSelectionRange(lineStart, lineStart + updated.length);
+        scheduleRulesPreview();
+      }
+
+      function insertMarkdown(kind) {
+        if (MD_WRAPS[kind]) { const [open, close, placeholder] = MD_WRAPS[kind]; wrapRulesSelection(open, close, placeholder); }
+        else prefixRulesLines(kind);
+      }
+
+      document.querySelectorAll(".md-tool").forEach((button) => {
+        button.addEventListener("click", () => insertMarkdown(button.dataset.md));
+      });
+
+      $("rules-text").addEventListener("keydown", (event) => {
+        if (!(event.ctrlKey || event.metaKey)) return;
+        const shortcut = { b: "bold", i: "italic", e: "code" }[event.key.toLowerCase()];
+        if (!shortcut) return;
+        event.preventDefault();
+        insertMarkdown(shortcut);
+      });
+
+      $("rules-preview").addEventListener("click", (event) => {
+        const spoiler = event.target.closest(".dm-spoiler");
+        if (spoiler) spoiler.classList.toggle("revealed");
+      });
+
+      function renderRulesHints(warnings) {
+        const box = $("rules-hints");
+        box.innerHTML = (warnings || []).map((warning) => `<div class="md-hint"><span>⚠</span><span>${escapeHtml(warning)}</span></div>`).join("");
+        box.classList.toggle("hidden", !warnings || !warnings.length);
+      }
+
+      async function refreshRulesPreview() {
+        const text = $("rules-text").value;
+        if (!state.guildId) return;
+        if (!text.trim()) {
+          $("rules-preview").innerHTML = `<span class="dm-empty">Start typing to preview…</span>`;
+          renderRulesHints([]);
+          return;
+        }
+        const request = ++previewRequest;
+        try {
+          const result = await api(`/api/guilds/${encodeURIComponent(state.guildId)}/rules/preview`, { method: "POST", body: JSON.stringify({ text }) });
+          if (request !== previewRequest) return;  // a newer keystroke already won
+          $("rules-preview").innerHTML = result.html || `<span class="dm-empty">Start typing to preview…</span>`;
+          renderRulesHints(result.warnings || []);
+        } catch (error) {
+          if (request !== previewRequest) return;
+          renderRulesHints([friendlyError(error.message)]);
+        }
+      }
+
+      function scheduleRulesPreview() {
+        $("rules-count").textContent = `${$("rules-text").value.length} / 4096`;
+        if (previewTimer) clearTimeout(previewTimer);
+        previewTimer = setTimeout(refreshRulesPreview, 250);
+      }
+
+      $("rules-text").addEventListener("input", scheduleRulesPreview);
       $("rules-form").addEventListener("submit", async (event) => {
         event.preventDefault(); const button = event.submitter; button.disabled = true;
         try {
