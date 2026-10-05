@@ -298,13 +298,22 @@ class RulesPreviewTests(unittest.IsolatedAsyncioTestCase):
 class _FakeTextChannel:
     """Stands in for discord.TextChannel (patched in during the test)."""
 
-    def __init__(self, guild, channel_id: int = 555) -> None:
+    def __init__(
+        self,
+        guild,
+        channel_id: int = 555,
+        name: str = "rules",
+        *,
+        next_message_id: int = 777,
+    ) -> None:
         self.id = channel_id
         self.guild = guild
-        self.name = "rules"
-        self.mention = "#rules"
+        self.name = name
+        self.mention = f"#{name}"
         self.sent: list[dict] = []
         self.reactions: list[str] = []
+        self.messages: dict[int, _FakeMessage] = {}
+        self._next_id = next_message_id
 
     def permissions_for(self, _member):
         return SimpleNamespace(
@@ -315,20 +324,40 @@ class _FakeTextChannel:
         )
 
     async def send(self, *, content=None, embed=None, allowed_mentions=None):
-        message = _FakeMessage(self)
+        message = _FakeMessage(self, self._next_id)
+        self._next_id += 1
+        self.messages[message.id] = message
         self.sent.append({"content": content, "embed": embed, "message": message})
+        return message
+
+    async def fetch_message(self, message_id):
+        message = self.messages.get(int(message_id))
+        if message is None:
+            raise discord.NotFound(
+                SimpleNamespace(status=404, reason="Not Found"), "Unknown Message"
+            )
         return message
 
 
 class _FakeMessage:
-    def __init__(self, channel) -> None:
-        self.id = 777
+    def __init__(self, channel, message_id: int = 777) -> None:
+        self.id = message_id
         self.channel = channel
         self.author = SimpleNamespace(id=OWNER_ID)
         self.deleted = False
+        self.edits: list[dict] = []
+        self.reactions: list[str] = []
 
     async def add_reaction(self, emoji) -> None:
+        self.reactions.append(str(emoji))
         self.channel.reactions.append(str(emoji))
+
+    async def remove_reaction(self, emoji, member) -> None:
+        self.reactions = [item for item in self.reactions if item != str(emoji)]
+
+    async def edit(self, *, content=None, embed=None, allowed_mentions=None):
+        self.edits.append({"content": content, "embed": embed})
+        return self
 
     async def delete(self) -> None:
         self.deleted = True
@@ -340,13 +369,26 @@ class _PublishFakeGuild:
 
     def __init__(self, channel) -> None:
         self._channel = channel
-        self._role = SimpleNamespace(id=888, mention="<@&888>")
+        self._channels = {channel.id: channel}
+        # _ReactionRole/_ReactionPerms below are discord-like enough for the
+        # shared validators in rules.py (is_default, managed, positions).
+        self._role = _ReactionRole(888, name="Verified")
+        self._roles = {self._role.id: self._role}
+        self.me = SimpleNamespace(
+            guild_permissions=_ReactionPerms(manage_roles=True),
+            top_role=_ReactionRole(1, name="bot", position=50),
+        )
 
     def get_channel(self, channel_id):
-        return self._channel if int(channel_id) == self._channel.id else None
+        return self._channels.get(int(channel_id))
 
     def get_role(self, role_id):
-        return self._role if int(role_id) == self._role.id else None
+        return self._roles.get(int(role_id))
+
+
+def _publish_bot_stub():
+    """A bot object good enough for RulesCog._mark_post_disabled."""
+    return SimpleNamespace(user=SimpleNamespace(id=OWNER_ID))
 
 
 class _PublishFakeBot:
@@ -366,9 +408,16 @@ class _PublishFakeBot:
             return None
         # The rules cog's own validation/config plumbing is covered by
         # tests/test_rules.py; this test is about what gets posted.
+        from rules import RulesCog, validate_post_channel, validate_self_assignable_role
+
         return SimpleNamespace(
-            _validate_role=lambda *_args: None,
-            _updated_config=lambda guild_id, settings: {"rules": {str(guild_id): settings}},
+            _validate_role=lambda guild, channel, role: (
+                validate_self_assignable_role(guild, role)
+                or validate_post_channel(guild, channel)
+            ),
+            _mark_post_disabled=lambda guild, settings: RulesCog(
+                _publish_bot_stub(), lambda _config: None
+            )._mark_post_disabled(guild, settings),
         )
 
 
@@ -402,7 +451,12 @@ class DashboardPublishRulesTests(unittest.IsolatedAsyncioTestCase):
                 csrf = (await login.json())["csrfToken"]
                 response = await client.put(
                     f"/api/guilds/{GUILD_ID}/rules",
-                    json={"channelId": str(channel.id), "roleId": "888", "text": "Be kind."},
+                    json={
+                        "name": "Server rules",
+                        "channelId": str(channel.id),
+                        "roleId": "888",
+                        "text": "Be kind.",
+                    },
                     headers={"X-CSRF-Token": csrf},
                 )
                 self.assertEqual(response.status, 201)
@@ -418,7 +472,10 @@ class DashboardPublishRulesTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(posted["embed"].title, "Test Guild Rules")
         self.assertEqual(posted["embed"].description, "Be kind.")
         self.assertEqual(channel.reactions, ["✅"])
-        self.assertEqual(saved[-1]["rules"][str(GUILD_ID)]["message_id"], 777)
+        stored = saved[-1]["rules"][str(GUILD_ID)]
+        self.assertEqual(stored[0]["message_id"], 777)
+        self.assertEqual(stored[0]["name"], "Server rules")
+        self.assertEqual(payload["rulesetId"], stored[0]["ruleset_id"])
 
 
 class _ReactionPerms:
@@ -551,6 +608,217 @@ class _ReactionFakeBot:
 
     def is_ready(self):
         return True
+
+
+class DashboardRuleSetsTests(unittest.IsolatedAsyncioTestCase):
+    """Multiple rule sets per server, driven from the dashboard.
+
+    The endpoint contract mirrors the reaction-role menus: PUT creates, POST
+    edits in place, DELETE disables one set by id (and only one).
+    """
+
+    def setUp(self) -> None:
+        self.channel = _FakeTextChannel(guild=None)
+        # A distinct id range: Discord message ids are unique across channels,
+        # so a repost must be able to tell "same message" from "new message".
+        self.other_channel = _FakeTextChannel(
+            guild=None, channel_id=556, name="events", next_message_id=880
+        )
+        self.guild = _PublishFakeGuild(self.channel)
+        self.channel.guild = self.guild
+        self.other_channel.guild = self.guild
+        self.guild._channels = {self.channel.id: self.channel, self.other_channel.id: self.other_channel}
+        self.bot = _PublishFakeBot(self.guild)
+        self.saved: list[dict] = []
+        self.server = DashboardServer(
+            self.bot,
+            save_config=self.saved.append,
+            db_fetchall=lambda *_args: [],
+            db_fetchone=lambda *_args: None,
+            db_execute=lambda *_args: None,
+            archive_punishment=lambda *_args, **_kwargs: None,
+            get_guild_config=lambda *_args: None,
+            get_staff_channel_id=lambda *_args: None,
+            should_dm_user=lambda *_args: True,
+            is_protected_member=lambda *_args, **_kwargs: None,
+            parse_duration=lambda _value: None,
+            format_duration=lambda value: str(value),
+        )
+        self.server._token = "T" * 48
+
+    async def _login(self, client) -> str:
+        login = await client.post("/api/login", json={"token": self.server._token})
+        self.assertEqual(login.status, 200)
+        return (await login.json())["csrfToken"]
+
+    @property
+    def _sets(self) -> list:
+        return self.bot.config.get("rules", {}).get(str(GUILD_ID), [])
+
+    def _body(self, **overrides):
+        body = {
+            "name": "Server rules",
+            "channelId": str(self.channel.id),
+            "roleId": "888",
+            "text": "Be kind.",
+        }
+        body.update(overrides)
+        return body
+
+    async def test_publish_edit_list_and_disable_one_set(self) -> None:
+        with patch.object(discord, "TextChannel", _FakeTextChannel):
+            async with TestClient(TestServer(self.server._build_app())) as client:
+                csrf = await self._login(client)
+                first = await client.put(
+                    f"/api/guilds/{GUILD_ID}/rules",
+                    json=self._body(),
+                    headers={"X-CSRF-Token": csrf},
+                )
+                self.assertEqual(first.status, 201)
+                first_id = (await first.json())["rulesetId"]
+
+                second = await client.put(
+                    f"/api/guilds/{GUILD_ID}/rules",
+                    json=self._body(name="Event rules", channelId=str(self.other_channel.id), text="No spam."),
+                    headers={"X-CSRF-Token": csrf},
+                )
+                self.assertEqual(second.status, 201, await second.text())
+                second_id = (await second.json())["rulesetId"]
+                self.assertNotEqual(first_id, second_id)
+                self.assertEqual(len(self.channel.sent), 1, "the first post must survive")
+
+                listed = await client.get(f"/api/guilds/{GUILD_ID}/rules")
+                body = await listed.json()
+                self.assertEqual([item["name"] for item in body["rulesets"]], ["Server rules", "Event rules"])
+                self.assertEqual([item["roleName"] for item in body["rulesets"]], ["Verified", "Verified"])
+                self.assertEqual(body["rulesets"][0]["channelId"], str(self.channel.id))
+                self.assertEqual(body["defaultName"], "Server rules")
+                self.assertEqual(body["maxRulesets"], 25)
+                self.assertTrue(body["prompt"])
+
+                updated = await client.post(
+                    f"/api/guilds/{GUILD_ID}/rules/{second_id}",
+                    json=self._body(name="Event rules", channelId=str(self.other_channel.id), text="Be excellent."),
+                    headers={"X-CSRF-Token": csrf},
+                )
+                self.assertEqual(updated.status, 200, await updated.text())
+                self.assertEqual(len(self.other_channel.sent), 1, "the message is edited, not reposted")
+                self.assertEqual(self.other_channel.sent[0]["message"].edits[-1]["embed"].description, "Be excellent.")
+                self.assertEqual(self._sets[1]["rules_text"], "Be excellent.")
+
+                removed = await client.delete(
+                    f"/api/guilds/{GUILD_ID}/rules/{second_id}",
+                    headers={"X-CSRF-Token": csrf},
+                )
+                self.assertEqual(removed.status, 200)
+                self.assertEqual([item["name"] for item in self._sets], ["Server rules"])
+
+        # Blank names fall back to the default set name.
+        self.assertEqual(self.channel.sent[0]["embed"].title, "Test Guild Rules")
+
+    async def test_edit_reposts_when_the_channel_changes(self) -> None:
+        with patch.object(discord, "TextChannel", _FakeTextChannel):
+            async with TestClient(TestServer(self.server._build_app())) as client:
+                csrf = await self._login(client)
+                created = await client.put(
+                    f"/api/guilds/{GUILD_ID}/rules", json=self._body(), headers={"X-CSRF-Token": csrf}
+                )
+                ruleset_id = (await created.json())["rulesetId"]
+                old_message = self.channel.sent[0]["message"]
+
+                moved = await client.post(
+                    f"/api/guilds/{GUILD_ID}/rules/{ruleset_id}",
+                    json=self._body(channelId=str(self.other_channel.id)),
+                    headers={"X-CSRF-Token": csrf},
+                )
+                self.assertEqual(moved.status, 200, await moved.text())
+                self.assertEqual((await moved.json())["messageId"], "880")
+
+        self.assertTrue(old_message.deleted)
+        self.assertEqual(len(self.other_channel.sent), 1)
+        self.assertEqual(self.other_channel.reactions, ["✅"])
+        self.assertEqual(self._sets[0]["message_id"], 880)
+
+    async def test_disabling_without_an_id_is_refused_when_there_are_several(self) -> None:
+        with patch.object(discord, "TextChannel", _FakeTextChannel):
+            async with TestClient(TestServer(self.server._build_app())) as client:
+                csrf = await self._login(client)
+                await client.put(f"/api/guilds/{GUILD_ID}/rules", json=self._body(), headers={"X-CSRF-Token": csrf})
+                await client.put(
+                    f"/api/guilds/{GUILD_ID}/rules",
+                    json=self._body(name="Event rules", channelId=str(self.other_channel.id)),
+                    headers={"X-CSRF-Token": csrf},
+                )
+                response = await client.delete(
+                    f"/api/guilds/{GUILD_ID}/rules", headers={"X-CSRF-Token": csrf}
+                )
+                self.assertEqual(response.status, 400)
+                self.assertIn("several rule sets", (await response.json())["error"])
+                self.assertEqual(len(self._sets), 2)
+                unknown = await client.delete(
+                    f"/api/guilds/{GUILD_ID}/rules/nope", headers={"X-CSRF-Token": csrf}
+                )
+                self.assertEqual(unknown.status, 404)
+
+    async def test_duplicate_names_and_missing_sets_are_rejected(self) -> None:
+        with patch.object(discord, "TextChannel", _FakeTextChannel):
+            async with TestClient(TestServer(self.server._build_app())) as client:
+                csrf = await self._login(client)
+                created = await client.put(
+                    f"/api/guilds/{GUILD_ID}/rules", json=self._body(), headers={"X-CSRF-Token": csrf}
+                )
+                ruleset_id = (await created.json())["rulesetId"]
+
+                duplicate = await client.put(
+                    f"/api/guilds/{GUILD_ID}/rules",
+                    json=self._body(name="server RULES"),
+                    headers={"X-CSRF-Token": csrf},
+                )
+                self.assertEqual(duplicate.status, 400)
+                self.assertIn("already named", (await duplicate.json())["error"])
+
+                too_long = await client.put(
+                    f"/api/guilds/{GUILD_ID}/rules",
+                    json=self._body(name="x" * 81),
+                    headers={"X-CSRF-Token": csrf},
+                )
+                self.assertEqual(too_long.status, 400)
+                self.assertIn("80", (await too_long.json())["error"])
+
+                # Editing a set keeps its own name valid (case-insensitively).
+                renamed = await client.post(
+                    f"/api/guilds/{GUILD_ID}/rules/{ruleset_id}",
+                    json=self._body(name="server rules", text="Still kind."),
+                    headers={"X-CSRF-Token": csrf},
+                )
+                self.assertEqual(renamed.status, 200, await renamed.text())
+                self.assertEqual(self._sets[0]["name"], "server rules")
+
+                missing = await client.post(
+                    f"/api/guilds/{GUILD_ID}/rules/nope",
+                    json=self._body(),
+                    headers={"X-CSRF-Token": csrf},
+                )
+                self.assertEqual(missing.status, 404)
+
+    async def test_a_full_server_is_refused(self) -> None:
+        self.bot.config = {
+            "rules": {
+                str(GUILD_ID): [
+                    {"ruleset_id": f"id{index}", "name": f"Set {index}", "message_id": index}
+                    for index in range(25)
+                ]
+            }
+        }
+        with patch.object(discord, "TextChannel", _FakeTextChannel):
+            async with TestClient(TestServer(self.server._build_app())) as client:
+                csrf = await self._login(client)
+                response = await client.put(
+                    f"/api/guilds/{GUILD_ID}/rules", json=self._body(), headers={"X-CSRF-Token": csrf}
+                )
+                self.assertEqual(response.status, 400)
+                self.assertIn("25", (await response.json())["error"])
+        self.assertEqual(self.channel.sent, [])
 
 
 class DashboardReactionRolesTests(unittest.IsolatedAsyncioTestCase):

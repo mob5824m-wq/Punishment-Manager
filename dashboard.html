@@ -380,15 +380,17 @@
         <div class="toolbar"><div><h2>Rules & reaction roles</h2><p>Publish an agreement post and choose the role granted when members react.</p></div></div>
         <div class="grid rules-top">
           <article class="card">
-            <div class="card-head"><div><h2 class="card-title">Active rules post</h2><p class="card-desc">Only reactions on the active bot post are processed.</p></div><span id="rules-state" class="tag muted">Not configured</span></div>
-            <div id="rules-status" class="inline-status disabled"><div class="status-icon">!</div><div><strong>No active acceptance post</strong><span>Publish rules below to configure the reaction role.</span></div></div>
+            <div class="card-head"><div><h2 class="card-title">Published rule sets</h2><p class="card-desc">Every set has its own post: reactions on that message grant that set's role.</p></div><div style="display:flex;align-items:center;gap:8px"><span id="rules-state" class="tag muted">Not configured</span><button id="refresh-rulesets" class="btn secondary small" type="button">↻ Refresh</button></div></div>
+            <div id="rules-status" class="inline-status disabled"><div class="status-icon">!</div><div><strong>No published rule set</strong><span>Publish one below to configure its acceptance role.</span></div></div>
+            <div id="ruleset-list" class="reaction-legend"><span class="legend-empty">Publish your first rule set to see it here.</span></div>
           </article>
-          <aside class="rules-tip"><strong>How the reaction gate works</strong>Members react with ✅ to receive the selected role. Removing the reaction removes that role. The role cannot have moderation or server-management permissions and must be below the bot's role.</aside>
+          <aside class="rules-tip"><strong>How the reaction gate works</strong>Members react with ✅ to receive that set's role. Removing the reaction removes the role. The role cannot have moderation or server-management permissions and must be below the bot's role. One server can run several rule sets — for example a "Server rules" post and a shorter "Event rules" post — each with its own channel, role and text.</aside>
         </div>
         <article class="card" style="margin-top:16px">
-          <div class="card-head"><div><h2 class="card-title">Publish or replace rules</h2><p class="card-desc">Discord Markdown is supported — the preview on the right shows the embed exactly as it will render. The previous active bot post is retired after the new one is saved.</p></div><span class="tag muted">Markdown</span></div>
+          <div class="card-head"><div><h2 class="card-title">Publish or edit a rule set</h2><p class="card-desc">Discord Markdown is supported — the preview on the right shows the embed exactly as it will render. Publishing with a name that already exists replaces that set's post.</p></div><span id="rules-edit-state" class="tag muted">New rule set</span></div>
           <form id="rules-form">
             <div class="form-grid">
+              <div class="field"><label for="rules-name">Rule set name <span id="rules-name-hint" class="hint">Up to 80 characters</span></label><input id="rules-name" maxlength="80" placeholder="Server rules" required></div>
               <div class="field"><label for="rules-channel">Post channel</label><select id="rules-channel" required><option value="">Choose a text channel</option></select></div>
               <div class="field"><label for="rules-role">Acceptance role</label><select id="rules-role" required><option value="">Choose a role</option></select></div>
             </div>
@@ -426,7 +428,7 @@
                 </div>
               </div>
             </div>
-            <div class="form-actions"><button id="disable-rules-button" class="btn danger hidden" type="button">Disable reaction role</button><button class="btn" type="submit">Publish rules</button></div>
+            <div class="form-actions"><button id="rules-cancel-edit" class="btn secondary hidden" type="button">Cancel edit</button><button id="rules-submit" class="btn" type="submit">Publish rule set</button></div>
           </form>
         </article>
 
@@ -729,16 +731,20 @@
         $("stat-rules").textContent = state.detail.rules?.enabled ? "Active" : "Off";
         const select = $("server-select");
         if (select.value !== state.guildId) select.value = state.guildId;
-        fillSelect("rules-channel", state.detail.channels, state.detail.rules?.channelId, "Choose a text channel");
-        fillSelect("rules-role", state.detail.roles, state.detail.rules?.roleId, "Choose a role");
-        $("rules-text").value = state.detail.rules?.text || "";
-        updateRulesStatus(state.detail.rules || {});
+        // The rules form is for a *new* set unless an edit is in progress, so
+        // re-filling selects uses whatever the administrator already picked.
+        const rulesChannel = $("rules-channel").value;
+        const rulesRole = $("rules-role").value;
+        fillSelect("rules-channel", state.detail.channels, rulesChannel || null, "Choose a text channel");
+        fillSelect("rules-role", state.detail.roles, rulesRole || null, "Choose a role");
+        state.rulesets = state.detail.rules?.rulesets || [];
+        renderRulesets();
         fillSelect("settings-punish-role", state.detail.roles, state.detail.settings?.punishRoleId, "Choose a role");
         fillSelect("settings-post-role", state.detail.roles, state.detail.settings?.postRoleId, "Choose a role");
         fillSelect("settings-staff-role", state.detail.roles, state.detail.settings?.staffRoleId, "No staff role");
         fillSelect("settings-staff-channel", state.detail.channels, state.detail.settings?.staffChannelId, "No staff channel");
         $("settings-dm-user").value = String(state.detail.settings?.dmUser !== false);
-        $("rules-preview-title").textContent = `${guild.name || "Server"} Rules`;
+        updateRulesPreviewTitle();
         // Keep whatever channel the administrator already picked for a new
         // reaction-role post; the role dropdowns in the pair rows follow the
         // server's role list.
@@ -761,25 +767,110 @@
         if (selected != null) select.value = String(selected);
       }
 
-      function updateRulesStatus(rules) {
+      function rulesetFor(rulesetId) {
+        return (state.rulesets || []).find((item) => String(item.rulesetId) === String(rulesetId));
+      }
+
+      // The embed title mirrors the server: "Guild Rules" for the default
+      // name, "Guild — <name>" for anything else (rules.rules_embed_title).
+      function updateRulesPreviewTitle() {
+        const guild = state.detail?.guild?.name || "Server";
+        const name = ($("rules-name").value || "").trim() || state.rulesConfig?.defaultName || "Server rules";
+        const isDefault = name.toLowerCase() === String(state.rulesConfig?.defaultName || "Server rules").toLowerCase();
+        $("rules-preview-title").textContent = isDefault ? `${guild} Rules` : `${guild} — ${name}`;
+      }
+
+      function updateRulesStatus() {
         const box = $("rules-status");
         const tag = $("rules-state");
-        const disable = $("disable-rules-button");
-        if (rules.enabled) {
+        const sets = state.rulesets || [];
+        const max = state.rulesConfig?.maxRulesets || 25;
+        if (sets.length) {
           box.classList.remove("disabled");
           box.querySelector(".status-icon").textContent = "✓";
-          box.querySelector("strong").textContent = "Rules acceptance is active";
-          const channel = (state.detail?.channels || []).find((x) => String(x.id) === String(rules.channelId));
-          const role = (state.detail?.roles || []).find((x) => String(x.id) === String(rules.roleId));
-          box.querySelector("span").textContent = `Posted in #${channel?.name || "unknown channel"} · grants ${role?.name || "configured role"}`;
-          tag.textContent = "Active"; tag.className = "tag success"; disable.classList.remove("hidden");
+          box.querySelector("strong").textContent = `${sets.length} rule set${sets.length === 1 ? "" : "s"} active`;
+          box.querySelector("span").textContent = "Reacting ✅ on a set's post grants that set's role.";
+          tag.textContent = "Active"; tag.className = "tag success";
         } else {
           box.classList.add("disabled");
           box.querySelector(".status-icon").textContent = "!";
-          box.querySelector("strong").textContent = "No active acceptance post";
-          box.querySelector("span").textContent = "Publish rules below to configure the reaction role.";
-          tag.textContent = "Not configured"; tag.className = "tag muted"; disable.classList.add("hidden");
+          box.querySelector("strong").textContent = "No published rule set";
+          box.querySelector("span").textContent = "Publish one below to configure its acceptance role.";
+          tag.textContent = "Not configured"; tag.className = "tag muted";
         }
+        $("rules-name-hint").textContent = `${sets.length} / ${max} sets`;
+      }
+
+      function renderRulesets() {
+        const root = $("ruleset-list");
+        const sets = state.rulesets || [];
+        updateRulesStatus();
+        if (!sets.length) {
+          root.innerHTML = `<span class="legend-empty">Publish your first rule set to see it here.</span>`;
+          return;
+        }
+        root.innerHTML = sets.map((ruleset) => {
+          const editing = String(state.rulesEditId) === String(ruleset.rulesetId);
+          const target = `#${escapeHtml(ruleset.channelName || "unknown channel")} → ${escapeHtml(ruleset.roleName || "role missing")}`;
+          const snippet = (ruleset.text || "").replace(/\s+/g, " ").slice(0, 120);
+          return `<div class="post-row">
+            <div class="post-main">
+              <div class="post-title">${escapeHtml(ruleset.name)}${editing ? `<span class="tag warn">Editing</span>` : ""}</div>
+              <div class="post-snippet">${escapeHtml(snippet)}</div>
+              <div class="subtle" style="margin-top:9px">${target} · message ${escapeHtml(ruleset.messageId || "?")}</div>
+            </div>
+            <div class="post-actions">
+              <button class="btn secondary small ruleset-edit" data-ruleset="${escapeHtml(ruleset.rulesetId)}" type="button">✎ Edit</button>
+              <button class="btn danger small ruleset-remove" data-ruleset="${escapeHtml(ruleset.rulesetId)}" type="button">Disable</button>
+            </div>
+          </div>`;
+        }).join("");
+        root.querySelectorAll(".ruleset-edit").forEach((button) => button.addEventListener("click", () => startRulesEdit(button.dataset.ruleset)));
+        root.querySelectorAll(".ruleset-remove").forEach((button) => button.addEventListener("click", () => disableRuleset(button.dataset.ruleset)));
+      }
+
+      function startRulesEdit(rulesetId) {
+        const ruleset = rulesetFor(rulesetId);
+        if (!ruleset) return;
+        state.rulesEditId = ruleset.rulesetId;
+        $("rules-name").value = ruleset.name || "";
+        $("rules-channel").value = String(ruleset.channelId || "");
+        $("rules-role").value = String(ruleset.roleId || "");
+        $("rules-text").value = ruleset.text || "";
+        $("rules-edit-state").textContent = "Editing rule set";
+        $("rules-edit-state").className = "tag warn";
+        $("rules-submit").textContent = "Save changes";
+        $("rules-cancel-edit").classList.remove("hidden");
+        renderRulesets();
+        updateRulesPreviewTitle();
+        scheduleRulesPreview();
+        $("rules-form").scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+
+      function cancelRulesEdit() {
+        state.rulesEditId = null;
+        $("rules-name").value = "";
+        $("rules-text").value = "";
+        $("rules-edit-state").textContent = "New rule set";
+        $("rules-edit-state").className = "tag muted";
+        $("rules-submit").textContent = "Publish rule set";
+        $("rules-cancel-edit").classList.add("hidden");
+        renderRulesets();
+        updateRulesPreviewTitle();
+        scheduleRulesPreview();
+      }
+
+      async function disableRuleset(rulesetId) {
+        const ruleset = rulesetFor(rulesetId);
+        const name = ruleset?.name || "this rule set";
+        if (!confirm(`Disable “${name}”? Its post is marked disabled and reactions stop granting the role. Existing role assignments stay as they are.`)) return;
+        try {
+          await api(`/api/guilds/${encodeURIComponent(state.guildId)}/rules/${encodeURIComponent(rulesetId)}`, { method: "DELETE" });
+          showToast(`Rule set “${name}” disabled.`);
+          if (String(state.rulesEditId) === String(rulesetId)) cancelRulesEdit();
+          await loadGuildDetail();
+          await loadOverview();
+        } catch (error) { showToast(friendlyError(error.message), true); }
       }
 
       async function loadPageData(page) {
@@ -1046,24 +1137,45 @@
         }
       }
 
-      function scheduleRulesPreview() { schedulePreview(editors.rules); }
+      function scheduleRulesPreview() {
+        updateRulesPreviewTitle();
+        schedulePreview(editors.rules);
+      }
 
       $("rules-form").addEventListener("submit", async (event) => {
-        event.preventDefault(); const button = event.submitter; button.disabled = true;
+        event.preventDefault();
+        const name = $("rules-name").value.trim();
+        if (!name) { showToast("Give this rule set a name — it is how you edit or disable it later.", true); return; }
+        const payload = {
+          name,
+          channelId: $("rules-channel").value,
+          roleId: $("rules-role").value,
+          text: $("rules-text").value,
+        };
+        const editing = state.rulesEditId;
+        const button = event.submitter || $("rules-submit");
+        button.disabled = true;
         try {
-          await api(`/api/guilds/${encodeURIComponent(state.guildId)}/rules`, {
-            method: "PUT",
-            body: JSON.stringify({ channelId: $("rules-channel").value, roleId: $("rules-role").value, text: $("rules-text").value }),
-          });
-          showToast("Rules published and reaction role activated."); await loadGuildDetail(); await loadOverview();
+          if (editing) {
+            await api(`/api/guilds/${encodeURIComponent(state.guildId)}/rules/${encodeURIComponent(editing)}`, { method: "POST", body: JSON.stringify(payload) });
+            showToast(`Rule set “${name}” updated.`);
+          } else {
+            await api(`/api/guilds/${encodeURIComponent(state.guildId)}/rules`, { method: "PUT", body: JSON.stringify(payload) });
+            showToast(`Rule set “${name}” published; members can react to accept it.`);
+          }
+          cancelRulesEdit();
+          await loadGuildDetail();
+          await loadOverview();
         } catch (error) { showToast(friendlyError(error.message), true); }
         finally { button.disabled = false; }
       });
 
-      $("disable-rules-button").addEventListener("click", async () => {
-        if (!confirm("Disable rules reactions? Existing role assignments will stay as they are.")) return;
-        try { await api(`/api/guilds/${encodeURIComponent(state.guildId)}/rules`, { method: "DELETE" }); showToast("Rules reaction role disabled."); await loadGuildDetail(); await loadOverview(); }
-        catch (error) { showToast(friendlyError(error.message), true); }
+      $("rules-cancel-edit").addEventListener("click", cancelRulesEdit);
+      $("refresh-rulesets").addEventListener("click", () => loadGuildDetail().catch((error) => showToast(friendlyError(error.message), true)));
+      $("rules-name").addEventListener("input", updateRulesPreviewTitle);
+      $("rules-name").addEventListener("keydown", (event) => {
+        // Enter in a single-line input shouldn't submit the whole editor.
+        if (event.key === "Enter") event.preventDefault();
       });
 
       // ---- Reaction role menus ------------------------------------------- //

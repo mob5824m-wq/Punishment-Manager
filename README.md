@@ -189,23 +189,52 @@ This writes `config.json` with everything the bot needs.
    > By reacting to this you acknowledge the rules and will abide by them.
 
    Members who react receive the configured role; removing their reaction
-   removes that role. Publishing again replaces the previous active bot post.
-   Existing role assignments are not changed by republishing; if you change
-   the acceptance role, remove the old role from existing members as needed.
-   `/rules disable` turns off reaction handling and leaves assignments
-   unchanged.
+   removes that role. Publishing again under the same name replaces that set's
+   post. Existing role assignments are not changed by republishing; if you
+   change the acceptance role, remove the old role from existing members as
+   needed. `/rules disable` turns off reaction handling for a set and leaves
+   assignments unchanged.
+
+#### Several rule sets on one server
+
+A server can run more than one rule set — a full "Server rules" post plus a
+short "Event rules" or "Contest rules" post, each with its own channel, role
+and text. Give each set a name and it stays independent:
+
+```text
+/rules publish channel:#rules role:@Verified name:"Server rules" rules_text:"1. Be respectful. 2. No spam."
+/rules publish channel:#events role:@Events name:"Event rules" rules_text:"1. Keep chat on topic. 2. No spoilers."
+```
+
+* `/rules publish` with an existing name (case-insensitive) replaces only that
+  set's post; other sets are untouched. The default name is `Server rules`, so
+  existing single-post installs are unchanged.
+* `/rules disable name:"Event rules"` disables one set — its post is marked
+  disabled and its ✅ is removed, but roles already granted are left alone.
+  With only one set published, `name` can be omitted.
+* `/rules list` shows every set, its channel, its role and its message id.
+* Reactions are routed by message, so ✅ on the "Event rules" post grants the
+  events role and never the server-rules role.
+* Up to 25 sets per server.
 
 The prompt sentence lives in `rules.py` as `RULES_POST_CONTENT`, so
 `/rules publish` and the dashboard's publish button always post the same
 wording (edit it there to change it everywhere). Rules text can be up to
-4,096 characters. The bot stores the active post and role per server in
-`config.json`; no manual config edit is needed.
+4,096 characters. The bot stores every set per server in `config.json`; no
+manual config edit is needed, and a config written by an older version (a
+single object instead of a list, no names) keeps working as one set named
+`Server rules`.
 
 The rules post is sent with mentions disabled, so no `@` in the rules can ping
 anyone, and the post is only edited or deleted by the bot itself.
 
-Need more than one reaction role, or a custom message of your own? See
-[Reaction role menus](#reaction-role-menus-dashboard) below.
+In the dashboard, the **Rules & reactions** page lists every published rule set
+with **Edit** (rename it, move it to another channel, change the role, or
+rewrite the text — the message is updated in place) and **Disable**, and the
+editor below publishes a new one.
+
+Need more than one reaction role per post, or a custom message of your own?
+See [Reaction role menus](#reaction-role-menus-dashboard) below.
 
 #### Markdown in the rules
 
@@ -319,11 +348,28 @@ to `rules`, so it survives restarts:
 The `bot_token`, `server_id`, and role ids go at the top level
 (single-server shape). `server_id` is optional for command syncing; if it is
 omitted, use `/setup` to associate role settings with each server. The bot
-fills the `rules` map when `/rules publish` is used, the `reaction_roles` map
-when a reaction-role post is published from the dashboard, and generates
-`dashboard_token` on first startup. Keep `config.json` private; it contains
+fills the `rules` map when a rule set is published (a list of named sets per
+server), the `reaction_roles` map when a reaction-role post is published from
+the dashboard, and generates `dashboard_token` on first startup. Keep `config.json` private; it contains
 credentials. The `guilds`, `token`, and `log_channel_id` keys are a legacy
 multi-server shape and are still respected for backwards compatibility.
+
+Publishing rule sets from Discord or the dashboard fills `rules` like this:
+
+```json
+"rules": {
+  "987654321098765432": [
+    {
+      "ruleset_id": "6f1c0b3a",
+      "name": "Server rules",
+      "channel_id": 111111111111111111,
+      "message_id": 222222222222222222,
+      "role_id": 333333333333333333,
+      "rules_text": "1. Be respectful."
+    }
+  ]
+}
+```
 
 To find ids: enable Developer Mode in *Settings -> Advanced*, then
 right-click the server/role/channel and choose "Copy ... ID".
@@ -418,8 +464,9 @@ since they need a message box, a live preview, and one role picker per emoji.
 | `/punish warnings`   | Members with *Moderate Members* | Lists a user's recorded warnings. Pass `clear:true` to delete them all (this is logged to the staff channel). |
 | `/punish pardon`     | Members with *Moderate Members* | Ends the punishment early and removes the punish / post-punish role. Posts a staff embed and DMs the user. |
 | `/punish status`     | Anyone                          | Shows the server configuration and a list of active punishments. Pass a `user` to see that user's active status, history, and warnings. |
-| `/rules publish`     | Server administrators           | Posts the rules and sets the active ✅ acceptance reaction role. |
-| `/rules disable`     | Server administrators           | Stops handling reactions on the active rules post. Existing roles are unchanged. |
+| `/rules publish`     | Server administrators           | Posts a named rule set and sets its ✅ acceptance reaction role. Publishing the same name replaces that set. |
+| `/rules disable`     | Server administrators           | Stops handling reactions for one rule set (pass `name` when several exist). Existing roles are unchanged. |
+| `/rules list`        | Server administrators           | Lists the published rule sets with their channel, role and message. |
 | `/setup`             | Server administrators           | Configures the punishment roles, staff channel, and DM behavior. |
 | `/fixcommands`       | Server administrators           | Removes duplicated slash commands (e.g. doubled `/punish` entries) and re-syncs this server. |
 
@@ -783,6 +830,11 @@ python3 tests/test_dashboard.py      # run dashboard auth tests alone
   **Send Messages**, **Embed Links**, and **Add Reactions** in the selected
   channel. The acceptance role must be below the bot's role and must not have
   moderation or server-management permissions.
+* **A rule set doesn't grant its role** — check `/rules list`: the set's
+  message id changes when you republish or move it, so an old post stops
+  reacting on purpose. Reactions are matched per message, and each set grants
+  only its own role. If `/rules disable` says nothing was configured, the set
+  was already removed from `config.json`.
 * **A reaction-role post doesn't grant roles** — the same limits as the
   acceptance role apply: the role must sit below the bot's role, the bot needs
   **Manage Roles**, and the role must not be managed by an integration. The

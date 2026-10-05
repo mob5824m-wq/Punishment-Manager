@@ -40,12 +40,22 @@ from reaction_roles import (
     validate_post_entries,
 )
 from rules import (
+    DEFAULT_RULESET_NAME,
+    MAX_RULESETS_PER_GUILD,
     MAX_RULES_LENGTH,
+    MAX_RULESET_NAME_LENGTH,
     PRIVILEGED_ROLE_PERMISSIONS,
     RULES_ACCEPT_EMOJI,
     RULES_POST_CONTENT,
     fetch_configured_message,
-    get_guild_rules,
+    find_ruleset,
+    get_guild_rulesets,
+    new_ruleset_id,
+    remove_ruleset,
+    rules_embed_title,
+    ruleset_id,
+    ruleset_name,
+    upsert_ruleset,
     validate_post_channel,
 )
 
@@ -281,10 +291,18 @@ class DashboardServer:
                 web.get("/api/guilds/{guild_id}/history", self.history),
                 web.get("/api/guilds/{guild_id}/rules", self.rules_status),
                 web.put("/api/guilds/{guild_id}/rules", self.publish_rules),
+                # Registered before the {ruleset_id} route so "preview" is not
+                # swallowed as a rule set id.
                 web.post(
                     "/api/guilds/{guild_id}/rules/preview", self.preview_rules
                 ),
+                web.post(
+                    "/api/guilds/{guild_id}/rules/{ruleset_id}", self.update_rules
+                ),
                 web.delete("/api/guilds/{guild_id}/rules", self.disable_rules),
+                web.delete(
+                    "/api/guilds/{guild_id}/rules/{ruleset_id}", self.disable_rules
+                ),
                 web.get(
                     "/api/guilds/{guild_id}/reaction-roles",
                     self.reaction_roles_status,
@@ -468,7 +486,7 @@ class DashboardServer:
     async def guild_detail(self, request: web.Request) -> web.Response:
         guild = self._guild_from_request(request)
         config = self._get_guild_config(self.bot.config, guild.id) or {}
-        rules = get_guild_rules(self.bot.config, guild.id) or {}
+        rulesets = get_guild_rulesets(self.bot.config, guild.id)
         roles = [
             {
                 "id": _snowflake(role.id),
@@ -515,11 +533,10 @@ class DashboardServer:
                     "dmUser": self._should_dm_user(self.bot.config, guild.id),
                 },
                 "rules": {
-                    "enabled": bool(rules),
-                    "channelId": _snowflake(rules.get("channel_id")),
-                    "messageId": _snowflake(rules.get("message_id")),
-                    "roleId": _snowflake(rules.get("role_id")),
-                    "text": rules.get("rules_text", ""),
+                    "enabled": bool(rulesets),
+                    "rulesets": [
+                        _ruleset_payload(settings, guild) for settings in rulesets
+                    ],
                 },
                 "roles": roles,
                 "channels": channels,
@@ -943,15 +960,21 @@ class DashboardServer:
         )
 
     async def rules_status(self, request: web.Request) -> web.Response:
+        """Every published rule set for the selected server."""
         guild = self._guild_from_request(request)
-        settings = get_guild_rules(self.bot.config, guild.id) or {}
+        rulesets = [
+            _ruleset_payload(settings, guild)
+            for settings in get_guild_rulesets(self.bot.config, guild.id)
+        ]
         return web.json_response(
             {
-                "enabled": bool(settings),
-                "channelId": _snowflake(settings.get("channel_id")),
-                "messageId": _snowflake(settings.get("message_id")),
-                "roleId": _snowflake(settings.get("role_id")),
-                "text": settings.get("rules_text", ""),
+                "rulesets": rulesets,
+                "enabled": bool(rulesets),
+                "maxRulesets": MAX_RULESETS_PER_GUILD,
+                "defaultName": DEFAULT_RULESET_NAME,
+                "maxNameLength": MAX_RULESET_NAME_LENGTH,
+                "prompt": RULES_POST_CONTENT,
+                "acceptEmoji": RULES_ACCEPT_EMOJI,
             }
         )
 
@@ -980,63 +1003,40 @@ class DashboardServer:
         )
 
     async def publish_rules(self, request: web.Request) -> web.Response:
+        """Create a new rule set: post its embed and attach the ✅ reaction."""
         guild = self._guild_from_request(request)
+        rules_cog = self._rules_cog()
         data = await self._json_body(request)
-        text = str(data.get("text", "")).strip()
-        if not text:
-            raise web.HTTPBadRequest(text="Rules text cannot be empty.")
-        if len(text) > MAX_RULES_LENGTH:
-            raise web.HTTPBadRequest(text=f"Rules are limited to {MAX_RULES_LENGTH} characters.")
-        channel_id = self._required_int(data.get("channelId"), "channel ID")
-        role_id = self._required_int(data.get("roleId"), "role ID")
-        channel = guild.get_channel(channel_id)
-        role = guild.get_role(role_id)
-        if not isinstance(channel, discord.TextChannel) or role is None:
-            raise web.HTTPBadRequest(text="Choose a valid text channel and role from this server.")
-        rules_cog = self.bot.get_cog("RulesCog")
-        if rules_cog is None:
-            raise web.HTTPServiceUnavailable(text="Rules module is not loaded.")
-        validation = rules_cog._validate_role(guild, channel, role)
-        if validation:
-            raise web.HTTPBadRequest(text=validation)
 
-        embed = discord.Embed(
-            title=f"{guild.name} Rules",
-            description=text,
-            color=discord.Color.blurple(),
-        )
-        embed.set_footer(text=f"React with {RULES_ACCEPT_EMOJI} to accept the rules")
-        try:
-            message = await channel.send(
-                content=RULES_POST_CONTENT,
-                embed=embed,
-                allowed_mentions=discord.AllowedMentions.none(),
+        rulesets = get_guild_rulesets(self.bot.config, guild.id)
+        if len(rulesets) >= MAX_RULESETS_PER_GUILD:
+            raise web.HTTPBadRequest(
+                text=(
+                    f"This server already has {MAX_RULESETS_PER_GUILD} rule sets. "
+                    "Remove one before adding another."
+                )
             )
-        except discord.Forbidden:
-            raise web.HTTPForbidden(text="The bot cannot send embeds in that channel.")
-        except discord.HTTPException as exc:
-            logger.warning("Dashboard rules publish failed for guild %s: %s", guild.id, exc)
-            raise web.HTTPBadGateway(text="Discord could not publish the rules message.")
 
-        old_settings = get_guild_rules(self.bot.config, guild.id)
+        name, error = self._ruleset_name(data, rulesets)
+        if error is not None:
+            raise web.HTTPBadRequest(text=error)
+        channel, role, error = self._ruleset_target(guild, data, rules_cog)
+        if error is not None:
+            raise web.HTTPBadRequest(text=error)
+        text = self._ruleset_text(data)
+
+        message = await self._send_rules_post(guild, channel, name, text)
+        settings = {
+            "ruleset_id": new_ruleset_id(),
+            "name": name,
+            "channel_id": channel.id,
+            "message_id": message.id,
+            "role_id": role.id,
+            "rules_text": text,
+        }
+        updated = upsert_ruleset(self.bot.config, guild.id, settings)
         old_config = self.bot.config
-        updated = rules_cog._updated_config(
-            guild.id,
-            {
-                "channel_id": channel.id,
-                "message_id": message.id,
-                "role_id": role.id,
-                "rules_text": text,
-            },
-        )
         self.bot.config = updated
-        try:
-            await message.add_reaction(RULES_ACCEPT_EMOJI)
-        except discord.HTTPException as exc:
-            self.bot.config = old_config
-            await self._delete_message(message)
-            logger.warning("Dashboard could not add rules reaction for guild %s: %s", guild.id, exc)
-            raise web.HTTPBadGateway(text="The rules post was sent, but the bot could not add its reaction.")
         try:
             self._save_config(updated)
         except Exception as exc:
@@ -1045,22 +1045,120 @@ class DashboardServer:
             logger.exception("Could not save rules settings from dashboard")
             raise web.HTTPInternalServerError(text="Rules post could not be saved to config.") from exc
 
-        if old_settings:
-            await rules_cog._retire_previous_post(guild, old_settings, message.id)
-        logger.info("Dashboard published rules for guild %s", guild.id)
+        logger.info("Dashboard published rule set %r for guild %s", name, guild.id)
         return web.json_response(
-            {"published": True, "messageId": _snowflake(message.id)}, status=201
+            {
+                "published": True,
+                "rulesetId": settings["ruleset_id"],
+                "messageId": _snowflake(message.id),
+            },
+            status=201,
+        )
+
+    async def update_rules(self, request: web.Request) -> web.Response:
+        """Edit a rule set in place: name, channel, role and text.
+
+        The message is edited when it still exists and stays in its channel;
+        otherwise (message deleted, channel changed, or text too long for an
+        embed) a fresh post replaces it, exactly like the reaction-role menus.
+        """
+        guild = self._guild_from_request(request)
+        rules_cog = self._rules_cog()
+        ruleset_id_value = request.match_info.get("ruleset_id")
+        existing = find_ruleset(self.bot.config, guild.id, ruleset_id_value)
+        if existing is None:
+            raise web.HTTPNotFound(text="That rule set is no longer configured.")
+        data = await self._json_body(request)
+
+        other_sets = [
+            settings
+            for settings in get_guild_rulesets(self.bot.config, guild.id)
+            if ruleset_id(settings) != str(ruleset_id_value)
+        ]
+        name, error = self._ruleset_name(data, other_sets)
+        if error is not None:
+            raise web.HTTPBadRequest(text=error)
+        channel, role, error = self._ruleset_target(guild, data, rules_cog)
+        if error is not None:
+            raise web.HTTPBadRequest(text=error)
+        text = self._ruleset_text(data)
+
+        settings = {
+            "ruleset_id": str(ruleset_id_value),
+            "name": name,
+            "channel_id": channel.id,
+            "message_id": existing.get("message_id"),
+            "role_id": role.id,
+            "rules_text": text,
+        }
+        old_message = await fetch_configured_message(guild, existing)
+        channel_changed = str(existing.get("channel_id")) != str(channel.id)
+        content, embed = self._rules_post_payload(guild, name, text)
+        if old_message is None or channel_changed or len(content or "") > 2000:
+            message = await self._send_rules_post(guild, channel, name, text)
+            settings["message_id"] = message.id
+            if old_message is not None and old_message.id != message.id:
+                await self._delete_message(old_message)
+        else:
+            try:
+                message = await old_message.edit(
+                    content=content,
+                    embed=embed,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except discord.Forbidden:
+                raise web.HTTPForbidden(
+                    text="The bot cannot edit that rules post any more. Check its channel permissions."
+                ) from None
+            except discord.HTTPException as exc:
+                logger.warning("Could not update rules message %s: %s", old_message.id, exc)
+                raise web.HTTPBadGateway(
+                    text="Discord could not update that rules post."
+                ) from exc
+
+        old_config = self.bot.config
+        self.bot.config = upsert_ruleset(old_config, guild.id, settings)
+        try:
+            self._save_config(self.bot.config)
+        except Exception as exc:
+            self.bot.config = old_config
+            raise web.HTTPInternalServerError(
+                text="Could not save the rule set to config."
+            ) from exc
+
+        logger.info("Dashboard updated rule set %s for guild %s", ruleset_id_value, guild.id)
+        return web.json_response(
+            {
+                "updated": True,
+                "rulesetId": str(ruleset_id_value),
+                "messageId": _snowflake(message.id),
+            }
         )
 
     async def disable_rules(self, request: web.Request) -> web.Response:
+        """Remove one rule set (by id, or by ``ruleset_id=`` query parameter)."""
         guild = self._guild_from_request(request)
-        settings = get_guild_rules(self.bot.config, guild.id)
-        if settings is None:
+        rules_cog = self._rules_cog()
+        rulesets = get_guild_rulesets(self.bot.config, guild.id)
+        if not rulesets:
             return web.json_response({"disabled": True, "alreadyDisabled": True})
-        rules_cog = self.bot.get_cog("RulesCog")
-        if rules_cog is None:
-            raise web.HTTPServiceUnavailable(text="Rules module is not loaded.")
-        updated = rules_cog._updated_config(guild.id, None)
+
+        wanted = request.match_info.get("ruleset_id") or request.query.get("ruleset_id")
+        if wanted:
+            settings = find_ruleset(self.bot.config, guild.id, wanted)
+            if settings is None:
+                raise web.HTTPNotFound(text="That rule set is no longer configured.")
+        elif len(rulesets) == 1:
+            settings = rulesets[0]
+        else:
+            raise web.HTTPBadRequest(
+                text=(
+                    "This server has several rule sets — choose which one to "
+                    "remove from the list."
+                )
+            )
+
+        updated = remove_ruleset(self.bot.config, guild.id, ruleset_id(settings))
         try:
             self._save_config(updated)
         except Exception as exc:
@@ -1068,8 +1166,95 @@ class DashboardServer:
             raise web.HTTPInternalServerError(text="Could not save the rules settings.") from exc
         self.bot.config = updated
         await rules_cog._mark_post_disabled(guild, settings)
-        logger.info("Dashboard disabled rules reactions for guild %s", guild.id)
-        return web.json_response({"disabled": True})
+        logger.info(
+            "Dashboard removed rule set %s for guild %s", ruleset_id(settings), guild.id
+        )
+        return web.json_response({"disabled": True, "rulesetId": ruleset_id(settings)})
+
+    def _rules_cog(self):
+        rules_cog = self.bot.get_cog("RulesCog")
+        if rules_cog is None:
+            raise web.HTTPServiceUnavailable(text="Rules module is not loaded.")
+        return rules_cog
+
+    @staticmethod
+    def _ruleset_name(data: dict, others: list[dict]) -> tuple[Optional[str], Optional[str]]:
+        """Validate a rule set name, which doubles as its dashboard handle."""
+        name = str(data.get("name") or "").strip() or DEFAULT_RULESET_NAME
+        if len(name) > MAX_RULESET_NAME_LENGTH:
+            return None, (
+                f"Names are limited to {MAX_RULESET_NAME_LENGTH} characters; "
+                f"that one is {len(name)}."
+            )
+        taken = {ruleset_name(settings).casefold() for settings in others}
+        if name.casefold() in taken:
+            return None, f"Another rule set is already named “{name}”."
+        return name, None
+
+    def _ruleset_target(
+        self, guild: discord.Guild, data: dict, rules_cog
+    ) -> tuple[Optional[object], Optional[object], Optional[str]]:
+        """Resolve and validate the post channel and acceptance role."""
+        channel = guild.get_channel(
+            self._required_int(data.get("channelId"), "channel ID")
+        )
+        role = guild.get_role(self._required_int(data.get("roleId"), "role ID"))
+        if not isinstance(channel, discord.TextChannel) or role is None:
+            return None, None, "Choose a valid text channel and role from this server."
+        problem = rules_cog._validate_role(guild, channel, role)
+        return channel, role, problem or None
+
+    @staticmethod
+    def _ruleset_text(data: dict) -> str:
+        text = str(data.get("text", "")).strip()
+        if not text:
+            raise web.HTTPBadRequest(text="Rules text cannot be empty.")
+        if len(text) > MAX_RULES_LENGTH:
+            raise web.HTTPBadRequest(
+                text=f"Rules are limited to {MAX_RULES_LENGTH} characters."
+            )
+        return text
+
+    @staticmethod
+    def _rules_post_payload(
+        guild: discord.Guild, name: str, text: str
+    ) -> tuple[str, discord.Embed]:
+        """The prompt + embed a rule set posts, shared by publish and edit."""
+        embed = discord.Embed(
+            title=rules_embed_title(guild.name, name),
+            description=text,
+            color=discord.Color.blurple(),
+        )
+        embed.set_footer(text=f"React with {RULES_ACCEPT_EMOJI} to accept the rules")
+        return RULES_POST_CONTENT, embed
+
+    async def _send_rules_post(
+        self, guild: discord.Guild, channel, name: str, text: str
+    ) -> discord.Message:
+        content, embed = self._rules_post_payload(guild, name, text)
+        try:
+            message = await channel.send(
+                content=content,
+                embed=embed,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except discord.Forbidden:
+            raise web.HTTPForbidden(text="The bot cannot send embeds in that channel.") from None
+        except discord.HTTPException as exc:
+            logger.warning("Dashboard rules publish failed for guild %s: %s", guild.id, exc)
+            raise web.HTTPBadGateway(text="Discord could not publish the rules message.") from exc
+
+        try:
+            await message.add_reaction(RULES_ACCEPT_EMOJI)
+        except discord.HTTPException as exc:
+            await self._delete_message(message)
+            logger.warning(
+                "Dashboard could not add rules reaction for guild %s: %s", guild.id, exc
+            )
+            raise web.HTTPBadGateway(
+                text="The rules post was sent, but the bot could not add its reaction."
+            ) from exc
+        return message
 
     # ---- Reaction-role menus --------------------------------------------- #
     async def reaction_roles_status(self, request: web.Request) -> web.Response:
@@ -1486,6 +1671,30 @@ class DashboardServer:
 
 _ID_FIELD_SUFFIXES = ("_id", "Id")
 _ID_FIELD_EXCEPTIONS = {"id"}  # database row keys
+
+
+def _ruleset_payload(settings: dict, guild: discord.Guild) -> dict:
+    """Serialise a stored rule set for the browser (ids as strings)."""
+    try:
+        channel = guild.get_channel(int(settings.get("channel_id") or 0))
+    except (TypeError, ValueError):
+        channel = None
+    try:
+        role = guild.get_role(int(settings.get("role_id") or 0))
+    except (TypeError, ValueError):
+        role = None
+    return {
+        "rulesetId": ruleset_id(settings),
+        "name": ruleset_name(settings),
+        "channelId": _snowflake(settings.get("channel_id")),
+        "messageId": _snowflake(settings.get("message_id")),
+        "roleId": _snowflake(settings.get("role_id")),
+        "text": str(settings.get("rules_text") or ""),
+        # Resolved names make the post list readable even when the message was
+        # deleted or the channel/role was removed since publishing.
+        "channelName": getattr(channel, "name", None),
+        "roleName": getattr(role, "name", None),
+    }
 
 
 def _reaction_post_payload(post: dict) -> dict:

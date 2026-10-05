@@ -12,11 +12,23 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from rules import (  # noqa: E402
+    DEFAULT_RULESET_NAME,
+    MAX_RULESETS_PER_GUILD,
+    MAX_RULESET_NAME_LENGTH,
     RULES_ACCEPT_EMOJI,
     RULES_POST_CONTENT,
     RulesCog,
-    get_guild_rules,
+    find_ruleset,
+    find_ruleset_by_message,
+    find_ruleset_by_name,
+    get_guild_rulesets,
     is_active_rules_reaction,
+    new_ruleset_id,
+    remove_ruleset,
+    rules_embed_title,
+    ruleset_id,
+    ruleset_name,
+    upsert_ruleset,
 )
 
 
@@ -42,6 +54,7 @@ class FakeGuild:
         self.id = 123
         self.name = "Test Guild"
         self._role = role
+        self.roles = [role] if role is not None else []
         self._member = member
         self.member_cached = True
         self.fetches = 0
@@ -50,7 +63,10 @@ class FakeGuild:
         self._channel = None
 
     def get_role(self, role_id):
-        return self._role if role_id == self._role.id else None
+        for role in self.roles:
+            if role.id == int(role_id):
+                return role
+        return None
 
     def get_member(self, user_id):
         if not self.member_cached:
@@ -78,8 +94,14 @@ class FakeBot:
 
 
 class RulesConfigTests(unittest.TestCase):
+    """The stored shape: a list of named sets per guild.
+
+    The single-object shape older versions wrote is still accepted; it is read
+    as one set, so an existing install needs no config migration.
+    """
+
     def setUp(self) -> None:
-        self.config = {
+        self.legacy = {
             "rules": {
                 "123": {
                     "channel_id": 45,
@@ -90,21 +112,72 @@ class RulesConfigTests(unittest.TestCase):
             }
         }
 
-    def test_settings_are_stored_per_guild(self) -> None:
-        self.assertEqual(get_guild_rules(self.config, 123)["role_id"], 89)
-        self.assertIsNone(get_guild_rules(self.config, 456))
+    def test_legacy_single_object_is_read_as_one_set(self) -> None:
+        rulesets = get_guild_rulesets(self.legacy, 123)
+        self.assertEqual(len(rulesets), 1)
+        self.assertEqual(rulesets[0]["role_id"], 89)
+        self.assertEqual(ruleset_name(rulesets[0]), DEFAULT_RULESET_NAME)
+        self.assertEqual(ruleset_id(rulesets[0]), "67")
+        self.assertEqual(get_guild_rulesets(self.legacy, 456), [])
 
-    def test_only_the_active_checkmark_message_matches(self) -> None:
-        self.assertTrue(is_active_rules_reaction(self.config, 123, 67, RULES_ACCEPT_EMOJI))
-        self.assertFalse(is_active_rules_reaction(self.config, 123, 68, RULES_ACCEPT_EMOJI))
-        self.assertFalse(is_active_rules_reaction(self.config, 123, 67, "👋"))
-        self.assertFalse(is_active_rules_reaction(self.config, None, 67, RULES_ACCEPT_EMOJI))
+    def test_multiple_sets_are_per_guild(self) -> None:
+        config = {"rules": {"123": [{"ruleset_id": "a", "message_id": 67},
+                                    {"ruleset_id": "b", "message_id": 68}]}}
+        self.assertEqual(len(get_guild_rulesets(config, 123)), 2)
+        self.assertEqual(get_guild_rulesets(config, 456), [])
+
+    def test_sets_are_found_by_id_name_and_message(self) -> None:
+        config = {"rules": {"123": [
+            {"ruleset_id": "a", "name": "Server rules", "message_id": 67},
+            {"ruleset_id": "b", "name": "Event rules", "message_id": 68},
+        ]}}
+        self.assertEqual(find_ruleset(config, 123, "b")["message_id"], 68)
+        self.assertIsNone(find_ruleset(config, 123, "zzz"))
+        self.assertEqual(find_ruleset_by_message(config, 123, 68)["ruleset_id"], "b")
+        self.assertEqual(find_ruleset_by_name(config, 123, "event RULES")["ruleset_id"], "b")
+        self.assertIsNone(find_ruleset_by_name(config, 123, "nope"))
+
+    def test_every_published_message_accepts_the_checkmark(self) -> None:
+        config = {"rules": {"123": [{"message_id": 67}, {"message_id": 68}]}}
+        self.assertTrue(is_active_rules_reaction(config, 123, 67, RULES_ACCEPT_EMOJI))
+        self.assertTrue(is_active_rules_reaction(config, 123, 68, RULES_ACCEPT_EMOJI))
+        self.assertFalse(is_active_rules_reaction(config, 123, 69, RULES_ACCEPT_EMOJI))
+        self.assertFalse(is_active_rules_reaction(config, 123, 67, "👋"))
+        self.assertFalse(is_active_rules_reaction(config, None, 67, RULES_ACCEPT_EMOJI))
 
     def test_bad_or_missing_settings_fail_closed(self) -> None:
         self.assertFalse(is_active_rules_reaction({}, 123, 67, RULES_ACCEPT_EMOJI))
         broken = {"rules": {"123": {"message_id": "not-an-id"}}}
         self.assertFalse(is_active_rules_reaction(broken, 123, 67, RULES_ACCEPT_EMOJI))
-        self.assertIsNone(get_guild_rules({"rules": []}, 123))
+        self.assertEqual(get_guild_rulesets({"rules": []}, 123), [])
+        self.assertEqual(get_guild_rulesets({"rules": {"123": "x"}}, 123), [])
+
+    def test_upsert_replaces_by_id_and_never_mutates(self) -> None:
+        original = {"rules": {"123": [{"ruleset_id": "a", "role_id": 1}]}}
+        both = upsert_ruleset(
+            original, 123, {"ruleset_id": "b", "role_id": 2}
+        )
+        self.assertEqual(len(get_guild_rulesets(both, 123)), 2)
+        self.assertEqual(len(get_guild_rulesets(original, 123)), 1, "config must be copied")
+
+        replaced = upsert_ruleset(both, 123, {"ruleset_id": "a", "role_id": 9})
+        self.assertEqual(len(get_guild_rulesets(replaced, 123)), 2)
+        self.assertEqual(find_ruleset(replaced, 123, "a")["role_id"], 9)
+
+    def test_removing_the_last_set_drops_the_guild_key(self) -> None:
+        config = {"rules": {"123": [{"ruleset_id": "a"}]}}
+        self.assertEqual(remove_ruleset(config, 123, "a")["rules"], {})
+
+    def test_writing_converts_the_legacy_shape_to_a_list(self) -> None:
+        added = upsert_ruleset(self.legacy, 123, {"ruleset_id": "b", "message_id": 99})
+        self.assertIsInstance(added["rules"]["123"], list)
+        self.assertEqual(len(added["rules"]["123"]), 2)
+
+    def test_ruleset_names_and_titles(self) -> None:
+        self.assertEqual(rules_embed_title("Guild", "Server rules"), "Guild Rules")
+        self.assertEqual(rules_embed_title("Guild", "Event rules"), "Guild — Event rules")
+        self.assertEqual(ruleset_name({"name": "  "}), DEFAULT_RULESET_NAME)
+        self.assertEqual(len(new_ruleset_id()), 8)
 
 
 class ReactionRoleTests(unittest.IsolatedAsyncioTestCase):
@@ -286,9 +359,269 @@ class RulesPublishTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(embed.description, "1. Be kind.")
         self.assertIn(RULES_ACCEPT_EMOJI, embed.footer.text)
         self.assertEqual(reactions, [RULES_ACCEPT_EMOJI])
-        # The active post is persisted so reactions survive a restart.
-        self.assertEqual(self.saved[-1]["rules"][str(guild.id)]["message_id"], 67)
-        self.assertIn("Published rules in #rules", interaction.followup.messages[-1])
+        # The published set is persisted so reactions survive a restart.
+        stored = self.saved[-1]["rules"][str(guild.id)]
+        self.assertEqual(stored[0]["message_id"], 67)
+        self.assertEqual(stored[0]["name"], DEFAULT_RULESET_NAME)
+        self.assertTrue(stored[0]["ruleset_id"])
+        self.assertIn(f"**{DEFAULT_RULESET_NAME}**", interaction.followup.messages[-1])
+
+
+class _FakeMessage:
+    def __init__(self, message_id: int) -> None:
+        self.id = message_id
+        self.channel = None
+        self.author = SimpleNamespace(id=999)
+        self.deleted = False
+        self.reactions: list[str] = []
+
+    async def add_reaction(self, emoji) -> None:
+        self.reactions.append(str(emoji))
+
+    async def remove_reaction(self, emoji, member) -> None:
+        self.reactions = [item for item in self.reactions if item != str(emoji)]
+
+    async def delete(self) -> None:
+        self.deleted = True
+
+    async def edit(self, *, content=None, embed=None, allowed_mentions=None):
+        self.edited = True
+        self.content = content
+        return self
+
+
+class _RulesHarness:
+    """A guild/channel/bot triple good enough to drive the rules commands."""
+
+    BOT_USER_ID = 999
+
+    def __init__(self, config: dict, *, message_ids=(67, 68, 69)) -> None:
+        self.saved: list[dict] = []
+        self.sent: list[dict] = []
+        self.messages: dict[int, _FakeMessage] = {}
+        self._message_ids = list(message_ids)
+
+        self.guild = FakeGuild(role=None, member=None)
+        self.guild.me = SimpleNamespace(
+            guild_permissions=_Permissions(manage_roles=True),
+            top_role=_PositionedRole(position=50),
+        )
+        self.role = _PositionedRole(
+            id=89,
+            name="Verified",
+            position=10,
+            mention="<@&89>",
+            managed=False,
+            permissions=_Permissions(),
+            guild=SimpleNamespace(id=self.guild.id),
+        )
+        self.role.is_default = lambda: False
+        self.second_role = _PositionedRole(
+            id=90,
+            name="Events",
+            position=11,
+            mention="<@&90>",
+            managed=False,
+            permissions=_Permissions(),
+            guild=SimpleNamespace(id=self.guild.id),
+        )
+        self.second_role.is_default = lambda: False
+
+        self.channel = SimpleNamespace(
+            id=45,
+            mention="#rules",
+            guild=SimpleNamespace(id=self.guild.id),
+            permissions_for=lambda _member: _Permissions(
+                view_channel=True,
+                send_messages=True,
+                embed_links=True,
+                add_reactions=True,
+            ),
+        )
+        self.channel.send = self._send
+        self.channel.fetch_message = self._fetch_message
+        self.guild._channel = self.channel
+
+        self.guild.roles = [self.role, self.second_role]
+        self.guild._channel = self.channel
+        self.bot = FakeBot(config, self.guild, bot_user_id=self.BOT_USER_ID)
+        self.cog = RulesCog(self.bot, self.saved.append)
+        self.interaction = SimpleNamespace(
+            guild=self.guild,
+            user=SimpleNamespace(id=7, guild_permissions=_Permissions(administrator=True)),
+            response=_FakeResponse(),
+            followup=_FakeFollowup(),
+        )
+
+    async def _send(self, content, *, embed=None, allowed_mentions=None):
+        message_id = self._message_ids.pop(0)
+        message = _FakeMessage(message_id)
+        message.channel = self.channel
+        self.messages[message_id] = message
+        self.sent.append({"content": content, "embed": embed, "message": message})
+        return message
+
+    async def _fetch_message(self, message_id):
+        return self.messages[int(message_id)]
+
+    async def publish(self, text, name=None, role=None):
+        await self.cog.publish_rules.callback(
+            self.cog, self.interaction, self.channel, role or self.role, text, name
+        )
+
+    async def disable(self, name=None):
+        await self.cog.disable_rules.callback(self.cog, self.interaction, name)
+
+    async def list_sets(self):
+        await self.cog.list_rules.callback(self.cog, self.interaction)
+
+    @property
+    def reply(self) -> str:
+        return (
+            self.interaction.followup.messages[-1]
+            if self.interaction.followup.messages
+            else self.interaction.response.messages[-1]
+        )
+
+
+class RulesMultiSetTests(unittest.IsolatedAsyncioTestCase):
+    """A server can run several independent rule sets.
+
+    Each set owns its post, role and text; publishing a second set must not
+    replace the first, and a reaction is routed by the message it was added to.
+    """
+
+    async def test_two_named_sets_coexist(self) -> None:
+        harness = _RulesHarness({"rules": {}})
+        await harness.publish("1. Be kind.", name="Server rules")
+        await harness.publish("2. No spam.", name="Event rules", role=harness.second_role)
+
+        self.assertEqual(len(harness.sent), 2, "the first set must not be replaced")
+        self.assertEqual(
+            [entry["embed"].title for entry in harness.sent],
+            ["Test Guild Rules", "Test Guild — Event rules"],
+        )
+        stored = harness.bot.config["rules"]["123"]
+        self.assertEqual([item["name"] for item in stored], ["Server rules", "Event rules"])
+        self.assertEqual([item["message_id"] for item in stored], [67, 68])
+        self.assertEqual([item["role_id"] for item in stored], [89, 90])
+        self.assertEqual(len({item["ruleset_id"] for item in stored}), 2, "ids must differ")
+
+    async def test_republishing_a_name_replaces_only_that_set(self) -> None:
+        harness = _RulesHarness({"rules": {}})
+        await harness.publish("1. Be kind.", name="Server rules")
+        await harness.publish("2. No spam.", name="Event rules", role=harness.second_role)
+        await harness.publish("1. Be extra kind.", name="Server rules")
+
+        stored = harness.bot.config["rules"]["123"]
+        self.assertEqual(len(stored), 2)
+        self.assertEqual(
+            [item["rules_text"] for item in stored], ["1. Be extra kind.", "2. No spam."]
+        )
+        # Republishing replaces the old post rather than leaving it behind.
+        self.assertEqual(len(harness.sent), 3)
+        self.assertTrue(harness.messages[67].deleted)
+        self.assertFalse(harness.messages[68].deleted)
+        self.assertEqual(stored[0]["message_id"], 69)
+
+    async def test_each_set_grants_its_own_role(self) -> None:
+        harness = _RulesHarness({"rules": {}})
+        await harness.publish("Server rules.", name="Server rules")
+        await harness.publish("Event rules.", name="Event rules", role=harness.second_role)
+
+        member = FakeMember(321)
+        harness.guild._member = member
+        payload = lambda message_id: SimpleNamespace(  # noqa: E731
+            guild_id=123, message_id=message_id, emoji=RULES_ACCEPT_EMOJI, user_id=321, member=member
+        )
+        await harness.cog.on_raw_reaction_add(payload(67))
+        self.assertEqual(member.added, [harness.role])
+        await harness.cog.on_raw_reaction_add(payload(68))
+        self.assertEqual(member.added, [harness.role, harness.second_role])
+        # Unknown messages are ignored.
+        await harness.cog.on_raw_reaction_add(payload(999))
+        self.assertEqual(len(member.added), 2)
+
+    async def test_disable_needs_a_name_when_several_are_published(self) -> None:
+        harness = _RulesHarness({"rules": {}})
+        await harness.publish("Server rules.", name="Server rules")
+        await harness.publish("Event rules.", name="Event rules", role=harness.second_role)
+
+        await harness.disable()
+        self.assertIn("pass `name`", harness.reply)
+        self.assertEqual(len(harness.bot.config["rules"]["123"]), 2, "nothing removed")
+
+        await harness.disable("Event rules")
+        stored = harness.bot.config["rules"]["123"]
+        self.assertEqual([item["name"] for item in stored], ["Server rules"])
+        # The dropped post is marked disabled (not deleted), and the surviving
+        # set's post is untouched.
+        self.assertTrue(getattr(harness.messages[68], "edited", False))
+        self.assertFalse(getattr(harness.messages[67], "edited", False))
+        self.assertIn("Event rules", harness.reply)
+
+    async def test_disable_without_a_name_works_for_a_single_set(self) -> None:
+        harness = _RulesHarness({"rules": {}})
+        await harness.publish("Server rules.")
+        await harness.disable()
+        self.assertEqual(get_guild_rulesets(harness.bot.config, 123), [])
+        self.assertIn("Disabled the rule set", harness.reply)
+
+    async def test_unknown_name_and_too_many_sets_are_reported(self) -> None:
+        harness = _RulesHarness(
+            {"rules": {"123": [
+                {"ruleset_id": f"id{index}", "name": f"Set {index}", "message_id": index}
+                for index in range(MAX_RULESETS_PER_GUILD)
+            ]}}
+        )
+        await harness.publish("More rules.", name="One too many")
+        self.assertEqual(len(harness.sent), 0)
+        self.assertIn(str(MAX_RULESETS_PER_GUILD), harness.reply)
+
+        await harness.disable("Not a set")
+        self.assertIn("No rule set is named", harness.reply)
+
+    async def test_long_names_are_rejected(self) -> None:
+        harness = _RulesHarness({"rules": {}})
+        await harness.publish("Rules.", name="x" * (MAX_RULESET_NAME_LENGTH + 1))
+        self.assertEqual(len(harness.sent), 0)
+        self.assertIn(str(MAX_RULESET_NAME_LENGTH), harness.reply)
+
+    async def test_list_shows_every_set(self) -> None:
+        harness = _RulesHarness({"rules": {}})
+        await harness.publish("Server rules.", name="Server rules")
+        await harness.publish("Event rules.", name="Event rules", role=harness.second_role)
+        await harness.list_sets()
+        self.assertIn("2 rule set(s)", harness.reply)
+        self.assertIn("Server rules", harness.reply)
+        self.assertIn("Event rules", harness.reply)
+        self.assertIn("#rules", harness.reply)
+        self.assertIn("message `67`", harness.reply)
+
+    async def test_legacy_config_keeps_working_end_to_end(self) -> None:
+        """A config written before this feature is still reactive and editable."""
+        config = {"rules": {"123": {
+            "channel_id": 45, "message_id": 67, "role_id": 89, "rules_text": "Old rules.",
+        }}}
+        harness = _RulesHarness(config)
+
+        member = FakeMember(321)
+        harness.guild._member = member
+        await harness.cog.on_raw_reaction_add(
+            SimpleNamespace(
+                guild_id=123, message_id=67, emoji=RULES_ACCEPT_EMOJI, user_id=321, member=member
+            )
+        )
+        self.assertEqual(member.added, [harness.role])
+
+        # The form posts a named set: the legacy entry is upgraded, not dropped.
+        await harness.publish("New rules.", name="Event rules", role=harness.second_role)
+        stored = harness.bot.config["rules"]["123"]
+        self.assertIsInstance(stored, list)
+        self.assertEqual(len(stored), 2)
+        # The legacy entry keeps working (it has no stored name, so it is read
+        # as the default set) and the new set was added next to it.
+        self.assertEqual([ruleset_name(item) for item in stored], ["Server rules", "Event rules"])
 
 
 class RulesPostContentTests(unittest.TestCase):
