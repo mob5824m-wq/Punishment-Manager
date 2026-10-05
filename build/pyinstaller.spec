@@ -3,7 +3,7 @@
 PyInstaller spec for the Sentinel.
 
 Builds `bot.py` and its imported modules (`rules.py`, `reaction_roles.py`,
-`dashboard.py`), plus
+`dashboard.py`, `duckdns.py`), plus
 its companion `installer.py` and dashboard UI, into a self-contained binary:
 
   Linux:   dist/sentinel/sentinel
@@ -157,6 +157,8 @@ a = Analysis(
         'command_tree',
         # Rules-Markdown renderer used by the dashboard's rules preview.
         'discord_markdown',
+        # DuckDNS record updater (keeps a dynamic-DNS name pointed here).
+        'duckdns',
         'rules',
         # Reaction-role menus (dashboard-published posts + the reaction cog).
         'reaction_roles',

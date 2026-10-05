@@ -39,6 +39,7 @@ from discord.ext import commands, tasks
 
 import paths
 import command_tree
+import duckdns
 from dashboard import DashboardServer, ensure_dashboard_token
 from reaction_roles import ReactionRolesCog
 from rules import RulesMixin
@@ -375,8 +376,18 @@ DEFAULT_CONFIG: dict = {
     "dashboard_host": "127.0.0.1",
     "dashboard_port": 8765,
     "dashboard_secure_cookie": False,
-    "dashboard_allowed_hosts": [],
+    "dashboard_allowed_hosts": [],   # public names allowed in the Host header
     "dashboard_token": "",
+    # --- remote access (see docs/REMOTE_ACCESS.md) ---
+    "dashboard_public_url": "",       # e.g. "https://yourname.duckdns.org"
+    "dashboard_trusted_proxies": [],  # proxy IPs/CIDRs whose X-Forwarded-For counts
+    "dashboard_tls_cert": "",         # serve HTTPS here instead of via a proxy
+    "dashboard_tls_key": "",
+    # --- DuckDNS (keeps that public name pointed at this machine) ---
+    "duckdns_enabled": True,
+    "duckdns_domain": "",             # "yourname" or "yourname.duckdns.org"
+    "duckdns_token": "",              # DuckDNS account token (NOT the dashboard key)
+    "duckdns_interval_minutes": 5,
     "default_duration_minutes": 30,
     "log_channel_id": None,
 }
@@ -662,6 +673,7 @@ class SentinelBot(commands.Bot):
             format_duration=format_duration,
         )
         self.scheduler_task: Optional[asyncio.Task] = None
+        self.duckdns = duckdns.DuckDNSUpdater(self.config)
         self._guild_sync_lock = asyncio.Lock()
         self._guild_commands_copied: set[int] = set()
         self._guild_commands_synced: set[int] = set()
@@ -670,6 +682,7 @@ class SentinelBot(commands.Bot):
         self._global_registry_cleared = False
 
     async def close(self) -> None:
+        await self.duckdns.stop()
         await self.dashboard.close()
         await super().close()
 
@@ -2244,6 +2257,29 @@ async def setup_hook(self: SentinelBot) -> None:
         await self.dashboard.start()
     except Exception:
         logger.exception("Could not start the server dashboard; the Discord bot will keep running.")
+    _log_remote_access_notes(self.config)
+    try:
+        # The updater was built in __init__, but the interactive installer path
+        # replaces bot.config afterwards (see __main__), so re-point it at
+        # whatever config the bot is actually running with.
+        if self.duckdns.config is not self.config:
+            self.duckdns.config = self.config
+        await self.duckdns.start()
+    except Exception:
+        logger.exception("Could not start the DuckDNS updater; the Discord bot will keep running.")
+
+
+def _log_remote_access_notes(config: dict) -> None:
+    """Say, once at startup, what a remote visitor (e.g. over DuckDNS) would hit.
+
+    Everything here is advisory: the dashboard starts either way. It exists
+    because each of these misconfigurations shows up in the browser as a
+    connection or login failure that says nothing about the fix.
+    """
+    if duckdns.configured(config):
+        logger.info("%s", duckdns.describe_status(config))
+    for warning in duckdns.dashboard_warnings(config):
+        logger.warning("Remote access: %s", warning)
 
 
 SentinelBot.setup_hook = setup_hook  # type: ignore[assignment]
@@ -2288,6 +2324,12 @@ def _print_help() -> None:
         "  --dashboard-token Print the web dashboard login key (creating one\n"
         "                    on first run). Also stored as \"dashboard_token\"\n"
         "                    in config.json.\n"
+        "  --dashboard       Show how the dashboard is reachable: the URLs, the\n"
+        "                    TLS and proxy settings, and what to fix for remote\n"
+        "                    access (e.g. over DuckDNS).\n"
+        "  --duckdns         Send one DuckDNS update now and report the result,\n"
+        "                    then exit. The bot does this on a timer anyway;\n"
+        "                    this is for testing the setup.\n"
         "  --version         Print the version of this build.\n"
         "  --help, -h        Show this message.\n"
         "\n"
@@ -2299,6 +2341,96 @@ def _print_help() -> None:
         "Run --paths to see the resolved locations.\n"
         "\n"
     )
+
+
+def _describe_dashboard() -> int:
+    """Print the effective dashboard settings and how to reach them.
+
+    The address a remote user needs is not obvious from config.json: it depends
+    on the bind address, the scheme, whether a proxy is in front, and whether
+    the public name is in the Host allowlist. This prints the conclusion.
+    """
+    config = bot.config
+    sys.stdout.write(f"Sentinel {paths.app_version()}\n")
+    if not config.get("dashboard_enabled", True):
+        sys.stdout.write("Dashboard: disabled ('dashboard_enabled': false).\n")
+        return 0
+
+    server = bot.dashboard
+    try:
+        server._apply_settings(config)
+    except ValueError as exc:
+        sys.stderr.write(f"ERROR: {exc}\n")
+        return 1
+
+    sys.stdout.write(f"Listening on:  {server.scheme}://{server._host}:{server._port}/\n")
+    if server._public_url:
+        sys.stdout.write(
+            f"Public URL:    {server._public_url.rstrip('/')}/   <- open this one\n"
+        )
+    sys.stdout.write(f"Browser sees:  {server.browser_scheme} (cookie rules)\n")
+    allowed = config.get("dashboard_allowed_hosts", [])
+    if isinstance(allowed, str):
+        allowed = [allowed]
+    sys.stdout.write(
+        "Allowed Host:  " + (", ".join(str(item) for item in allowed) or "(none configured)")
+        + "\n"
+    )
+    proxies = config.get("dashboard_trusted_proxies", [])
+    sys.stdout.write(
+        "Trusted proxy: " + (", ".join(str(item) for item in proxies) or "(none)")
+        + "\n"
+    )
+    sys.stdout.write(
+        "TLS here:      " + ("yes (dashboard_tls_cert)" if server._tls_context else "no")
+        + "\n"
+    )
+    sys.stdout.write(f"Secure cookie: {'yes' if server._secure_cookie else 'no'}\n")
+    sys.stdout.write(duckdns.describe_status(config) + "\n")
+    last_result = bot.duckdns.last_result
+    if last_result is not None:  # pragma: no cover - only after an update ran
+        sys.stdout.write(f"Last update:   {last_result.describe()}\n")
+
+    warnings = list(server.remote_access_warnings()) + duckdns.dashboard_warnings(config)
+    if warnings:
+        sys.stdout.write("\nTo fix for remote access:\n")
+        for warning in warnings:
+            sys.stdout.write(f"  - {warning}\n")
+    else:
+        sys.stdout.write("\nNo remote-access problems found.\n")
+    sys.stdout.write(
+        "\nLogin key: run 'sentinel --dashboard-token' on this machine.\n"
+    )
+    return 0
+
+
+def _duckdns_update_once() -> int:
+    """Run a single DuckDNS update and print the outcome (for testing)."""
+    config = bot.config
+    if not duckdns.configured(config):
+        sys.stderr.write(
+            "ERROR: DuckDNS is not configured. Set 'duckdns_domain' and "
+            "'duckdns_token' in config.json (or SENTINEL_DUCKDNS_DOMAIN / "
+            "SENTINEL_DUCKDNS_TOKEN).\n"
+        )
+        return 1
+
+    async def run() -> duckdns.UpdateResult:
+        updater = duckdns.DuckDNSUpdater(config)
+        try:
+            result = await updater.update_now()
+        finally:
+            await updater.stop()
+        assert result is not None
+        return result
+
+    result = asyncio.run(run())
+    sys.stdout.write(result.describe() + "\n")
+    if result.ok:
+        for warning in duckdns.dashboard_warnings(config):
+            sys.stdout.write(f"NOTE: {warning}\n")
+        return 0
+    return 1
 
 
 def _service_install() -> int:
@@ -2645,6 +2777,12 @@ if __name__ == "__main__":
         except (OSError, ValueError) as exc:
             sys.stderr.write(f"ERROR: could not initialize dashboard key: {exc}\n")
             sys.exit(1)
+
+    if args and args[0] == "--dashboard":
+        sys.exit(_describe_dashboard())
+
+    if args and args[0] == "--duckdns":
+        sys.exit(_duckdns_update_once())
 
     if args and args[0] in ("--install", "--reinstall"):
         from installer import run_installer

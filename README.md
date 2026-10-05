@@ -508,7 +508,9 @@ the command for your install:
 | Running from source | `python3 bot.py --dashboard-token` |
 
 The command prints the key on a single line (and creates it if it doesn't
-exist yet). Not sure where `config.json` lives? `sentinel --paths`
+exist yet). `sentinel --dashboard` then shows how the dashboard is reachable
+and what to fix if it isn't; `sentinel --duckdns` tests a DuckDNS update.
+Not sure where `config.json` lives? `sentinel --paths`
 (or `python3 bot.py --paths`) prints the resolved config, database, and log
 paths. The dashboard key is **not** the Discord bot token — pasting the bot
 token into the dashboard will not work.
@@ -521,13 +523,45 @@ server, prefer an SSH tunnel rather than opening a port:
 ssh -L 8765:127.0.0.1:8765 user@your-server
 ```
 
-Then open <http://127.0.0.1:8765> on your workstation. If you deliberately
-place it behind an HTTPS reverse proxy, set `dashboard_host` to `0.0.0.0`, set
-`dashboard_secure_cookie` to `true`, and set `dashboard_allowed_hosts` to the
-proxy's exact hostname. Restrict it with a firewall and **never expose the
-plain-HTTP dashboard directly to the internet**. Dashboard moderation entries
-are tagged `[Dashboard]`; since the dashboard uses a host key rather than
-Discord OAuth, its moderator ID is recorded as the server owner.
+Then open <http://127.0.0.1:8765> on your workstation. Restrict it with a
+firewall, and **never expose the plain-HTTP dashboard directly to the
+internet**. Dashboard moderation entries are tagged `[Dashboard]`; since the
+dashboard uses a host key rather than Discord OAuth, its moderator ID is
+recorded as the server owner.
+
+Two commands answer "where is it, and why can't I reach it?":
+
+| Command | What it prints |
+|---------|----------------|
+| `sentinel --dashboard` | The URLs, the TLS/proxy settings, and one line per thing to fix for remote access |
+| `sentinel --duckdns` | Sends one DuckDNS update now and reports the address it recorded |
+
+#### Reaching it from outside the house (e.g. DuckDNS)
+
+To check the dashboard from a phone or from work, put HTTPS in front of it and
+give it a name. Sentinel keeps a free [DuckDNS](https://www.duckdns.org) name
+pointed at your current home address by itself:
+
+```json
+{
+  "duckdns_domain": "myhome",
+  "duckdns_token": "the-account-token-from-duckdns.org",
+  "dashboard_allowed_hosts": ["myhome.duckdns.org"],
+  "dashboard_public_url": "https://myhome.duckdns.org",
+  "dashboard_secure_cookie": true,
+  "dashboard_trusted_proxies": ["127.0.0.1", "::1"]
+}
+```
+
+Keep `dashboard_host` on `127.0.0.1` and let a reverse proxy on the same
+machine (Caddy, nginx) terminate TLS and forward to it; then forward 80/443 at
+the router, never 8765. The `dashboard_allowed_hosts` entry is required - the
+dashboard answers only for names you list, to block DNS-rebinding attacks, and
+a name that is missing gets `400 Unrecognized Host header`.
+
+Full walkthrough, including serving TLS directly from Sentinel, SSH tunnels,
+`X-Forwarded-For` behind a proxy, and a symptom-to-fix table:
+**[docs/REMOTE_ACCESS.md](docs/REMOTE_ACCESS.md)**.
 
 Slash commands are registered **per server only** — that is the scope that
 appears immediately, so they show up without waiting and without setting
@@ -1006,7 +1040,27 @@ python3 tests/test_dashboard.py      # run dashboard auth tests alone
 * **Dashboard won't open** — it binds to `127.0.0.1:8765` by default, so open
   it on the bot host or use the documented SSH tunnel. Check `data/bot.log`
   for a port or config error; remote reverse-proxy hosts must be in
-  `dashboard_allowed_hosts`.
+  `dashboard_allowed_hosts`. `sentinel --dashboard` prints the effective
+  settings and what to change for remote access.
+* **Dashboard answers `400 Unrecognized Host header`** — the name you used is
+  not in `dashboard_allowed_hosts`. That check is the DNS-rebinding defence,
+  not a network failure: add the public name (or set `dashboard_public_url` to
+  that URL, whose host is allowed implicitly). See
+  [docs/REMOTE_ACCESS.md](docs/REMOTE_ACCESS.md).
+* **Login succeeds but bounces back to the login screen** — the browser
+  refused to store the session cookie. `dashboard_secure_cookie` is `true` but
+  the page is being served over plain HTTP. Terminate HTTPS in front of it (or
+  serve TLS with `dashboard_tls_cert`/`dashboard_tls_key`), or set
+  `dashboard_secure_cookie` to `false`.
+* **DuckDNS name resolves but the dashboard is unreachable** — the record is
+  current, but the dashboard is loopback-only: run a reverse proxy on the same
+  machine and point it at `127.0.0.1:8765`, or set `dashboard_host` to
+  `0.0.0.0` and forward the port. `sentinel --duckdns` reports the update
+  result; `sentinel --dashboard` reports the rest.
+* **Everyone gets `429 Too many attempts` on the login screen** — the
+  dashboard sees one client (the proxy). Add the proxy's address or CIDR to
+  `dashboard_trusted_proxies` so it may report visitors via
+  `X-Forwarded-For`.
 * **Dashboard login says "Invalid dashboard key"** — you are entering the
   wrong credential. The login key is printed by
   `sentinel --dashboard-token` (packaged build) or
