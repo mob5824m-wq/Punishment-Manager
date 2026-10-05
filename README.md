@@ -2,13 +2,15 @@
 
 A cross-platform [discord.py](https://discordpy.readthedocs.io/) bot that
 temporarily swaps a user's role and posts Discord embeds to staff and the
-punished user. It also includes an authenticated server-side web dashboard for
-managing connected servers, punishments, rules, configuration, and history.
+punished user. It also includes warnings for quick, role-free moderation and
+an authenticated server-side web dashboard for managing connected servers,
+punishments, warnings, rules, configuration, and history.
 
 **Role flow**
 
 ```
 (any roles) ──/punish apply──▶  Punish role  ──timer──▶  Post-punish role
+(any roles) ──/punish warn───▶  unchanged roles + a recorded warning
 ```
 
 * When a moderator runs `/punish apply`, the bot **adds the punish
@@ -37,7 +39,9 @@ These checks run in `/punish apply` before any role change is made, so
 even if a mod mis-clicks, nothing happens.
 
 All active punishments are stored in a local SQLite database, so timers
-survive a bot restart.
+survive a bot restart. Warnings and completed punishments live in the same
+database, which is what `/punish status`, `/punish warnings`, and the
+dashboard's history read from.
 
 ---
 
@@ -241,9 +245,9 @@ You should see:
 ### Server-side web dashboard
 
 When the bot is running, open **<http://127.0.0.1:8765>** on the bot host.
-The dashboard covers connected servers, active punishments, pardon/apply
-actions, rules and reaction roles, server role/channel settings, slash-command
-sync, and punishment history.
+The dashboard covers connected servers, active punishments, warnings,
+pardon/apply actions, rules and reaction roles, server role/channel settings,
+slash-command sync, and punishment history.
 
 **Finding the dashboard key.** The first startup generates a private
 dashboard key and saves it as `dashboard_token` in the bot's `config.json`.
@@ -301,8 +305,10 @@ admin setup utilities.
 | Command              | Who can use it                  | What it does |
 |----------------------|---------------------------------|--------------|
 | `/punish apply`      | Members with *Moderate Members* | Adds the punish role for the configured duration. Posts a staff embed and DMs the user. |
+| `/punish warn`       | Members with *Moderate Members* | Records a warning (reason + moderator + time). No role is changed. Posts a staff embed and DMs the user. |
+| `/punish warnings`   | Members with *Moderate Members* | Lists a user's recorded warnings. Pass `clear:true` to delete them all (this is logged to the staff channel). |
 | `/punish pardon`     | Members with *Moderate Members* | Ends the punishment early and removes the punish / post-punish role. Posts a staff embed and DMs the user. |
-| `/punish status`     | Anyone                          | Shows the server configuration and a list of active punishments. Pass a `user` to see that user's active status + history. |
+| `/punish status`     | Anyone                          | Shows the server configuration and a list of active punishments. Pass a `user` to see that user's active status, history, and warnings. |
 | `/rules publish`     | Server administrators           | Posts the rules and sets the active ✅ acceptance reaction role. |
 | `/rules disable`     | Server administrators           | Stops handling reactions on the active rules post. Existing roles are unchanged. |
 | `/setup`             | Server administrators           | Configures the punishment roles, staff channel, and DM behavior. |
@@ -316,6 +322,29 @@ admin setup utilities.
 * `reason` — optional, shown in the staff embed, the DM embed, and the DB.
 
 The maximum duration is 30 days. The minimum is 5 seconds.
+
+### Warnings
+
+`/punish warn <user> <reason>` is the light-weight option: unlike
+`/punish apply` it changes **no roles** and has no timer. Each warning is
+stored permanently in the bot's database with its reason, moderator, and
+timestamp, so a member's record survives restarts and pardons.
+
+* `/punish warnings <user>` lists a user's warnings (newest first) with the
+  running total. Moderators can send the same command with `clear:true` to
+  delete every warning for that member; the clear is announced in the staff
+  channel so it is never silent.
+* `/punish status <user>` includes the warning total and the three most recent
+  warnings next to the punishment history.
+* The dashboard's **Punishments** page has the same two actions:
+  a *Warn a member* form and a *Recent warnings* table with a **Clear**
+  button per member. Dashboard warnings are tagged `[Dashboard]` and are
+  attributed to the server owner, exactly like dashboard punishments.
+
+Protected members (admins, moderators, staff role holders, bots, and anyone
+above the bot's role) cannot be warned, and nobody can warn themselves.
+Warnings are DMed to the member and posted to the staff channel using the same
+`dm_user` / `staff_channel_id` settings as punishments.
 
 ---
 
@@ -357,6 +386,28 @@ The maximum duration is 30 days. The minimum is 5 seconds.
 * Color: green
 * Description confirming roles are restored
 * "Issued by" field
+
+**Staff channel embed** (on `/punish warn`):
+
+* Title: "Member warned"
+* Color: gold
+* Fields: User (mention + id), Moderator, Total warnings, Reason, Time
+* Thumbnail: the warned user's avatar
+* Footer: "User ID: ..."
+
+**Warned-user DM embed** (on `/punish warn`):
+
+* Title: "You've been warned in `<server name>`"
+* Color: gold
+* Fields: Reason, Total warnings, Time, Issued by
+* Friendly message about repeated warnings and talking to a moderator
+
+**Staff channel embed** (on `/punish warnings clear:true` and the dashboard's
+**Clear** button):
+
+* Title: "Warnings cleared"
+* Color: grey
+* Fields: User, Moderator, Warnings removed
 
 ---
 

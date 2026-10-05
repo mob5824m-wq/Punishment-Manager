@@ -11,6 +11,7 @@ import hmac
 import logging
 import os
 import secrets
+import sqlite3
 import time
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
@@ -250,6 +251,12 @@ class DashboardServer:
                     "/api/guilds/{guild_id}/punishments/{user_id}/pardon",
                     self.pardon_member,
                 ),
+                web.get("/api/guilds/{guild_id}/warnings", self.list_warnings),
+                web.post("/api/guilds/{guild_id}/warnings", self.warn_member),
+                web.delete(
+                    "/api/guilds/{guild_id}/warnings/{user_id}",
+                    self.clear_warnings,
+                ),
                 web.get("/api/guilds/{guild_id}/history", self.history),
                 web.get("/api/guilds/{guild_id}/rules", self.rules_status),
                 web.put("/api/guilds/{guild_id}/rules", self.publish_rules),
@@ -439,6 +446,10 @@ class DashboardServer:
             "SELECT COUNT(*) AS count FROM punishments WHERE guild_id = ?",
             (guild.id,),
         )
+        warning_count = self._db_fetchone(
+            "SELECT COUNT(*) AS count FROM warnings WHERE guild_id = ?",
+            (guild.id,),
+        )
         return web.json_response(
             {
                 "guild": {
@@ -467,6 +478,7 @@ class DashboardServer:
                 "roles": roles,
                 "channels": channels,
                 "activePunishments": int(active_count["count"]) if active_count else 0,
+                "warningCount": int(warning_count["count"]) if warning_count else 0,
             }
         )
 
@@ -738,6 +750,151 @@ class DashboardServer:
             request.remote or "unknown",
         )
         return web.json_response({"pardoned": True, "userId": _snowflake(member.id)})
+
+    # ---- Warnings ------------------------------------------------------- #
+    # Warnings never change roles and never expire; these endpoints mirror
+    # /punish warn and /punish warnings so both surfaces share one record.
+    async def list_warnings(self, request: web.Request) -> web.Response:
+        guild = self._guild_from_request(request)
+        rows = self._db_fetchall(
+            "SELECT id, guild_id, user_id, moderator_id, reason, created_at "
+            "FROM warnings WHERE guild_id = ? "
+            "ORDER BY created_at DESC, id DESC LIMIT 100",
+            (guild.id,),
+        )
+        totals: dict[int, int] = {}
+        for row in self._db_fetchall(
+            "SELECT user_id, COUNT(*) AS count FROM warnings "
+            "WHERE guild_id = ? GROUP BY user_id",
+            (guild.id,),
+        ):
+            totals[int(row["user_id"])] = int(row["count"])
+
+        warnings = []
+        for row in rows:
+            item = dict(row)
+            member = guild.get_member(item["user_id"])
+            item["memberName"] = (
+                member.display_name if member else f"User {item['user_id']}"
+            )
+            item["memberAvatar"] = member.display_avatar.url if member else None
+            item["totalForMember"] = totals.get(int(item["user_id"]), 0)
+            warnings.append(_json_safe_ids(item))
+        return web.json_response(
+            {"warnings": warnings, "total": sum(totals.values())}
+        )
+
+    async def warn_member(self, request: web.Request) -> web.Response:
+        guild = self._guild_from_request(request)
+        data = await self._json_body(request)
+        user_id = self._required_int(data.get("userId"), "user ID")
+        member = await self._resolve_member(guild, user_id)
+        if member is None:
+            raise web.HTTPNotFound(text="That user is not in this server.")
+        reason = str(data.get("reason", "")).strip()
+        if not reason:
+            raise web.HTTPBadRequest(text="A reason is required for a warning.")
+        if len(reason) > MAX_REASON_LENGTH:
+            raise web.HTTPBadRequest(
+                text=f"Reason must be {MAX_REASON_LENGTH} characters or fewer."
+            )
+        protected = self._is_protected_member(member, self.bot.config, guild=guild)
+        if protected:
+            raise web.HTTPForbidden(text=protected)
+
+        # Same audit convention as the punishment endpoints: the dashboard has
+        # no Discord identity, so the action is attributed to the owner and
+        # marked as dashboard-originated in the stored reason.
+        actor = _DashboardActor(guild.owner_id)
+        created_at = datetime.now(timezone.utc)
+        full_reason = f"[Dashboard] {reason}"
+        try:
+            self._db_execute(
+                "INSERT INTO warnings "
+                "(guild_id, user_id, moderator_id, reason, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (guild.id, member.id, actor.id, full_reason, created_at.isoformat()),
+            )
+        except sqlite3.Error as exc:  # pragma: no cover - defensive
+            logger.exception("Dashboard could not record a warning: %s", exc)
+            raise web.HTTPInternalServerError(
+                text="The warning could not be saved."
+            ) from exc
+
+        row = self._db_fetchone(
+            "SELECT COUNT(*) AS count FROM warnings "
+            "WHERE guild_id = ? AND user_id = ?",
+            (guild.id, member.id),
+        )
+        total = int(row["count"]) if row is not None else 1
+
+        staff_embed = self.bot._build_warn_staff_embed(
+            member=member,
+            moderator=actor,
+            reason=full_reason,
+            created_at=created_at,
+            total=total,
+        )
+        await self.bot._send_staff_embed(guild, staff_embed)
+        if self._should_dm_user(self.bot.config, guild.id):
+            dm_embed = self.bot._build_warn_dm_embed(
+                guild_name=guild.name,
+                moderator_name="Punishment Manager dashboard",
+                reason=full_reason,
+                total=total,
+                created_at=created_at,
+            )
+            await self.bot._dm_embed(member, dm_embed)
+        logger.warning(
+            "Dashboard warned member guild=%s user=%s peer=%s",
+            guild.id,
+            member.id,
+            request.remote or "unknown",
+        )
+        return web.json_response(
+            {
+                "warned": True,
+                "userId": _snowflake(member.id),
+                "totalForMember": total,
+            },
+            status=201,
+        )
+
+    async def clear_warnings(self, request: web.Request) -> web.Response:
+        guild = self._guild_from_request(request)
+        user_id = self._required_int(request.match_info.get("user_id"), "user ID")
+        member = await self._resolve_member(guild, user_id)
+        if member is None:
+            raise web.HTTPNotFound(text="That user is no longer in this server.")
+        row = self._db_fetchone(
+            "SELECT COUNT(*) AS count FROM warnings "
+            "WHERE guild_id = ? AND user_id = ?",
+            (guild.id, member.id),
+        )
+        removed = int(row["count"]) if row is not None else 0
+        if removed == 0:
+            raise web.HTTPNotFound(text="That member has no warnings on record.")
+        self._db_execute(
+            "DELETE FROM warnings WHERE guild_id = ? AND user_id = ?",
+            (guild.id, member.id),
+        )
+        actor = _DashboardActor(guild.owner_id)
+        staff_embed = self.bot._build_warn_clear_staff_embed(
+            member=member,
+            moderator=actor,
+            removed=removed,
+        )
+        await self.bot._send_staff_embed(guild, staff_embed)
+        logger.warning(
+            "Dashboard cleared %s warning(s) guild=%s user=%s peer=%s",
+            removed,
+            guild.id,
+            member.id,
+            request.remote or "unknown",
+        )
+        return web.json_response(
+            {"cleared": removed, "userId": _snowflake(member.id)}
+        )
 
     async def rules_status(self, request: web.Request) -> web.Response:
         guild = self._guild_from_request(request)
