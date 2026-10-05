@@ -15,8 +15,8 @@ The bot logs that and keeps running (it has to: the scheduler that releases
 punished users lives in the same process), so it looked healthy while Discord
 never received the command list. discord.py does not length-check a description
 that is passed explicitly and nothing exercised the tree before a release, so
-the only way to find out was to deploy. These tests check the real command tree,
-offline, instead.
+the only way to find out was to deploy. These tests check the real command tree
+and the automatic per-guild sync path offline, instead.
 
 Run with either:
     python -m pytest tests/test_commands.py
@@ -74,27 +74,84 @@ async def main():
 asyncio.run(main())
 """
 
+# Exercise the real automatic guild-sync path with a fake command tree, so the
+# test verifies copy-before-sync and one-time syncing without contacting Discord.
+_DUMP_GUILD_SYNC_EVENTS = r"""
+import asyncio, json, sys
+
+sys.path.insert(0, sys.argv[2])
+import bot
+
+
+class FakeGuild:
+    def __init__(self, guild_id):
+        self.id = guild_id
+
+
+class FakeTree:
+    def __init__(self):
+        self.events = []
+
+    def copy_global_to(self, *, guild):
+        self.events.append(["copy", guild.id])
+
+    async def sync(self, *, guild=None):
+        assert guild is not None
+        self.events.append(["sync", guild.id])
+        return [object(), object(), object()]
+
+
+async def main():
+    client = bot.PunishmentBot({})
+    fake_tree = FakeTree()
+    # Patch the tree's sync endpoints so this test makes no Discord requests.
+    client.tree.copy_global_to = fake_tree.copy_global_to
+    client.tree.sync = fake_tree.sync
+    client._connection._guilds.update({
+        101: FakeGuild(101),
+        202: FakeGuild(202),
+    })
+
+    await client._sync_connected_guilds()
+    # A repeated READY event must not re-upload commands to the same guilds.
+    await client._sync_connected_guilds()
+    # Guilds joined after startup receive the same immediate sync.
+    await client.on_guild_join(FakeGuild(303))
+    await client.on_guild_available(FakeGuild(303))
+
+    with open(sys.argv[1], "w", encoding="utf-8") as fh:
+        json.dump(fake_tree.events, fh)
+
+
+asyncio.run(main())
+"""
+
+
+def _isolated_test_env(home: Path) -> dict[str, str]:
+    """Keep bot import side effects inside a temporary test home."""
+    return {
+        **os.environ,
+        "HOME": str(home),
+        "USERPROFILE": str(home),
+        "APPDATA": str(home / "AppData" / "Roaming"),
+        "LOCALAPPDATA": str(home / "AppData" / "Local"),
+        "XDG_STATE_HOME": str(home / ".local" / "state"),
+        "XDG_DATA_HOME": str(home / ".local" / "share"),
+        "XDG_CONFIG_HOME": str(home / ".config"),
+        "PUNISHMENT_MANAGER_HOME": "",
+        "PUNISHMENT_MANAGER_DATA": str(home / "data"),
+        "PUNISHMENT_MANAGER_CONFIG": str(home / "config.json"),
+        "PYTHONIOENCODING": "utf-8",
+    }
+
 
 def dump_command_payload() -> list[dict]:
     """The command list ``tree.sync()`` would upload to Discord (no network)."""
     with tempfile.TemporaryDirectory(prefix="pm-commands-test-") as tmp:
         home = Path(tmp).resolve()
         out = home / "payload.json"
-        env = {
-            **os.environ,
-            # Don't let the developer's real config/data in or out of the test.
-            "HOME": str(home),
-            "USERPROFILE": str(home),
-            "APPDATA": str(home / "AppData" / "Roaming"),
-            "LOCALAPPDATA": str(home / "AppData" / "Local"),
-            "XDG_STATE_HOME": str(home / ".local" / "state"),
-            "XDG_DATA_HOME": str(home / ".local" / "share"),
-            "XDG_CONFIG_HOME": str(home / ".config"),
-            "PUNISHMENT_MANAGER_HOME": "",
-            "PUNISHMENT_MANAGER_DATA": str(home / "data"),
-            "PUNISHMENT_MANAGER_CONFIG": str(home / "config.json"),
-            "PYTHONIOENCODING": "utf-8",
-        }
+        # Don't let the developer's real config/data in or out of the test.
+        env = _isolated_test_env(home)
         res = subprocess.run(
             [sys.executable, "-c", _DUMP_PAYLOAD, str(out), str(REPO_ROOT)],
             capture_output=True, encoding="utf-8", errors="replace",
@@ -103,6 +160,24 @@ def dump_command_payload() -> list[dict]:
         if res.returncode != 0 or not out.is_file():
             raise AssertionError(
                 f"could not build the command tree from bot.py (exit {res.returncode}):\n"
+                f"{res.stdout}{res.stderr}"
+            )
+        return json.loads(out.read_text(encoding="utf-8"))
+
+
+def dump_guild_sync_events() -> list[list[object]]:
+    """Run the automatic guild-sync path with two fake connected guilds."""
+    with tempfile.TemporaryDirectory(prefix="pm-guild-sync-test-") as tmp:
+        home = Path(tmp).resolve()
+        out = home / "events.json"
+        res = subprocess.run(
+            [sys.executable, "-c", _DUMP_GUILD_SYNC_EVENTS, str(out), str(REPO_ROOT)],
+            capture_output=True, encoding="utf-8", errors="replace",
+            env=_isolated_test_env(home), cwd=str(home),
+        )
+        if res.returncode != 0 or not out.is_file():
+            raise AssertionError(
+                f"could not exercise automatic guild sync (exit {res.returncode}):\n"
                 f"{res.stdout}{res.stderr}"
             )
         return json.loads(out.read_text(encoding="utf-8"))
@@ -219,6 +294,17 @@ class CommandTreeTests(unittest.TestCase):
             problems, [],
             "Discord would reject tree.sync() with HTTP 400 (error 50035) "
             "and register none of the commands:\n  " + "\n  ".join(problems),
+        )
+
+    def test_commands_are_copied_and_synced_to_every_connected_guild(self) -> None:
+        events = dump_guild_sync_events()
+        self.assertEqual(
+            events,
+            [
+                ["copy", 101], ["sync", 101],
+                ["copy", 202], ["sync", 202],
+                ["copy", 303], ["sync", 303],
+            ],
         )
 
 
