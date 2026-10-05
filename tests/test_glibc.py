@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import shutil
 import struct
 import subprocess
 import sys
@@ -173,7 +174,7 @@ class VerneedReadingTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="sentinel-glibc-"))
-        self.addCleanup(lambda: __import__("shutil").rmtree(self.tmp, ignore_errors=True))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
 
     def write(self, name: str, data: bytes) -> Path:
         path = self.tmp / name
@@ -239,7 +240,7 @@ class CommandLineTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="sentinel-glibc-cli-"))
-        self.addCleanup(lambda: __import__("shutil").rmtree(self.tmp, ignore_errors=True))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
 
     def run_cli(self, *args: str) -> subprocess.CompletedProcess:
         return subprocess.run(
@@ -303,6 +304,9 @@ class CommandLineTests(unittest.TestCase):
         self.assertEqual(self.run_cli("dir", str(empty), "--max", "2.36").returncode, 2)
 
 
+WORKFLOW = REPO_ROOT / ".github" / "workflows" / "build-installers.yml"
+
+
 class HelperWiringTests(unittest.TestCase):
     def test_the_helper_is_executable(self) -> None:
         self.assertTrue(os.access(CHECK_GLIBC, os.X_OK), "scripts/check_glibc.py is not executable")
@@ -311,6 +315,21 @@ class HelperWiringTests(unittest.TestCase):
         text = CHECK_GLIBC.read_text(encoding="utf-8")
         self.assertIn("2.36", text)
         self.assertIn("Raspberry Pi OS", text)
+
+    def test_ci_enforces_the_cap_on_the_linux_artifacts(self) -> None:
+        text = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("check_glibc.py dir dist/sentinel --max", text)
+        self.assertIn("glibc_max: '2.36'", text)
+
+    def test_the_linux_artifacts_are_built_on_the_pi_compatible_baseline(self) -> None:
+        # Ubuntu 24.04's glibc (2.39) exceeds the cap enforced above, so the
+        # Linux legs have to stay on jammy (2.35). If someone bumps the runner
+        # without lowering the floor another way, this fails with the reason
+        # instead of shipping a .deb that dies on Raspberry Pi OS.
+        text = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("runner: ubuntu-22.04", text)
+        self.assertIn("runner: ubuntu-22.04-arm", text)
+        self.assertNotIn("runner: ubuntu-24.04", text)
 
 
 def main() -> int:
