@@ -79,11 +79,15 @@ Releases are produced automatically by GitHub Actions whenever a
 `v*` tag is pushed. See `.github/workflows/release.yml` for the
 build pipeline, and the `VERSION` file for where the number comes from.
 
-> **Use v2.1.0 or newer.** The v1.0.0 and v2.0.0 installers crash on first
-> launch on a packaged install (`PermissionError: [Errno 13] Permission
-> denied: '/opt/sentinel/_internal/data'`), because they tried to
-> create their database and log inside the read-only install directory. v2.1.0
-> stores that state in a writable per-platform location instead.
+> **Current release: v3.0.0** — the Sentinel rename. Read
+> [Upgrading from Punishment Manager (v2)](#upgrading-from-punishment-manager-v2)
+> before you update an install that already holds a config or database.
+>
+> Older note: the v1.0.0 and v2.0.0 installers crash on first launch on a
+> packaged install (`PermissionError: [Errno 13] Permission denied:
+> '/opt/sentinel/_internal/data'`), because they tried to create their
+> database and log inside the read-only install directory. v2.1.0 stores that
+> state in a writable per-platform location instead.
 
 ### Upgrading from Punishment Manager (v2)
 
@@ -631,27 +635,27 @@ with the release they belong to.
 Bump it, then push a semver tag from the `main` branch:
 
 ```bash
-echo 2.1.1 > VERSION
-git commit -am "chore: bump version to 2.1.1"
+echo 3.0.0 > VERSION
+git commit -am "chore: bump version to 3.0.0"
 git push origin main
 
-./scripts/make_release.sh 2.1.1     # or: ./scripts/make_release.sh 2.2.0-rc1
+./scripts/make_release.sh 3.0.0     # or: ./scripts/make_release.sh 3.1.0-rc1
 ```
 
 The script checks that the tag matches `VERSION`, validates the working
-tree, creates an annotated `v2.1.1` tag, and pushes it. Pushing the tag triggers `.github/workflows/release.yml`,
+tree, creates an annotated `v3.0.0` tag, and pushes it. Pushing the tag triggers `.github/workflows/release.yml`,
 which builds all three platforms in parallel and attaches the artifacts
 to a new GitHub Release.
 
 You can also just run the same commands by hand:
 
 ```bash
-git tag -a v2.1.1 -m "Release 2.1.1"
-git push origin v2.1.1
+git tag -a v3.0.0 -m "Release 3.0.0"
+git push origin v3.0.0
 ```
 
 Either way, the release page appears at
-`https://github.com/mob5824m-wq/Punishment-Manager/releases/tag/v2.1.1`
+`https://github.com/mob5824m-wq/Punishment-Manager/releases/tag/v3.0.0`
 a few minutes later with the `.dmg`, `.deb`, and `.exe` ready to
 download.
 
