@@ -496,15 +496,45 @@ ELF64, big-endian and version-less fixtures), the CLI exit codes and the
 workflow wiring - including that the Linux legs stay off `ubuntu-24.04` and
 that the `.deb` derives its `Depends` from the measured floor.
 
+### 19. A red test leg with no visible reason
+
+Both Windows legs failed at "Run the test suite" while every other leg was
+green, and the failure text lives in a run log served from an authenticated
+blob store - which is not always reachable (a restricted network, a sandbox
+without egress, `gh` in CI tooling), leaving a red leg with nothing to act on.
+`gh run view --log-failed` and the job-logs API both failed with a connection
+error instead of a verdict.
+
+- Each test step now writes `--junitxml=test-results.xml`, and a following
+  `if: failure()` step turns the report into `::error file=…,line=…` check-run
+  annotations with `.github/scripts/annotate-test-failures.py`. Annotations are
+  plain REST data (`/check-runs/<id>/annotations`), so the diagnosis is one API
+  call away, and the same numbers appear on the PR's Checks tab.
+- The annotator caps itself at GitHub's per-step annotation limit and lists the
+  overflow in a warning; it only reports, so it can never turn a red suite
+  green. A missing report (a failure before pytest ran) is not an error.
+- What the annotations showed: two DuckDNS updater tests that slept for a fixed
+  0.3 s and then asserted a 50 ms timer had fired twice and been recorded. On a
+  loaded two-core Windows runner that is not guaranteed, and a request still in
+  flight when `stop()` cancels the task is counted by the server but produces
+  no result - the "5 != 6" in the report. They now poll for the condition with a
+  deadline (15 s) and check that `stop()` prevents *new* updates instead of
+  requiring none to have been in flight.
+- Not a code fault, but worth knowing when reading a red run: `The job was not
+  acquired by Runner of type hosted even after multiple attempts` means GitHub
+  had no free hosted runner for that leg. The job shows up as *cancelled* with
+  no steps and no failing test; re-running the workflow (a fresh push, or
+  **Re-run failed jobs** from the UI) is the fix.
+
 ## Test gate in CI
 
 Every leg of `build.yml` and of the reusable `build-installers.yml` runs
 `python -m pytest tests`, which covers runtime path resolution (fixes 12 and
 14), the version plumbing (fix 13), the slash-command definitions (fix 15),
 the reaction-role menus and the merge/tag release automation (fix 16), the
-per-architecture build plumbing (fix 17) and the glibc floor (fix 18). The
-suites are plain `unittest`, so they also run standalone:
-`python tests/test_paths.py`.
+per-architecture build plumbing (fix 17), the glibc floor (fix 18) and the
+test-failure annotations (fix 19). The suites are plain `unittest`, so they
+also run standalone: `python tests/test_paths.py`.
 
 ## Other notes
 
