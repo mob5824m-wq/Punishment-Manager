@@ -4,13 +4,13 @@
 
 | Job | Status | Output |
 |-----|--------|--------|
-| macOS `.dmg` | passing | `dist/Sentinel-X.Y.Z.dmg` |
-| Linux `.deb` | passing | `dist/sentinel_X.Y.Z_amd64.deb` |
-| Windows `.exe` | passing | `dist/Sentinel-Setup-X.Y.Z.exe` |
-| All artifacts | produced | Workflow artifacts on PRs (3-day retention); published as releases on merges to `main` (see fix 16) |
+| macOS `.dmg` | passing | `dist/Sentinel-X.Y.Z-arm64.dmg`, `dist/Sentinel-X.Y.Z-x86_64.dmg` |
+| Linux `.deb` | passing | `dist/sentinel_X.Y.Z_amd64.deb`, `dist/sentinel_X.Y.Z_arm64.deb` |
+| Windows `.exe` | passing | `dist/Sentinel-Setup-X.Y.Z.exe`, `dist/Sentinel-Setup-X.Y.Z-arm64.exe` |
+| All artifacts | produced | Six installers (three platforms × two architectures) as workflow artifacts on PRs (3-day retention); published as releases on merges to `main` (see fix 16) |
 
-The `build.yml` CI build is fully working on all three platforms, and so is
-`release.yml`: the matrix bug described under ~~"The open bug"~~ below was
+The `build.yml` CI build is fully working on all three platforms and both
+architectures (see fix 17), and so is `release.yml`: the matrix bug described under ~~"The open bug"~~ below was
 applied to `main` (three explicit per-platform jobs), so pushing a `v*` tag
 builds the installers and attaches them to the release by itself - as it did
 for v2.0.0, and again for **v2.1.0** (the crash fix below).
@@ -50,9 +50,9 @@ gh release create v1.0.0 \
 # 3. Drag-and-drop the build artifacts onto the release page
 #    in the web UI. The artifacts are on the Actions tab of
 #    the matching commit, named:
-#      sentinel-linux   (the .deb)
-#      sentinel-macos   (the .dmg)
-#      sentinel-windows (the .exe)
+#      sentinel-linux-amd64 / -arm64   (the .deb)
+#      sentinel-macos-arm64 / -x86_64  (the .dmg)
+#      sentinel-windows-x64 / -arm64   (the .exe)
 #    The web-UI upload goes through github.com (reachable from
 #    anywhere), so this works in environments where
 #    uploads.github.com is firewalled.
@@ -402,14 +402,58 @@ binaries, asserting the rolling tag move, the per-merge tag name
 sweep, the tag-push fallback and the failures for missing installers or a
 missing tag.
 
+### 17. The installers were x86_64-only (v3.0.1+)
+
+**Problem:** every installer was built on the x64 (or, for macOS, the *only*
+available) runner, so
+`sentinel_X.Y.Z_amd64.deb` and `Sentinel-Setup-X.Y.Z.exe` could not run on an
+arm64 Linux box, and on Windows on ARM only under emulation. macOS was the
+mirror image: `macos-latest` is Apple Silicon, so the `.dmg` was arm64-only
+and Intel Macs had nothing. The build scripts also hard-coded the
+architecture (`ARCH="amd64"` in `build_linux.sh`), so no amount of runner
+juggling could have produced a second architecture.
+
+**Fix:** build each platform for both architectures, natively:
+
+- `build-installers.yml` keeps one job per platform and runs each as a
+  two-entry matrix, so the platform steps still exist in exactly one place:
+  `ubuntu-24.04` + `ubuntu-24.04-arm`, `macos-latest` + `macos-15-intel`,
+  `windows-latest` + `windows-11-arm`. (GitHub's arm64 runners are free for
+  public repositories; `macos-15-intel` is the free Intel image.) Each leg
+  sets `SENTINEL_TARGET_ARCH` and `fail-fast: false`, so one architecture's
+  failure does not hide the other's.
+- `scripts/arch.sh` resolves the architecture (host `uname -m`, or
+  `SENTINEL_TARGET_ARCH`) and normalizes `amd64|x86_64|x64` and
+  `arm64|aarch64|armv8*`; `scripts/check_arch.py` reads a binary's ELF /
+  Mach-O / PE header.
+- Artifact and release filenames now carry the architecture:
+  `sentinel_<VERSION>_amd64.deb` / `_arm64.deb`,
+  `Sentinel-<VERSION>-arm64.dmg` / `-x86_64.dmg`,
+  `Sentinel-Setup-<VERSION>.exe` / `-arm64.exe`.
+- The Windows ARM64 leg asks `actions/setup-python` for the arm64
+  interpreter and, if the tool cache has none, installs the native ARM64
+  Python from python.org (`install-windows-deps.ps1`, now architecture-aware).
+  NSIS itself runs under emulation; only the payload has to be native.
+
+**Regression gate (the subtle part):** an x64 Python on Windows on ARM (or an
+Intel Python in an arm64 CI job) builds "successfully" - and produces a binary
+for the *wrong* CPU under an arm64 name, which then crashes on the user's
+machine. So every build now verifies its own output instead of trusting the
+label: the spec refuses a target that is not the host (PyInstaller cannot
+cross-compile), each script checks the ELF/Mach-O/PE header of the binary it
+built, `build_linux.sh` re-reads the `.deb`'s `Architecture` field, CI checks
+the interpreter's architecture before building, and the Windows batch script
+re-runs the Python installer when the interpreter on PATH is the emulated one.
+`tests/test_arch.py` covers the resolver, the header reader and that wiring.
+
 ## Test gate in CI
 
-`build.yml` (all three platforms) and the Linux job of the reusable
-`build-installers.yml` run `python -m pytest tests`, which covers runtime path
-resolution (fixes 12 and 14), the version plumbing (fix 13), the slash-command
-definitions (fix 15), the reaction-role menus and the merge/tag release
-automation (fix 16). The suites are plain `unittest`, so they also run
-standalone: `python tests/test_paths.py`.
+Every leg of `build.yml` and of the reusable `build-installers.yml` runs
+`python -m pytest tests`, which covers runtime path resolution (fixes 12 and
+14), the version plumbing (fix 13), the slash-command definitions (fix 15),
+the reaction-role menus and the merge/tag release automation (fix 16), and the
+per-architecture build plumbing (fix 17). The suites are plain `unittest`, so
+they also run standalone: `python tests/test_paths.py`.
 
 ## Other notes
 

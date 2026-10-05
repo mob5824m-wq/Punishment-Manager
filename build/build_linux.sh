@@ -1,12 +1,20 @@
 #!/usr/bin/env bash
 # Build a Linux .deb package for the Sentinel.
 #
-# Requirements (run on a Debian/Ubuntu host):
+# Requirements (run on a Debian/Ubuntu host of the architecture you are
+# building for):
 #   - Python 3.9+ on PATH
 #   - pip install pyinstaller
 #   - dpkg, fakeroot
 #
-# Output: dist/sentinel_<VERSION>_amd64.deb
+# Output: dist/sentinel_<VERSION>_<ARCH>.deb   (ARCH: amd64 or arm64)
+#
+# The architecture defaults to the host's (`uname -m`), so the same script
+# builds the amd64 package on an amd64 machine and the arm64 package on an
+# arm64 machine - which is the only way, since PyInstaller cannot
+# cross-compile. SENTINEL_TARGET_ARCH overrides it (CI sets it explicitly, so
+# a runner whose Python is the wrong architecture fails instead of quietly
+# producing the wrong .deb).
 #
 # The version comes from the VERSION file at the project root, so a release
 # tag and the file it produces can't disagree (see scripts/version.sh).
@@ -18,11 +26,19 @@ cd "$PROJECT_ROOT"
 
 # shellcheck disable=SC1091
 . "$PROJECT_ROOT/scripts/version.sh"
+# shellcheck disable=SC1091
+. "$PROJECT_ROOT/scripts/arch.sh"
 VERSION="$(app_version "$PROJECT_ROOT")"
-ARCH="amd64"
+ARCH="$(resolve_arch)"
+# The Debian package architecture is spelled the same way as our canonical
+# name (amd64 / arm64), so no extra mapping is needed.
+DEB_ARCH="$ARCH"
+# Keep the whole build - PyInstaller and the arch check in the spec - on the
+# architecture this script resolved.
+export SENTINEL_TARGET_ARCH="$ARCH"
 PKG_NAME="sentinel"
-DEB_FILE="${PKG_NAME}_${VERSION}_${ARCH}.deb"
-echo "==> Building ${PKG_NAME} ${VERSION}"
+DEB_FILE="${PKG_NAME}_${VERSION}_${DEB_ARCH}.deb"
+echo "==> Building ${PKG_NAME} ${VERSION} for ${DEB_ARCH}"
 
 echo "==> Cleaning previous PyInstaller output (keeps build/ source dir)"
 rm -rf dist
@@ -34,6 +50,9 @@ if [ ! -x "dist/sentinel/sentinel" ]; then
     echo "ERROR: PyInstaller did not produce the expected binary" >&2
     exit 1
 fi
+
+echo "==> Verifying the binary is ${DEB_ARCH}"
+verify_binary_arch dist/sentinel/sentinel "$ARCH"
 
 echo "==> Staging .deb structure"
 STAGE="dist/deb-staging"
@@ -115,6 +134,15 @@ fi
 
 echo "==> Building .deb"
 fakeroot dpkg-deb --build --root-owner-group "$STAGE" "dist/${DEB_FILE}"
+
+# The control file is what apt uses to decide whether this package fits the
+# machine, so check the field we just wrote matches the binary inside it.
+BUILT_DEB_ARCH="$(dpkg-deb -f "dist/${DEB_FILE}" Architecture)"
+if [ "$BUILT_DEB_ARCH" != "$DEB_ARCH" ]; then
+    echo "ERROR: ${DEB_FILE} declares Architecture: ${BUILT_DEB_ARCH}, expected ${DEB_ARCH}." >&2
+    exit 1
+fi
+echo "    control Architecture: ${BUILT_DEB_ARCH}"
 
 echo
 echo "Built: dist/${DEB_FILE}"

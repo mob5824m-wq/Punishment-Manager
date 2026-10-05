@@ -7,7 +7,7 @@ name: build
 # Pushes to main are deliberately not listed here: a merge to main is built
 # once, by merge-release.yml, which calls the same reusable workflow
 # (build-installers.yml) and publishes the result as a release. Listing main
-# here too would build all three platforms twice for every merge.
+# here too would build all six installers twice for every merge.
 
 on:
   push:

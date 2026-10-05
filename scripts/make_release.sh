@@ -7,7 +7,7 @@
 #   ./scripts/make_release.sh 1.1.0-rc1   # prerelease
 #
 # The version must match the VERSION file at the project root, which every
-# build script reads - that is what keeps sentinel_<VERSION>_amd64.deb
+# build script reads - that is what keeps sentinel_<VERSION>_<arch>.deb
 # and the release tag agreeing.
 #
 # Requires: git, gh (authenticated).

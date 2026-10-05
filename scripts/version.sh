@@ -6,7 +6,7 @@
 #
 # The VERSION file is the single source of truth: build_linux.sh,
 # build_macos.sh, build_windows.bat and build/pyinstaller.spec all read it, so
-# a release can't produce sentinel_1.0.0_amd64.deb under a v1.0.1 tag.
+# a release can't produce sentinel_1.0.0_arm64.deb under a v1.0.1 tag.
 #
 # Usage: . scripts/version.sh && VERSION="$(app_version)"
 app_version() {

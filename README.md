@@ -68,12 +68,20 @@ Pre-built native installers are attached to every GitHub release:
 
 [**Latest release →**](https://github.com/mob5824m-wq/Sentinel/releases/latest)
 
-| Platform | File | Notes |
-|----------|------|-------|
-| **macOS**   | `Sentinel-X.Y.Z.dmg`             | Open the `.dmg`, drag the `.app` into `/Applications` |
-| **Linux**   | `sentinel_X.Y.Z_amd64.deb`      | `sudo dpkg -i ...` and you're done |
-| **Windows** | `Sentinel-Setup-X.Y.Z.exe`       | Run the installer; it adds the bot to your Start Menu |
-| **Source**  | `Source code (zip)` / `Source code (tar.gz)` | For everyone who'd rather run from source |
+| Platform | Architecture | File | Notes |
+|----------|--------------|------|-------|
+| **macOS**   | Apple Silicon (`arm64`) | `Sentinel-X.Y.Z-arm64.dmg`      | Open the `.dmg`, drag the `.app` into `/Applications` |
+| **macOS**   | Intel (`x86_64`)        | `Sentinel-X.Y.Z-x86_64.dmg`     | Same, on an Intel Mac |
+| **Linux**   | x86-64 (`amd64`)        | `sentinel_X.Y.Z_amd64.deb`      | `sudo dpkg -i ...` and you're done |
+| **Linux**   | ARM64 (`arm64`)         | `sentinel_X.Y.Z_arm64.deb`      | Raspberry Pi 4/5, Graviton, Ampere, … |
+| **Windows** | x64 (`amd64`)           | `Sentinel-Setup-X.Y.Z.exe`       | Run the installer; it adds the bot to your Start Menu |
+| **Windows** | ARM64 (`arm64`)         | `Sentinel-Setup-X.Y.Z-arm64.exe` | Windows on ARM (Snapdragon X, Surface Pro X, …) |
+| **Source**  | —                       | `Source code (zip)` / `Source code (tar.gz)` | For everyone who'd rather run from source |
+
+Each installer is built natively on a runner of its own architecture — an arm64
+installer cannot be produced by an amd64 machine, because PyInstaller does not
+cross-compile — so an arm64 machine downloads the file matching its CPU rather
+than an emulated build. Filenames always say which is which.
 
 Releases are produced automatically by GitHub Actions whenever a
 `v*` tag is pushed. See `.github/workflows/release.yml` for the
@@ -83,7 +91,7 @@ Every merge to `main` is published too, without waiting for a version bump:
 
 | Release | What it is |
 |---------|------------|
-| [`latest-build`](https://github.com/mob5824m-wq/Sentinel/releases/tag/latest-build) | Rolling prerelease whose three installers are replaced on every merge — one URL always has the newest build from `main` |
+| [`latest-build`](https://github.com/mob5824m-wq/Sentinel/releases/tag/latest-build) | Rolling prerelease whose six installers (three platforms × two architectures) are replaced on every merge — one URL always has the newest build from `main` |
 | `v<VERSION>-build.<run>` | One prerelease per merge (e.g. `v3.0.0-build.42`), so a specific build stays downloadable afterwards |
 
 Both are marked *prerelease*, so
@@ -649,18 +657,43 @@ Warnings are DMed to the member and posted to the staff channel using the same
 ## 7. Building native installers
 
 The bot can be packaged as a `.dmg` (macOS), `.exe` installer (Windows),
-or `.deb` (Linux). Each platform must be built on its own host — there
-is no cross-compile.
+or `.deb` (Linux), for both **amd64/x86_64** and **arm64** machines. Each
+platform *and* architecture must be built on its own host — PyInstaller does
+not cross-compile — so every build script resolves the architecture from the
+machine it runs on (`uname -m`; `PROCESSOR_ARCHITECTURE` in the Windows batch
+file) and names its output after it:
 
-| Platform | Build script                | Output                                  |
-|----------|------------------------------|------------------------------------------|
-| macOS    | `build/build_macos.sh`       | `dist/Sentinel-1.0.0.dmg`       |
-| Linux    | `build/build_linux.sh`       | `dist/sentinel_1.0.0_amd64.deb`|
-| Windows  | `build\build_windows.bat`    | `dist\Sentinel-Setup-1.0.0.exe` |
+| Platform | Built on | Output |
+|----------|----------|--------|
+| macOS    | Apple Silicon | `dist/Sentinel-1.0.0-arm64.dmg` |
+| macOS    | Intel         | `dist/Sentinel-1.0.0-x86_64.dmg` |
+| Linux    | x86-64        | `dist/sentinel_1.0.0_amd64.deb` |
+| Linux    | ARM64         | `dist/sentinel_1.0.0_arm64.deb` |
+| Windows  | x64           | `dist\Sentinel-Setup-1.0.0.exe` |
+| Windows  | Windows on ARM | `dist\Sentinel-Setup-1.0.0-arm64.exe` |
 
-All three flow through `build/pyinstaller.spec`, which bundles `bot.py` and
-its imported modules, plus `installer.py` and `dashboard.html`, into a
-self-contained build before wrapping it in the OS-native installer format.
+Setting `SENTINEL_TARGET_ARCH=amd64` or `SENTINEL_TARGET_ARCH=arm64` overrides
+the detected architecture — that is what CI does on each runner. The value
+must match the machine: the spec refuses to build a target it cannot produce
+instead of emitting a mislabelled bundle. Every script then checks its own
+output too, by reading the ELF / Mach-O / PE header of the binary it just built
+(`scripts/check_arch.py`, plus the `.deb`'s `Architecture` field and the NSIS
+`/DARCH` metadata) and aborting if it is not the architecture that was asked
+for. A build that silently produced the wrong CPU is not a theoretical worry —
+an x64 Python on Windows on ARM, or an Intel Python in an arm64 CI job, both
+happily "succeed" until someone on an arm64 machine runs the installer.
+
+All three build scripts flow through `build/pyinstaller.spec`, which bundles
+`bot.py` and its imported modules, plus `installer.py` and `dashboard.html`,
+into a self-contained build before wrapping it in the OS-native installer
+format.
+
+CI builds all six combinations in parallel
+(`.github/workflows/build-installers.yml`, one matrix per platform): amd64 and
+arm64 Linux runners, an Apple Silicon and an Intel macOS runner, and x64 and
+ARM64 Windows runners. GitHub's arm64 runners are free for public repositories;
+`macos-15-intel` is the free Intel image and is scheduled to be retired in
+August 2027.
 
 ### Cutting a release
 
@@ -683,8 +716,8 @@ git push origin main
 
 The script checks that the tag matches `VERSION`, validates the working
 tree, creates an annotated `v3.0.0` tag, and pushes it. Pushing the tag triggers `.github/workflows/release.yml`,
-which builds all three platforms in parallel and attaches the artifacts
-to a new GitHub Release.
+which builds all three platforms - both architectures each - in parallel and
+attaches the six installers to a new GitHub Release.
 
 Main doesn't have to wait for that, though: every merge to `main` builds the
 same installers through `merge-release.yml` and publishes them as the rolling
@@ -712,11 +745,14 @@ download.
 
 Requirements: Python 3.9+, `pyinstaller`, optionally `create-dmg`
 (`brew install create-dmg`) for a styled `.dmg` window. Otherwise
-`hdiutil` is used as a fallback.
+`hdiutil` is used as a fallback. Build on the architecture you are shipping to:
+an Apple Silicon Mac produces the `arm64` `.dmg`, an Intel Mac the `x86_64`
+one.
 
 ```bash
-build/build_macos.sh
-open dist/Sentinel-1.0.0.dmg
+build/build_macos.sh                            # this Mac's architecture
+SENTINEL_TARGET_ARCH=arm64 build/build_macos.sh # only on an Apple Silicon Mac
+open dist/Sentinel-1.0.0-arm64.dmg
 ```
 
 The result is a real `.app` bundle (`Sentinel.app`) inside a
@@ -730,11 +766,14 @@ set `CODESIGN_IDENTITY` to your Developer ID.
 ### Linux (.deb)
 
 Requirements: Python 3.9+, `pyinstaller`, `dpkg`, `fakeroot`,
-`lintian` (optional).
+`lintian` (optional). The `.deb` is built for the machine's own architecture
+(`dpkg --print-architecture`), so run it on an amd64 host for `amd64` and on
+an arm64 host for `arm64`:
 
 ```bash
-build/build_linux.sh
-sudo dpkg -i dist/sentinel_1.0.0_amd64.deb
+build/build_linux.sh             # names the .deb after this host's architecture
+sudo dpkg -i dist/sentinel_1.0.0_amd64.deb    # on an amd64 host
+sudo dpkg -i dist/sentinel_1.0.0_arm64.deb    # on an arm64 host
 sudo systemctl start sentinel
 ```
 
@@ -746,11 +785,17 @@ bot once to configure it, then enables the service.
 
 ### Windows
 
-Requirements: Python 3.9+, `pyinstaller`, NSIS 3.x in PATH.
+Requirements: Python 3.9+, `pyinstaller`, NSIS 3.x in PATH. On Windows on ARM
+the build needs a **native ARM64 Python** — the script checks
+(`python scripts\check_arch.py host`), and installs one from python.org via
+`.github\scripts\install-windows-deps.ps1` if the interpreter on PATH is the
+emulated x64 one, which would otherwise produce an x64 installer under an
+`-arm64` name.
 
 ```
 build\build_windows.bat
-dist\Sentinel-Setup-1.0.0.exe
+dist\Sentinel-Setup-1.0.0.exe            :: x64
+dist\Sentinel-Setup-1.0.0-arm64.exe      :: Windows on ARM
 ```
 
 The NSIS installer copies the PyInstaller output to
@@ -968,6 +1013,16 @@ python3 tests/test_dashboard.py      # run dashboard auth tests alone
   `config.json` has a non-empty `bot_token` (or the legacy `token`).
 * **`.deb` build complains about `dpkg-deb` or `fakeroot`** — install
   them with `sudo apt install fakeroot dpkg`.
+* **A build fails with "cannot build a arm64 bundle on a amd64 host"** — the
+  architecture you asked for (`SENTINEL_TARGET_ARCH`) is not the machine's.
+  PyInstaller cannot cross-compile, so build on a host of that architecture
+  (or drop the variable and let the script use the host's).
+* **The installer won't run on an arm64 machine** ("bad CPU type", or an
+  ARM64 Windows error) — you have the other architecture's file. The names say
+  which is which: `...-arm64.dmg`, `..._arm64.deb` and
+  `Sentinel-Setup-...-arm64.exe` are for Apple Silicon, ARM64 Linux and
+  Windows on ARM; `...-x86_64.dmg`, `..._amd64.deb` and
+  `Sentinel-Setup-....exe` are for Intel/AMD machines.
 * **NSIS errors with `MUI2.nsh` not found** — install NSIS 3.x
   (https://nsis.sourceforge.io) and ensure `${NSISDIR}` is set.
 * **The `.dmg` says "this app is from an unidentified developer"** —

@@ -1,13 +1,20 @@
 #!/usr/bin/env bash
 # Build a .dmg of the Sentinel on macOS.
 #
-# Requirements:
+# Requirements (on a Mac of the architecture you are building for):
 #   - Python 3.9+ on PATH
 #   - pip install pyinstaller
 #   - Either `create-dmg` (brew install create-dmg) or the built-in
 #     `hdiutil` (always present on macOS).
 #
-# Output: dist/Sentinel-<VERSION>.dmg  (version from VERSION file)
+# Output: dist/Sentinel-<VERSION>-<ARCH>.dmg
+#         (ARCH: arm64 on Apple Silicon, x86_64 on Intel)
+#
+# One .dmg per architecture, because PyInstaller cannot cross-compile: run
+# this on an Apple Silicon Mac for the arm64 disk image and on an Intel Mac
+# for the x86_64 one (CI does both). The architecture defaults to the host's;
+# SENTINEL_TARGET_ARCH overrides it, and a mismatch fails the build instead of
+# producing a mislabelled .dmg.
 set -euo pipefail
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
@@ -16,9 +23,17 @@ cd "$PROJECT_ROOT"
 
 # shellcheck disable=SC1091
 . "$PROJECT_ROOT/scripts/version.sh"
+# shellcheck disable=SC1091
+. "$PROJECT_ROOT/scripts/arch.sh"
 VERSION="$(app_version "$PROJECT_ROOT")"
+ARCH="$(resolve_arch)"
+# Apple spells Intel x86_64; the .dmg name and the Mach-O check use that.
+MACOS_ARCH="$(macos_arch_label "$ARCH")"
+# Keep the whole build - PyInstaller and the arch check in the spec - on the
+# architecture this script resolved.
+export SENTINEL_TARGET_ARCH="$ARCH"
 APP_NAME="Sentinel"
-DMG_NAME="Sentinel-${VERSION}.dmg"
+DMG_NAME="Sentinel-${VERSION}-${MACOS_ARCH}.dmg"
 
 echo "==> Cleaning previous PyInstaller output (keeps build/ source dir)"
 rm -rf dist
@@ -32,6 +47,9 @@ if [ ! -d "$APP_PATH" ]; then
     echo "ERROR: PyInstaller did not produce ${APP_PATH}" >&2
     exit 1
 fi
+
+echo "==> Verifying the bundled binary is ${MACOS_ARCH}"
+verify_binary_arch "$APP_PATH/Contents/MacOS/sentinel" "$ARCH"
 
 # Optional: codesign with a Developer ID.
 # Uncomment the lines below and replace the identity string.
