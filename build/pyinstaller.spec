@@ -2,7 +2,8 @@
 """
 PyInstaller spec for the Punishment Manager.
 
-Builds `bot.py` and its imported modules (`rules.py`, `dashboard.py`), plus
+Builds `bot.py` and its imported modules (`rules.py`, `reaction_roles.py`,
+`dashboard.py`), plus
 its companion `installer.py` and dashboard UI, into a self-contained binary:
 
   Linux:   dist/punishment-manager/punishment-manager
@@ -105,6 +106,8 @@ a = Analysis(
         # Rules-Markdown renderer used by the dashboard's rules preview.
         'discord_markdown',
         'rules',
+        # Reaction-role menus (dashboard-published posts + the reaction cog).
+        'reaction_roles',
         # installer.py is bundled as a data file; import it via importlib.
     ],
     hookspath=[],

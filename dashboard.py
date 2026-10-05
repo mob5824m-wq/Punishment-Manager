@@ -22,12 +22,31 @@ from aiohttp import web
 
 import paths
 from discord_markdown import lint_markdown, render_markdown_html
+from reaction_roles import (
+    DEFAULT_POST_MESSAGE,
+    MAX_EMBED_MESSAGE_LENGTH,
+    MAX_PLAIN_MESSAGE_LENGTH,
+    MAX_REACTION_ENTRIES,
+    MAX_TITLE_LENGTH,
+    build_post_content,
+    emoji_key,
+    find_reaction_post,
+    get_guild_reaction_posts,
+    message_limit,
+    new_post_id,
+    parse_entries,
+    remove_reaction_post,
+    upsert_reaction_post,
+    validate_post_entries,
+)
 from rules import (
     MAX_RULES_LENGTH,
     PRIVILEGED_ROLE_PERMISSIONS,
     RULES_ACCEPT_EMOJI,
     RULES_POST_CONTENT,
+    fetch_configured_message,
     get_guild_rules,
+    validate_post_channel,
 )
 
 
@@ -266,6 +285,28 @@ class DashboardServer:
                     "/api/guilds/{guild_id}/rules/preview", self.preview_rules
                 ),
                 web.delete("/api/guilds/{guild_id}/rules", self.disable_rules),
+                web.get(
+                    "/api/guilds/{guild_id}/reaction-roles",
+                    self.reaction_roles_status,
+                ),
+                # Registered before the {post_id} route so "preview" is not
+                # swallowed as a post id.
+                web.post(
+                    "/api/guilds/{guild_id}/reaction-roles/preview",
+                    self.preview_reaction_roles,
+                ),
+                web.put(
+                    "/api/guilds/{guild_id}/reaction-roles",
+                    self.publish_reaction_roles,
+                ),
+                web.post(
+                    "/api/guilds/{guild_id}/reaction-roles/{post_id}",
+                    self.update_reaction_roles,
+                ),
+                web.delete(
+                    "/api/guilds/{guild_id}/reaction-roles/{post_id}",
+                    self.delete_reaction_roles,
+                ),
                 web.post("/api/guilds/{guild_id}/sync", self.sync_commands),
             ]
         )
@@ -1030,6 +1071,301 @@ class DashboardServer:
         logger.info("Dashboard disabled rules reactions for guild %s", guild.id)
         return web.json_response({"disabled": True})
 
+    # ---- Reaction-role menus --------------------------------------------- #
+    async def reaction_roles_status(self, request: web.Request) -> web.Response:
+        """Every reaction-role post configured for the selected server."""
+        guild = self._guild_from_request(request)
+        return web.json_response(
+            {
+                "posts": [
+                    _reaction_post_payload(post)
+                    for post in get_guild_reaction_posts(self.bot.config, guild.id)
+                ],
+                "maxEntries": MAX_REACTION_ENTRIES,
+                "maxTitleLength": MAX_TITLE_LENGTH,
+                "defaultMessage": DEFAULT_POST_MESSAGE,
+                "limits": {
+                    "embed": MAX_EMBED_MESSAGE_LENGTH,
+                    "plain": MAX_PLAIN_MESSAGE_LENGTH,
+                },
+            }
+        )
+
+    async def preview_reaction_roles(self, request: web.Request) -> web.Response:
+        """Render a reaction-role message the way Discord will show it.
+
+        Side-effect free, so it is safe to call while typing; the message is
+        read through :meth:`_reaction_message` so the preview obeys the same
+        length limit and the same default text as the publish path.
+        """
+        self._guild_from_request(request)  # 404 unless the bot is in this server
+        data = await self._json_body(request)
+        message, limit, error = self._reaction_message(data)
+        if error is not None:
+            raise web.HTTPBadRequest(text=error)
+        return web.json_response(
+            {
+                "html": render_markdown_html(message),
+                "warnings": lint_markdown(message),
+                "length": len(message),
+                "limit": limit,
+            }
+        )
+
+    async def publish_reaction_roles(self, request: web.Request) -> web.Response:
+        """Create a new reaction-role post and attach every configured emoji."""
+        guild = self._guild_from_request(request)
+        data = await self._json_body(request)
+        post, error = self._reaction_post_settings(guild, data, post_id=new_post_id())
+        if error is not None:
+            raise web.HTTPBadRequest(text=error)
+
+        channel = guild.get_channel(int(post["channel_id"]))
+        message = await self._send_reaction_post(channel, post)
+        post["message_id"] = message.id
+        updated = upsert_reaction_post(self.bot.config, guild.id, post)
+        try:
+            self._persist_config(updated)
+        except web.HTTPException:
+            # Nothing was saved, so the Discord post would be an orphan.
+            await self._delete_message(message)
+            raise
+        logger.info(
+            "Dashboard published reaction role post %s for guild %s",
+            post["post_id"],
+            guild.id,
+        )
+        return web.json_response(
+            {"postId": post["post_id"], "messageId": _snowflake(message.id)},
+            status=201,
+        )
+
+    async def update_reaction_roles(self, request: web.Request) -> web.Response:
+        """Edit an existing reaction-role post: text, style, emoji → role pairs."""
+        guild = self._guild_from_request(request)
+        post_id = request.match_info.get("post_id")
+        existing = find_reaction_post(self.bot.config, guild.id, post_id)
+        if existing is None:
+            raise web.HTTPNotFound(text="That reaction role post is no longer configured.")
+
+        data = await self._json_body(request)
+        post, error = self._reaction_post_settings(
+            guild, data, post_id=str(existing.get("post_id"))
+        )
+        if error is not None:
+            raise web.HTTPBadRequest(text=error)
+
+        channel = guild.get_channel(int(post["channel_id"]))
+        old_message = await self._fetch_post_message(guild, existing)
+        channel_changed = str(existing.get("channel_id")) != str(post["channel_id"])
+        if old_message is None or channel_changed:
+            # The post was moved, or its message is gone: send a fresh one
+            # under the same post id, then retire the old message.
+            message = await self._send_reaction_post(channel, post)
+            if old_message is not None and old_message.id != message.id:
+                await self._delete_message(old_message)
+        else:
+            message = await self._edit_reaction_post(old_message, post)
+
+        post["message_id"] = message.id
+        updated = upsert_reaction_post(self.bot.config, guild.id, post)
+        self._persist_config(updated)
+        logger.info(
+            "Dashboard updated reaction role post %s for guild %s",
+            post["post_id"],
+            guild.id,
+        )
+        return web.json_response(
+            {
+                "postId": post["post_id"],
+                "messageId": _snowflake(message.id),
+                "updated": True,
+            }
+        )
+
+    async def delete_reaction_roles(self, request: web.Request) -> web.Response:
+        """Forget a reaction-role post and (by default) delete its message."""
+        guild = self._guild_from_request(request)
+        post_id = request.match_info.get("post_id")
+        post = find_reaction_post(self.bot.config, guild.id, post_id)
+        if post is None:
+            return web.json_response({"deleted": True, "alreadyRemoved": True})
+
+        delete_message = str(request.query.get("deleteMessage", "true")).lower() not in {
+            "0",
+            "false",
+            "no",
+        }
+        updated = remove_reaction_post(self.bot.config, guild.id, post_id)
+        self._persist_config(updated)
+
+        message_deleted = False
+        if delete_message:
+            message = await self._fetch_post_message(guild, post)
+            if message is not None:
+                try:
+                    await message.delete()
+                    message_deleted = True
+                except discord.HTTPException as exc:
+                    logger.info(
+                        "Could not delete reaction role message %s: %s",
+                        post.get("message_id"),
+                        exc,
+                    )
+        logger.info(
+            "Dashboard removed reaction role post %s for guild %s", post_id, guild.id
+        )
+        return web.json_response({"deleted": True, "messageDeleted": message_deleted})
+
+    @staticmethod
+    def _reaction_message(data: dict) -> tuple[str, int, Optional[str]]:
+        """The message text a post will carry, its limit, and any problem."""
+        use_embed = bool(data.get("useEmbed", True))
+        message = str(data.get("message") or "").strip() or DEFAULT_POST_MESSAGE
+        limit = message_limit(use_embed)
+        if len(message) > limit:
+            style = "Embed descriptions" if use_embed else "Plain messages"
+            return message, limit, f"{style} are limited to {limit} characters."
+        return message, limit, None
+
+    def _reaction_post_settings(
+        self,
+        guild: discord.Guild,
+        data: dict,
+        *,
+        post_id: str,
+    ) -> tuple[Optional[dict], Optional[str]]:
+        """Validate a dashboard request into a storable post, or explain why not."""
+        channel = guild.get_channel(
+            self._required_int(data.get("channelId"), "channel ID")
+        )
+        if not isinstance(channel, discord.TextChannel):
+            return None, "Choose a valid text channel from this server."
+        problem = validate_post_channel(guild, channel)
+        if problem is not None:
+            return None, problem
+
+        try:
+            entries = parse_entries(data.get("entries"))
+        except ValueError as exc:
+            return None, str(exc)
+        problem = validate_post_entries(guild, entries)
+        if problem is not None:
+            return None, problem
+
+        message, _limit, error = self._reaction_message(data)
+        if error is not None:
+            return None, error
+
+        title = str(data.get("title") or "").strip()
+        if len(title) > MAX_TITLE_LENGTH:
+            return None, f"Embed titles are limited to {MAX_TITLE_LENGTH} characters."
+
+        return (
+            {
+                "post_id": str(post_id),
+                "channel_id": channel.id,
+                "message": message,
+                "title": title,
+                "use_embed": bool(data.get("useEmbed", True)),
+                "remove_on_unreact": bool(data.get("removeOnUnreact", True)),
+                "entries": entries,
+            },
+            None,
+        )
+
+    async def _send_reaction_post(
+        self, channel: discord.TextChannel, post: dict
+    ) -> discord.Message:
+        content, embed = build_post_content(post)
+        try:
+            message = await channel.send(
+                content=content,
+                embed=embed,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except discord.Forbidden:
+            raise web.HTTPForbidden(
+                text="The bot cannot post in that channel. Check its channel permissions."
+            ) from None
+        except discord.HTTPException as exc:
+            logger.warning("Could not publish reaction role post: %s", exc)
+            raise web.HTTPBadGateway(
+                text="Discord could not publish the reaction role post."
+            ) from exc
+
+        try:
+            for entry in post.get("entries") or []:
+                await message.add_reaction(entry["emoji"])
+        except discord.HTTPException as exc:
+            await self._delete_message(message)
+            logger.warning("Discord rejected a reaction role emoji: %s", exc)
+            raise web.HTTPBadGateway(
+                text=(
+                    "Discord rejected one of the emoji reactions. Check that the "
+                    "emoji still exists and that the bot can add reactions there."
+                )
+            ) from exc
+        return message
+
+    async def _edit_reaction_post(
+        self, message: discord.Message, post: dict
+    ) -> discord.Message:
+        content, embed = build_post_content(post)
+        try:
+            edited = await message.edit(
+                content=content,
+                embed=embed,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except discord.Forbidden:
+            raise web.HTTPForbidden(
+                text="The bot cannot edit that post any more. Check its channel permissions."
+            ) from None
+        except discord.HTTPException as exc:
+            logger.warning("Could not update reaction role post %s: %s", message.id, exc)
+            raise web.HTTPBadGateway(
+                text="Discord could not update that reaction role post."
+            ) from exc
+
+        await self._sync_reactions(message, post)
+        return edited
+
+    async def _sync_reactions(self, message: discord.Message, post: dict) -> None:
+        """Add reactions for new pairs and drop the bot's stale ones."""
+        wanted = {
+            emoji_key(str(entry["emoji"])) for entry in post.get("entries") or []
+        }
+        current = list(message.reactions)
+        bot_user = self.bot.user
+        try:
+            for entry in post.get("entries") or []:
+                if emoji_key(str(entry["emoji"])) not in {
+                    emoji_key(str(reaction.emoji)) for reaction in current
+                }:
+                    await message.add_reaction(entry["emoji"])
+            for reaction in current:
+                if emoji_key(str(reaction.emoji)) in wanted:
+                    continue
+                if bot_user is None or not getattr(reaction, "me", True):
+                    continue
+                await message.remove_reaction(reaction.emoji, bot_user)
+        except discord.HTTPException as exc:
+            logger.warning(
+                "Could not sync reactions on reaction role post %s: %s", message.id, exc
+            )
+            raise web.HTTPBadGateway(
+                text=(
+                    "The post text was saved, but Discord rejected one of its "
+                    "reactions. Check the emoji and try again."
+                )
+            ) from exc
+
+    async def _fetch_post_message(
+        self, guild: discord.Guild, post: dict
+    ) -> Optional[discord.Message]:
+        return await fetch_configured_message(guild, post)
+
     async def sync_commands(self, request: web.Request) -> web.Response:
         guild = self._guild_from_request(request)
         try:
@@ -1150,6 +1486,37 @@ class DashboardServer:
 
 _ID_FIELD_SUFFIXES = ("_id", "Id")
 _ID_FIELD_EXCEPTIONS = {"id"}  # database row keys
+
+
+def _reaction_post_payload(post: dict) -> dict:
+    """Serialise a stored reaction-role post for the browser.
+
+    Every id crosses the wire as a string, for the same reason as elsewhere:
+    the browser rounds a 64-bit number and the rounded id then matches nothing.
+    """
+    entries = []
+    stored_entries = post.get("entries")
+    if isinstance(stored_entries, list):
+        for entry in stored_entries:
+            if not isinstance(entry, dict):
+                continue
+            entries.append(
+                {
+                    "emoji": str(entry.get("emoji") or ""),
+                    "roleId": _snowflake(entry.get("role_id")),
+                    "label": str(entry.get("label") or ""),
+                }
+            )
+    return {
+        "postId": str(post.get("post_id") or ""),
+        "channelId": _snowflake(post.get("channel_id")),
+        "messageId": _snowflake(post.get("message_id")),
+        "title": str(post.get("title") or ""),
+        "message": str(post.get("message") or ""),
+        "useEmbed": bool(post.get("use_embed", True)),
+        "removeOnUnreact": bool(post.get("remove_on_unreact", True)),
+        "entries": entries,
+    }
 
 
 def _json_safe_ids(payload: dict) -> dict:

@@ -58,6 +58,94 @@ def get_guild_rules(config: dict, guild_id: int) -> Optional[dict]:
     return entry
 
 
+def validate_self_assignable_role(
+    guild: discord.Guild, role: discord.Role
+) -> Optional[str]:
+    """Check a role a member can grant themselves, returning a problem or None.
+
+    Shared by the rules-acceptance gate and by the reaction-role menus in
+    :mod:`reaction_roles`, so neither path can hand out a moderation role and
+    neither can drift from the other's hierarchy checks.
+    """
+    if role.is_default():
+        return "The @everyone role cannot be used as a self-assignable role."
+    if role.managed:
+        return "That role is managed by an integration and can't be assigned by the bot."
+
+    elevated = [
+        name
+        for name in PRIVILEGED_ROLE_PERMISSIONS
+        if getattr(role.permissions, name, False)
+    ]
+    if elevated:
+        return (
+            "Choose a non-staff role. A self-assignable role cannot have "
+            "moderation or server-management permissions."
+        )
+
+    bot_member = guild.me
+    if bot_member is None:
+        return "I couldn't verify my role permissions in this server."
+    if not bot_member.guild_permissions.manage_roles:
+        return "I need the Manage Roles permission to grant that role."
+    if role >= bot_member.top_role:
+        return "Move my bot role above that role in Server Settings → Roles."
+    return None
+
+
+def validate_post_channel(guild: discord.Guild, channel) -> Optional[str]:
+    """Check the bot may post (and react) in a channel, returning a problem."""
+    bot_member = guild.me
+    if bot_member is None:
+        return "I couldn't verify my channel permissions in this server."
+    channel_permissions = channel.permissions_for(bot_member)
+    required_channel_permissions = (
+        ("view_channel", "view the channel"),
+        ("send_messages", "send messages"),
+        ("embed_links", "embed links"),
+        ("add_reactions", "add reactions"),
+    )
+    missing = [
+        label
+        for permission, label in required_channel_permissions
+        if not getattr(channel_permissions, permission, False)
+    ]
+    if missing:
+        return "I need permission to " + ", ".join(missing) + " in that channel."
+    return None
+
+
+async def fetch_configured_message(
+    guild: discord.Guild, settings: dict
+) -> Optional[discord.Message]:
+    """Fetch the message a stored ``channel_id``/``message_id`` pair points at.
+
+    Used by the rules post and by reaction-role posts, which only differ in the
+    config key they are stored under.
+    """
+    try:
+        channel_id = int(settings["channel_id"])
+        message_id = int(settings["message_id"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+    channel = guild.get_channel(channel_id)
+    if channel is None:
+        try:
+            channel = await guild.fetch_channel(channel_id)
+        except discord.HTTPException as exc:
+            logger.info("Could not fetch configured channel %s: %s", channel_id, exc)
+            return None
+
+    if not hasattr(channel, "fetch_message"):
+        return None
+    try:
+        return await channel.fetch_message(message_id)
+    except discord.HTTPException as exc:
+        logger.info("Could not fetch configured message %s: %s", message_id, exc)
+        return None
+
+
 def is_active_rules_reaction(
     config: dict, guild_id: Optional[int], message_id: int, emoji: object
 ) -> bool:
@@ -381,45 +469,10 @@ class RulesCog(commands.Cog):
         channel: discord.TextChannel,
         role: discord.Role,
     ) -> Optional[str]:
-        if role.is_default():
-            return "The @everyone role cannot be used as an acceptance role."
-        if role.managed:
-            return "That role is managed by an integration and can't be assigned by the bot."
-
-        elevated = [
-            name
-            for name in PRIVILEGED_ROLE_PERMISSIONS
-            if getattr(role.permissions, name, False)
-        ]
-        if elevated:
-            return (
-                "Choose a non-staff role. The acceptance role cannot have "
-                "moderation or server-management permissions."
-            )
-
-        bot_member = guild.me
-        if bot_member is None:
-            return "I couldn't verify my role permissions in this server."
-        if not bot_member.guild_permissions.manage_roles:
-            return "I need the Manage Roles permission to grant the acceptance role."
-        if role >= bot_member.top_role:
-            return "Move my bot role above the acceptance role in Server Settings → Roles."
-
-        channel_permissions = channel.permissions_for(bot_member)
-        required_channel_permissions = (
-            ("view_channel", "view the channel"),
-            ("send_messages", "send messages"),
-            ("embed_links", "embed links"),
-            ("add_reactions", "add reactions"),
-        )
-        missing = [
-            label
-            for permission, label in required_channel_permissions
-            if not getattr(channel_permissions, permission, False)
-        ]
-        if missing:
-            return "I need permission to " + ", ".join(missing) + " in that channel."
-        return None
+        role_error = validate_self_assignable_role(guild, role)
+        if role_error is not None:
+            return role_error
+        return validate_post_channel(guild, channel)
 
     def _updated_config(self, guild_id: int, settings: Optional[dict]) -> dict:
         updated = dict(self.bot.config)
@@ -475,27 +528,7 @@ class RulesCog(commands.Cog):
         guild: discord.Guild,
         settings: dict,
     ) -> Optional[discord.Message]:
-        try:
-            channel_id = int(settings["channel_id"])
-            message_id = int(settings["message_id"])
-        except (KeyError, TypeError, ValueError):
-            return None
-
-        channel = guild.get_channel(channel_id)
-        if channel is None:
-            try:
-                channel = await guild.fetch_channel(channel_id)
-            except discord.HTTPException as exc:
-                logger.info("Could not fetch rules channel %s: %s", channel_id, exc)
-                return None
-
-        if not hasattr(channel, "fetch_message"):
-            return None
-        try:
-            return await channel.fetch_message(message_id)
-        except discord.HTTPException as exc:
-            logger.info("Could not fetch rules message %s: %s", message_id, exc)
-            return None
+        return await fetch_configured_message(guild, settings)
 
     @staticmethod
     async def _try_delete(message: discord.Message) -> None:
