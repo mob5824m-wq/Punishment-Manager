@@ -1,14 +1,36 @@
 """Rules publication and reaction-role support for Punishment Manager.
 
-An administrator can publish a rules embed to a channel. Members react with
-:const:`RULES_ACCEPT_EMOJI` to receive the configured role; removing that
-reaction removes the role. The active message and role are persisted in the
-bot's config so the behavior survives restarts.
+An administrator can publish any number of *rule sets* per server — a "Server
+rules" post, an "Event rules" post, a "Contest rules" post and so on. Members
+react with :const:`RULES_ACCEPT_EMOJI` on any of those posts to receive that
+set's role; removing the reaction removes the role.
+
+Each set stores its own channel, message, role and text in the bot's config,
+so the behavior survives restarts::
+
+    "rules": {
+        "123456789012345678": [
+            {
+                "ruleset_id": "6f1c0b3a",
+                "name": "Server rules",
+                "channel_id": 111,
+                "message_id": 222,
+                "role_id": 333,
+                "rules_text": "1. Be respectful."
+            }
+        ]
+    }
+
+Older configs stored a single set as a plain object rather than a list
+(``"rules": {"123…": {"channel_id": …}}``). Those are still read — the object
+is treated as one set named :const:`DEFAULT_RULESET_NAME` — and the first write
+rewrites the guild's entry in the list shape.
 """
 
 from __future__ import annotations
 
 import logging
+import secrets
 from typing import Callable, Optional
 
 import discord
@@ -19,6 +41,12 @@ from discord.ext import commands
 logger = logging.getLogger("punishment_manager.rules")
 RULES_ACCEPT_EMOJI = "✅"
 MAX_RULES_LENGTH = 4096
+
+# Every set gets a name: it labels the post in the dashboard, titles the embed
+# and is how /rules publish and /rules disable address a set.
+DEFAULT_RULESET_NAME = "Server rules"
+MAX_RULESET_NAME_LENGTH = 80
+MAX_RULESETS_PER_GUILD = 25
 
 # The text that accompanies the rules embed. It is a module constant so the
 # /rules publish command and the dashboard's publish endpoint cannot drift
@@ -47,30 +75,231 @@ PRIVILEGED_ROLE_PERMISSIONS = (
 )
 
 
-def get_guild_rules(config: dict, guild_id: int) -> Optional[dict]:
-    """Get a guild's persisted rules/reaction settings, if configured."""
+def new_ruleset_id() -> str:
+    """Return a short id for a new rule set (what the dashboard addresses it by)."""
+    return secrets.token_hex(4)
+
+
+def ruleset_id(settings: dict) -> str:
+    """The id of a stored rule set, synthesised for pre-multi-set configs."""
+    explicit = str(settings.get("ruleset_id") or "").strip()
+    if explicit:
+        return explicit
+    try:
+        return str(int(settings.get("message_id")))
+    except (TypeError, ValueError):
+        return "default"
+
+
+def ruleset_name(settings: dict) -> str:
+    """The display name of a stored rule set (legacy sets get the default)."""
+    name = str(settings.get("name") or "").strip()
+    return name or DEFAULT_RULESET_NAME
+
+
+def rules_embed_title(guild_name: str, name: str) -> str:
+    """The embed title for a set: "Guild Rules" for the default set."""
+    label = (name or "").strip() or DEFAULT_RULESET_NAME
+    if label.casefold() == DEFAULT_RULESET_NAME.casefold():
+        return f"{guild_name} Rules"
+    return f"{guild_name} — {label}"
+
+
+def get_guild_rulesets(config: dict, guild_id: int) -> list[dict]:
+    """Every rule set configured for a guild, in publish order.
+
+    Accepts both config shapes: a list (current) or a single object (the shape
+    older versions wrote), so an existing install keeps working untouched.
+    """
     rules_by_guild = config.get("rules", {})
     if not isinstance(rules_by_guild, dict):
-        return None
+        return []
     entry = rules_by_guild.get(str(int(guild_id)))
-    if not isinstance(entry, dict):
+    if isinstance(entry, dict):
+        return [entry]
+    if isinstance(entry, list):
+        return [item for item in entry if isinstance(item, dict)]
+    return []
+
+
+def find_ruleset(config: dict, guild_id: int, wanted_id: object) -> Optional[dict]:
+    """Find one rule set by its id."""
+    target = str(wanted_id)
+    for settings in get_guild_rulesets(config, guild_id):
+        if ruleset_id(settings) == target:
+            return settings
+    return None
+
+
+def find_ruleset_by_message(
+    config: dict, guild_id: int, message_id: object
+) -> Optional[dict]:
+    """Find the rule set a raw reaction event belongs to, if any."""
+    try:
+        wanted = int(message_id)
+    except (TypeError, ValueError):
         return None
-    return entry
+    for settings in get_guild_rulesets(config, guild_id):
+        try:
+            if int(settings.get("message_id")) == wanted:
+                return settings
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def find_ruleset_by_name(
+    config: dict, guild_id: int, wanted_name: object
+) -> Optional[dict]:
+    """Find one rule set by name, case-insensitively."""
+    target = str(wanted_name or "").strip().casefold()
+    if not target:
+        return None
+    for settings in get_guild_rulesets(config, guild_id):
+        if ruleset_name(settings).casefold() == target:
+            return settings
+    return None
+
+
+def _replace_guild_rulesets(
+    config: dict, guild_id: int, rulesets: Optional[list[dict]]
+) -> dict:
+    """Copy ``config`` with a guild's rule sets replaced (never mutated)."""
+    updated = dict(config)
+    existing = updated.get("rules", {})
+    rules_by_guild = dict(existing) if isinstance(existing, dict) else {}
+    key = str(int(guild_id))
+    if rulesets:
+        rules_by_guild[key] = [dict(settings) for settings in rulesets]
+    else:
+        # Keep the config tidy: a server with no sets has no key at all.
+        rules_by_guild.pop(key, None)
+    updated["rules"] = rules_by_guild
+    return updated
+
+
+def upsert_ruleset(config: dict, guild_id: int, settings: dict) -> dict:
+    """Add a rule set, or replace the existing one with the same id."""
+    target = ruleset_id(settings)
+    merged: list[dict] = []
+    replaced = False
+    for existing in get_guild_rulesets(config, guild_id):
+        if ruleset_id(existing) == target:
+            merged.append(dict(settings))
+            replaced = True
+        else:
+            merged.append(existing)
+    if not replaced:
+        merged.append(dict(settings))
+    return _replace_guild_rulesets(config, guild_id, merged)
+
+
+def remove_ruleset(config: dict, guild_id: int, wanted_id: object) -> dict:
+    """Drop one rule set from the configuration."""
+    target = str(wanted_id)
+    remaining = [
+        settings
+        for settings in get_guild_rulesets(config, guild_id)
+        if ruleset_id(settings) != target
+    ]
+    return _replace_guild_rulesets(config, guild_id, remaining)
+
+
+def validate_self_assignable_role(
+    guild: discord.Guild, role: discord.Role
+) -> Optional[str]:
+    """Check a role a member can grant themselves, returning a problem or None.
+
+    Shared by the rules-acceptance gate and by the reaction-role menus in
+    :mod:`reaction_roles`, so neither path can hand out a moderation role and
+    neither can drift from the other's hierarchy checks.
+    """
+    if role.is_default():
+        return "The @everyone role cannot be used as a self-assignable role."
+    if role.managed:
+        return "That role is managed by an integration and can't be assigned by the bot."
+
+    elevated = [
+        name
+        for name in PRIVILEGED_ROLE_PERMISSIONS
+        if getattr(role.permissions, name, False)
+    ]
+    if elevated:
+        return (
+            "Choose a non-staff role. A self-assignable role cannot have "
+            "moderation or server-management permissions."
+        )
+
+    bot_member = guild.me
+    if bot_member is None:
+        return "I couldn't verify my role permissions in this server."
+    if not bot_member.guild_permissions.manage_roles:
+        return "I need the Manage Roles permission to grant that role."
+    if role >= bot_member.top_role:
+        return "Move my bot role above that role in Server Settings → Roles."
+    return None
+
+
+def validate_post_channel(guild: discord.Guild, channel) -> Optional[str]:
+    """Check the bot may post (and react) in a channel, returning a problem."""
+    bot_member = guild.me
+    if bot_member is None:
+        return "I couldn't verify my channel permissions in this server."
+    channel_permissions = channel.permissions_for(bot_member)
+    required_channel_permissions = (
+        ("view_channel", "view the channel"),
+        ("send_messages", "send messages"),
+        ("embed_links", "embed links"),
+        ("add_reactions", "add reactions"),
+    )
+    missing = [
+        label
+        for permission, label in required_channel_permissions
+        if not getattr(channel_permissions, permission, False)
+    ]
+    if missing:
+        return "I need permission to " + ", ".join(missing) + " in that channel."
+    return None
+
+
+async def fetch_configured_message(
+    guild: discord.Guild, settings: dict
+) -> Optional[discord.Message]:
+    """Fetch the message a stored ``channel_id``/``message_id`` pair points at.
+
+    Used by the rules post and by reaction-role posts, which only differ in the
+    config key they are stored under.
+    """
+    try:
+        channel_id = int(settings["channel_id"])
+        message_id = int(settings["message_id"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+    channel = guild.get_channel(channel_id)
+    if channel is None:
+        try:
+            channel = await guild.fetch_channel(channel_id)
+        except discord.HTTPException as exc:
+            logger.info("Could not fetch configured channel %s: %s", channel_id, exc)
+            return None
+
+    if not hasattr(channel, "fetch_message"):
+        return None
+    try:
+        return await channel.fetch_message(message_id)
+    except discord.HTTPException as exc:
+        logger.info("Could not fetch configured message %s: %s", message_id, exc)
+        return None
 
 
 def is_active_rules_reaction(
     config: dict, guild_id: Optional[int], message_id: int, emoji: object
 ) -> bool:
-    """Return whether a raw reaction event belongs to the active rules post."""
+    """Return whether a raw reaction event belongs to a published rules post."""
     if guild_id is None or str(emoji) != RULES_ACCEPT_EMOJI:
         return False
-    settings = get_guild_rules(config, guild_id)
-    if settings is None:
-        return False
-    try:
-        return int(settings["message_id"]) == int(message_id)
-    except (KeyError, TypeError, ValueError):
-        return False
+    return find_ruleset_by_message(config, guild_id, message_id) is not None
 
 
 class RulesCog(commands.Cog):
@@ -100,12 +329,13 @@ class RulesCog(commands.Cog):
 
     @rules_group.command(
         name="publish",
-        description="Post server rules and enable the acceptance reaction role.",
+        description="Post a rule set and enable its acceptance reaction role.",
     )
     @app_commands.describe(
         channel="Channel where the rules post should appear.",
-        role="Non-staff role granted when a member accepts the rules.",
+        role="Non-staff role granted when a member accepts these rules.",
         rules_text="Rules shown in the embed (maximum 4,096 characters).",
+        name="Rule set name. Publishing again with the same name replaces its post.",
     )
     async def publish_rules(
         self,
@@ -113,6 +343,7 @@ class RulesCog(commands.Cog):
         channel: discord.TextChannel,
         role: discord.Role,
         rules_text: str,
+        name: Optional[str] = None,
     ) -> None:
         await self._defer(interaction)
 
@@ -125,6 +356,26 @@ class RulesCog(commands.Cog):
             return
         if channel.guild.id != guild.id or role.guild.id != guild.id:
             await self._respond(interaction, "Choose a channel and role from this server.")
+            return
+
+        label = (name or "").strip() or DEFAULT_RULESET_NAME
+        if len(label) > MAX_RULESET_NAME_LENGTH:
+            await self._respond(
+                interaction,
+                f"That rule set name is {len(label)} characters; the limit is "
+                f"{MAX_RULESET_NAME_LENGTH}.",
+            )
+            return
+
+        previous = find_ruleset_by_name(self.bot.config, guild.id, label)
+        if previous is None and len(get_guild_rulesets(self.bot.config, guild.id)) >= (
+            MAX_RULESETS_PER_GUILD
+        ):
+            await self._respond(
+                interaction,
+                f"This server already has {MAX_RULESETS_PER_GUILD} rule sets. "
+                "Disable one with /rules disable before adding another.",
+            )
             return
 
         text = rules_text.strip()
@@ -144,7 +395,7 @@ class RulesCog(commands.Cog):
             return
 
         embed = discord.Embed(
-            title=f"{guild.name} Rules",
+            title=rules_embed_title(guild.name, label),
             description=text,
             color=discord.Color.blurple(),
         )
@@ -174,11 +425,13 @@ class RulesCog(commands.Cog):
             )
             return
 
-        previous = get_guild_rules(self.bot.config, guild.id)
         previous_config = self.bot.config
-        updated = self._updated_config(
+        updated = upsert_ruleset(
+            self.bot.config,
             guild.id,
             {
+                "ruleset_id": ruleset_id(previous) if previous else new_ruleset_id(),
+                "name": label,
                 "channel_id": channel.id,
                 "message_id": posted_message.id,
                 "role_id": role.id,
@@ -226,18 +479,24 @@ class RulesCog(commands.Cog):
         if previous is not None:
             await self._retire_previous_post(guild, previous, posted_message.id)
 
+        replaced = " Its previous post was replaced." if previous is not None else ""
         await self._respond(
             interaction,
-            f"Published rules in {channel.mention}. Members can react with "
-            f"{RULES_ACCEPT_EMOJI} to receive {role.mention}; removing the "
-            "reaction removes the role. The previous active post was replaced.",
+            f"Published the rule set **{label}** in {channel.mention}. Members "
+            f"can react with {RULES_ACCEPT_EMOJI} to receive {role.mention}; "
+            f"removing the reaction removes the role.{replaced}",
         )
 
     @rules_group.command(
         name="disable",
-        description="Disable the active rules acceptance reaction role.",
+        description="Disable a rule set's acceptance reaction role.",
     )
-    async def disable_rules(self, interaction: discord.Interaction) -> None:
+    @app_commands.describe(
+        name="Rule set to disable. Only needed when the server has several.",
+    )
+    async def disable_rules(
+        self, interaction: discord.Interaction, name: Optional[str] = None
+    ) -> None:
         await self._defer(interaction)
 
         guild = interaction.guild
@@ -251,15 +510,38 @@ class RulesCog(commands.Cog):
             )
             return
 
-        previous = get_guild_rules(self.bot.config, guild.id)
-        if previous is None:
+        rulesets = get_guild_rulesets(self.bot.config, guild.id)
+        if not rulesets:
             await self._respond(
                 interaction,
                 "No rules reaction role is configured for this server.",
             )
             return
 
-        updated = self._updated_config(guild.id, None)
+        label = (name or "").strip()
+        if label:
+            previous = find_ruleset_by_name(self.bot.config, guild.id, label)
+            if previous is None:
+                await self._respond(
+                    interaction,
+                    f"No rule set is named **{label}**. Published: "
+                    + self._names(rulesets)
+                    + ".",
+                )
+                return
+        elif len(rulesets) == 1:
+            previous = rulesets[0]
+            label = ruleset_name(previous)
+        else:
+            await self._respond(
+                interaction,
+                "This server has several rule sets — pass `name` to choose one: "
+                + self._names(rulesets)
+                + ".",
+            )
+            return
+
+        updated = remove_ruleset(self.bot.config, guild.id, ruleset_id(previous))
         try:
             self._save_config(updated)
         except Exception:
@@ -272,11 +554,59 @@ class RulesCog(commands.Cog):
 
         self.bot.config = updated
         await self._mark_post_disabled(guild, previous)
+        remaining = len(get_guild_rulesets(self.bot.config, guild.id))
         await self._respond(
             interaction,
-            "Rules reactions are disabled. Existing role assignments are left unchanged; "
-            "remove them manually if needed.",
+            f"Disabled the rule set **{ruleset_name(previous)}**; "
+            f"{remaining} rule set(s) still active. Existing role assignments "
+            "are left unchanged — remove them manually if needed.",
         )
+
+    @rules_group.command(
+        name="list",
+        description="List the published rule sets and the roles they grant.",
+    )
+    async def list_rules(self, interaction: discord.Interaction) -> None:
+        await self._defer(interaction)
+
+        guild = interaction.guild
+        if guild is None:
+            await self._respond(interaction, "This command can only be used in a server.")
+            return
+        if not self._is_admin(interaction):
+            await self._respond(
+                interaction,
+                "Only server administrators can list rule sets.",
+            )
+            return
+
+        rulesets = get_guild_rulesets(self.bot.config, guild.id)
+        if not rulesets:
+            await self._respond(
+                interaction,
+                "No rule sets are published yet. Use `/rules publish` to add one.",
+            )
+            return
+
+        lines = []
+        for settings in rulesets:
+            channel = guild.get_channel(int(settings.get("channel_id") or 0))
+            role = guild.get_role(int(settings.get("role_id") or 0))
+            lines.append(
+                f"• **{ruleset_name(settings)}** — "
+                f"{channel.mention if channel else 'channel missing'} → "
+                f"{role.mention if role else 'role missing'} "
+                f"(message `{settings.get('message_id')}`)"
+            )
+        await self._respond(
+            interaction,
+            f"{len(rulesets)} rule set(s) in this server:\n" + "\n".join(lines),
+        )
+
+    @staticmethod
+    def _names(rulesets: list[dict]) -> str:
+        """A comma-separated list of set names for an error message."""
+        return ", ".join(f"**{ruleset_name(settings)}**" for settings in rulesets)
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent) -> None:
@@ -293,9 +623,15 @@ class RulesCog(commands.Cog):
         add_role: bool,
     ) -> None:
         guild_id = payload.guild_id
-        if guild_id is None or not is_active_rules_reaction(
-            self.bot.config, guild_id, payload.message_id, payload.emoji
-        ):
+        if guild_id is None or str(payload.emoji) != RULES_ACCEPT_EMOJI:
+            return
+
+        # Every published set owns its message, so the message id decides which
+        # set's role (and text) the reaction belongs to.
+        settings = find_ruleset_by_message(
+            self.bot.config, guild_id, payload.message_id
+        )
+        if settings is None:
             return
 
         bot_user = self.bot.user
@@ -306,9 +642,6 @@ class RulesCog(commands.Cog):
         if guild is None:
             return
 
-        settings = get_guild_rules(self.bot.config, guild_id)
-        if settings is None:
-            return
         try:
             role_id = int(settings["role_id"])
         except (KeyError, TypeError, ValueError):
@@ -381,57 +714,10 @@ class RulesCog(commands.Cog):
         channel: discord.TextChannel,
         role: discord.Role,
     ) -> Optional[str]:
-        if role.is_default():
-            return "The @everyone role cannot be used as an acceptance role."
-        if role.managed:
-            return "That role is managed by an integration and can't be assigned by the bot."
-
-        elevated = [
-            name
-            for name in PRIVILEGED_ROLE_PERMISSIONS
-            if getattr(role.permissions, name, False)
-        ]
-        if elevated:
-            return (
-                "Choose a non-staff role. The acceptance role cannot have "
-                "moderation or server-management permissions."
-            )
-
-        bot_member = guild.me
-        if bot_member is None:
-            return "I couldn't verify my role permissions in this server."
-        if not bot_member.guild_permissions.manage_roles:
-            return "I need the Manage Roles permission to grant the acceptance role."
-        if role >= bot_member.top_role:
-            return "Move my bot role above the acceptance role in Server Settings → Roles."
-
-        channel_permissions = channel.permissions_for(bot_member)
-        required_channel_permissions = (
-            ("view_channel", "view the channel"),
-            ("send_messages", "send messages"),
-            ("embed_links", "embed links"),
-            ("add_reactions", "add reactions"),
-        )
-        missing = [
-            label
-            for permission, label in required_channel_permissions
-            if not getattr(channel_permissions, permission, False)
-        ]
-        if missing:
-            return "I need permission to " + ", ".join(missing) + " in that channel."
-        return None
-
-    def _updated_config(self, guild_id: int, settings: Optional[dict]) -> dict:
-        updated = dict(self.bot.config)
-        existing = updated.get("rules", {})
-        rules_by_guild = dict(existing) if isinstance(existing, dict) else {}
-        key = str(int(guild_id))
-        if settings is None:
-            rules_by_guild.pop(key, None)
-        else:
-            rules_by_guild[key] = dict(settings)
-        updated["rules"] = rules_by_guild
-        return updated
+        role_error = validate_self_assignable_role(guild, role)
+        if role_error is not None:
+            return role_error
+        return validate_post_channel(guild, channel)
 
     async def _retire_previous_post(
         self,
@@ -475,27 +761,7 @@ class RulesCog(commands.Cog):
         guild: discord.Guild,
         settings: dict,
     ) -> Optional[discord.Message]:
-        try:
-            channel_id = int(settings["channel_id"])
-            message_id = int(settings["message_id"])
-        except (KeyError, TypeError, ValueError):
-            return None
-
-        channel = guild.get_channel(channel_id)
-        if channel is None:
-            try:
-                channel = await guild.fetch_channel(channel_id)
-            except discord.HTTPException as exc:
-                logger.info("Could not fetch rules channel %s: %s", channel_id, exc)
-                return None
-
-        if not hasattr(channel, "fetch_message"):
-            return None
-        try:
-            return await channel.fetch_message(message_id)
-        except discord.HTTPException as exc:
-            logger.info("Could not fetch rules message %s: %s", message_id, exc)
-            return None
+        return await fetch_configured_message(guild, settings)
 
     @staticmethod
     async def _try_delete(message: discord.Message) -> None:

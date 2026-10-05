@@ -156,6 +156,28 @@
     .rules-tip { padding: 16px; border: 1px solid rgba(139,124,255,.18); border-radius: 13px; background: rgba(139,124,255,.06); color: #c6c1fa; font-size: 11px; line-height: 1.6; }
     .rules-tip strong { display: block; margin-bottom: 6px; color: #dedaff; font-size: 12px; }
     .rules-editor { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; align-items: start; }
+    .reaction-subhead { margin-top: 28px; }
+    .reaction-entries { display: grid; gap: 8px; }
+    .reaction-entry { display: grid; grid-template-columns: 82px minmax(0, 1fr) auto; gap: 8px; align-items: center; }
+    .reaction-entry .reaction-emoji { padding: 8px; font-size: 18px; text-align: center; }
+    .reaction-entry-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
+    .reaction-quick { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+    .reaction-quick button { min-width: 31px; min-height: 29px; padding: 3px 6px; border: 1px solid var(--line); border-radius: 8px; background: rgba(255,255,255,.03); font-size: 14px; line-height: 1; }
+    .reaction-quick button:hover { border-color: rgba(139,124,255,.35); background: rgba(139,124,255,.09); }
+    .reaction-legend { display: grid; gap: 6px; margin-top: 12px; }
+    .reaction-legend-row { display: flex; align-items: center; gap: 9px; color: var(--soft); font-size: 11px; }
+    .reaction-legend-emoji { min-width: 40px; font-size: 16px; text-align: center; }
+    .reaction-legend .legend-empty { color: var(--muted); font-size: 11px; }
+    .reaction-note { margin-top: 10px; color: var(--muted); font-size: 11px; line-height: 1.5; }
+    .post-row { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: rgba(255,255,255,.02); }
+    .post-row + .post-row { margin-top: 9px; }
+    .post-main { flex: 1 1 340px; min-width: 0; }
+    .post-title { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 690; }
+    .post-snippet { margin-top: 6px; color: var(--muted); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+    .post-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; }
+    .post-chip { display: inline-flex; align-items: center; gap: 5px; padding: 4px 9px; border: 1px solid var(--line); border-radius: 999px; background: rgba(255,255,255,.03); color: var(--soft); font-size: 10.5px; }
+    .post-chip .chip-emoji { font-size: 13px; }
+    .post-actions { display: flex; gap: 7px; }
     .md-toolbar { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
     .md-tool { min-width: 34px; min-height: 30px; padding: 5px 9px; border: 1px solid var(--line); border-radius: 8px; background: rgba(255,255,255,.03); color: var(--soft); font-size: 11px; font-weight: 700; }
     .md-tool:hover { border-color: rgba(139,124,255,.35); background: rgba(139,124,255,.09); color: white; }
@@ -358,15 +380,17 @@
         <div class="toolbar"><div><h2>Rules & reaction roles</h2><p>Publish an agreement post and choose the role granted when members react.</p></div></div>
         <div class="grid rules-top">
           <article class="card">
-            <div class="card-head"><div><h2 class="card-title">Active rules post</h2><p class="card-desc">Only reactions on the active bot post are processed.</p></div><span id="rules-state" class="tag muted">Not configured</span></div>
-            <div id="rules-status" class="inline-status disabled"><div class="status-icon">!</div><div><strong>No active acceptance post</strong><span>Publish rules below to configure the reaction role.</span></div></div>
+            <div class="card-head"><div><h2 class="card-title">Published rule sets</h2><p class="card-desc">Every set has its own post: reactions on that message grant that set's role.</p></div><div style="display:flex;align-items:center;gap:8px"><span id="rules-state" class="tag muted">Not configured</span><button id="refresh-rulesets" class="btn secondary small" type="button">↻ Refresh</button></div></div>
+            <div id="rules-status" class="inline-status disabled"><div class="status-icon">!</div><div><strong>No published rule set</strong><span>Publish one below to configure its acceptance role.</span></div></div>
+            <div id="ruleset-list" class="reaction-legend"><span class="legend-empty">Publish your first rule set to see it here.</span></div>
           </article>
-          <aside class="rules-tip"><strong>How the reaction gate works</strong>Members react with ✅ to receive the selected role. Removing the reaction removes that role. The role cannot have moderation or server-management permissions and must be below the bot's role.</aside>
+          <aside class="rules-tip"><strong>How the reaction gate works</strong>Members react with ✅ to receive that set's role. Removing the reaction removes the role. The role cannot have moderation or server-management permissions and must be below the bot's role. One server can run several rule sets — for example a "Server rules" post and a shorter "Event rules" post — each with its own channel, role and text.</aside>
         </div>
         <article class="card" style="margin-top:16px">
-          <div class="card-head"><div><h2 class="card-title">Publish or replace rules</h2><p class="card-desc">Discord Markdown is supported — the preview on the right shows the embed exactly as it will render. The previous active bot post is retired after the new one is saved.</p></div><span class="tag muted">Markdown</span></div>
+          <div class="card-head"><div><h2 class="card-title">Publish or edit a rule set</h2><p class="card-desc">Discord Markdown is supported — the preview on the right shows the embed exactly as it will render. Publishing with a name that already exists replaces that set's post.</p></div><span id="rules-edit-state" class="tag muted">New rule set</span></div>
           <form id="rules-form">
             <div class="form-grid">
+              <div class="field"><label for="rules-name">Rule set name <span id="rules-name-hint" class="hint">Up to 80 characters</span></label><input id="rules-name" maxlength="80" placeholder="Server rules" required></div>
               <div class="field"><label for="rules-channel">Post channel</label><select id="rules-channel" required><option value="">Choose a text channel</option></select></div>
               <div class="field"><label for="rules-role">Acceptance role</label><select id="rules-role" required><option value="">Choose a role</option></select></div>
             </div>
@@ -374,20 +398,20 @@
               <div class="field">
                 <label for="rules-text">Rules text <span id="rules-count" class="hint">0 / 4096</span></label>
                 <div class="md-toolbar" role="group" aria-label="Insert Discord Markdown">
-                  <button type="button" class="md-tool" data-md="bold" title="Bold — **text** (Ctrl+B)"><strong>B</strong></button>
-                  <button type="button" class="md-tool" data-md="italic" title="Italic — *text* (Ctrl+I)"><em>I</em></button>
-                  <button type="button" class="md-tool" data-md="underline" title="Underline — __text__"><u>U</u></button>
-                  <button type="button" class="md-tool" data-md="strike" title="Strikethrough — ~~text~~"><s>S</s></button>
-                  <button type="button" class="md-tool" data-md="spoiler" title="Spoiler — ||text||">▨</button>
-                  <button type="button" class="md-tool" data-md="h1" title="Heading 1 — # text">H1</button>
-                  <button type="button" class="md-tool" data-md="h2" title="Heading 2 — ## text">H2</button>
-                  <button type="button" class="md-tool" data-md="h3" title="Heading 3 — ### text">H3</button>
-                  <button type="button" class="md-tool" data-md="bullet" title="Bulleted list — - item">• List</button>
-                  <button type="button" class="md-tool" data-md="number" title="Numbered list — 1. item">1. List</button>
-                  <button type="button" class="md-tool" data-md="quote" title="Quote — > text">❝</button>
-                  <button type="button" class="md-tool" data-md="code" title="Inline code — `code` (Ctrl+E)">&lt;/&gt;</button>
-                  <button type="button" class="md-tool" data-md="codeblock" title="Code block — ``` … ```">&#96;&#96;&#96;</button>
-                  <button type="button" class="md-tool" data-md="link" title="Link — [label](https://…)">🔗</button>
+                  <button type="button" class="md-tool" data-editor="rules" data-md="bold" title="Bold — **text** (Ctrl+B)"><strong>B</strong></button>
+                  <button type="button" class="md-tool" data-editor="rules" data-md="italic" title="Italic — *text* (Ctrl+I)"><em>I</em></button>
+                  <button type="button" class="md-tool" data-editor="rules" data-md="underline" title="Underline — __text__"><u>U</u></button>
+                  <button type="button" class="md-tool" data-editor="rules" data-md="strike" title="Strikethrough — ~~text~~"><s>S</s></button>
+                  <button type="button" class="md-tool" data-editor="rules" data-md="spoiler" title="Spoiler — ||text||">▨</button>
+                  <button type="button" class="md-tool" data-editor="rules" data-md="h1" title="Heading 1 — # text">H1</button>
+                  <button type="button" class="md-tool" data-editor="rules" data-md="h2" title="Heading 2 — ## text">H2</button>
+                  <button type="button" class="md-tool" data-editor="rules" data-md="h3" title="Heading 3 — ### text">H3</button>
+                  <button type="button" class="md-tool" data-editor="rules" data-md="bullet" title="Bulleted list — - item">• List</button>
+                  <button type="button" class="md-tool" data-editor="rules" data-md="number" title="Numbered list — 1. item">1. List</button>
+                  <button type="button" class="md-tool" data-editor="rules" data-md="quote" title="Quote — > text">❝</button>
+                  <button type="button" class="md-tool" data-editor="rules" data-md="code" title="Inline code — `code` (Ctrl+E)">&lt;/&gt;</button>
+                  <button type="button" class="md-tool" data-editor="rules" data-md="codeblock" title="Code block — ``` … ```">&#96;&#96;&#96;</button>
+                  <button type="button" class="md-tool" data-editor="rules" data-md="link" title="Link — [label](https://…)">🔗</button>
                 </div>
                 <textarea id="rules-text" maxlength="4096" placeholder="Write the server rules…" required></textarea>
                 <div id="rules-hints" class="md-hints hidden"></div>
@@ -404,8 +428,85 @@
                 </div>
               </div>
             </div>
-            <div class="form-actions"><button id="disable-rules-button" class="btn danger hidden" type="button">Disable reaction role</button><button class="btn" type="submit">Publish rules</button></div>
+            <div class="form-actions"><button id="rules-cancel-edit" class="btn secondary hidden" type="button">Cancel edit</button><button id="rules-submit" class="btn" type="submit">Publish rule set</button></div>
           </form>
+        </article>
+
+        <div class="toolbar reaction-subhead">
+          <div><h2>Reaction role posts</h2><p>Publish extra self-service role menus. Each post gets its own message and up to 20 emoji → role pairs.</p></div>
+          <button id="refresh-reaction-roles" class="btn secondary" type="button">↻ Refresh</button>
+        </div>
+        <div class="rules-editor">
+          <article class="card">
+            <div class="card-head"><div><h2 class="card-title">Compose the post</h2><p class="card-desc">The bot posts this message and adds one reaction per pair. Members grant themselves the role by reacting.</p></div><span id="reaction-edit-state" class="tag muted">New post</span></div>
+            <form id="reaction-form">
+              <div class="form-grid">
+                <div class="field"><label for="reaction-channel">Post channel</label><select id="reaction-channel" required><option value="">Choose a text channel</option></select></div>
+                <div class="field"><label for="reaction-style">Post style</label><select id="reaction-style"><option value="embed">Embed (title + text)</option><option value="plain">Plain message</option></select></div>
+                <div class="field full" id="reaction-title-field"><label for="reaction-title">Embed title <span class="hint">Optional · up to 256 characters</span></label><input id="reaction-title" maxlength="256" placeholder="Choose your roles"></div>
+              </div>
+              <div class="field" style="margin-top:14px">
+                <label for="reaction-message">Message <span id="reaction-count" class="hint">0 / 4096</span></label>
+                <div class="md-toolbar" role="group" aria-label="Insert Discord Markdown">
+                  <button type="button" class="md-tool" data-editor="reaction" data-md="bold" title="Bold — **text** (Ctrl+B)"><strong>B</strong></button>
+                  <button type="button" class="md-tool" data-editor="reaction" data-md="italic" title="Italic — *text* (Ctrl+I)"><em>I</em></button>
+                  <button type="button" class="md-tool" data-editor="reaction" data-md="underline" title="Underline — __text__"><u>U</u></button>
+                  <button type="button" class="md-tool" data-editor="reaction" data-md="strike" title="Strikethrough — ~~text~~"><s>S</s></button>
+                  <button type="button" class="md-tool" data-editor="reaction" data-md="spoiler" title="Spoiler — ||text||">▨</button>
+                  <button type="button" class="md-tool" data-editor="reaction" data-md="h1" title="Heading 1 — # text">H1</button>
+                  <button type="button" class="md-tool" data-editor="reaction" data-md="h2" title="Heading 2 — ## text">H2</button>
+                  <button type="button" class="md-tool" data-editor="reaction" data-md="h3" title="Heading 3 — ### text">H3</button>
+                  <button type="button" class="md-tool" data-editor="reaction" data-md="bullet" title="Bulleted list — - item">• List</button>
+                  <button type="button" class="md-tool" data-editor="reaction" data-md="number" title="Numbered list — 1. item">1. List</button>
+                  <button type="button" class="md-tool" data-editor="reaction" data-md="quote" title="Quote — > text">❝</button>
+                  <button type="button" class="md-tool" data-editor="reaction" data-md="code" title="Inline code — `code` (Ctrl+E)">&lt;/&gt;</button>
+                  <button type="button" class="md-tool" data-editor="reaction" data-md="codeblock" title="Code block — ``` … ```">&#96;&#96;&#96;</button>
+                  <button type="button" class="md-tool" data-editor="reaction" data-md="link" title="Link — [label](https://…)">🔗</button>
+                </div>
+                <textarea id="reaction-message" maxlength="4096" placeholder="Leave empty to post the default prompt."></textarea>
+                <div id="reaction-hints" class="md-hints hidden"></div>
+              </div>
+              <div class="field" style="margin-top:14px">
+                <label>Emoji → role pairs <span id="reaction-entry-count" class="hint">0 / 20</span></label>
+                <div id="reaction-entries" class="reaction-entries"></div>
+                <div class="reaction-entry-actions">
+                  <button id="reaction-add-entry" class="btn secondary small" type="button">+ Add pair</button>
+                  <button id="reaction-insert-legend" class="btn secondary small" type="button">Insert emoji list</button>
+                  <span class="hint">Quick add</span>
+                  <span id="reaction-quick-emoji" class="reaction-quick">
+                    <button type="button" data-emoji="🎮" aria-label="Add gaming emoji pair">🎮</button>
+                    <button type="button" data-emoji="🎬" aria-label="Add movies emoji pair">🎬</button>
+                    <button type="button" data-emoji="🎨" aria-label="Add art emoji pair">🎨</button>
+                    <button type="button" data-emoji="📢" aria-label="Add announcements emoji pair">📢</button>
+                    <button type="button" data-emoji="🔔" aria-label="Add notifications emoji pair">🔔</button>
+                    <button type="button" data-emoji="🧪" aria-label="Add testing emoji pair">🧪</button>
+                    <button type="button" data-emoji="🛠️" aria-label="Add build emoji pair">🛠️</button>
+                    <button type="button" data-emoji="✅" aria-label="Add check emoji pair">✅</button>
+                  </span>
+                </div>
+                <div class="reaction-note">Paste any emoji, or a custom emoji as <code>name:id</code>. <strong>Insert emoji list</strong> writes the current pairs into the message so members know what each reaction grants. The role must sit below the bot's role and must not carry moderation permissions — the same rules as the acceptance role. Message text is posted with mentions disabled and the bot never pings anyone. Members keep a role they already picked if you later change or remove a pair.</div>
+              </div>
+              <label style="display:flex;align-items:center;gap:9px;margin-top:14px;color:var(--soft);font-size:12px;font-weight:650">
+                <input id="reaction-remove-on-unreact" type="checkbox" checked style="width:auto;min-height:auto"> Remove the role when a member removes their reaction
+              </label>
+              <div class="form-actions"><button id="reaction-cancel-edit" class="btn secondary hidden" type="button">Cancel edit</button><button id="reaction-submit" class="btn" type="submit">Publish post</button></div>
+            </form>
+          </article>
+          <article class="card">
+            <div class="card-head"><div><h2 class="card-title">Live preview</h2><p class="card-desc">Exactly what the bot will post.</p></div><span id="reaction-preview-style" class="tag muted">Embed</span></div>
+            <div class="discord-post">
+              <div id="reaction-preview-content" class="discord-post-content hidden"></div>
+              <div id="reaction-preview-embed" class="discord-embed">
+                <div class="discord-embed-title" id="reaction-preview-title">Choose your roles</div>
+                <div id="reaction-preview"><span class="dm-empty">Start typing to preview…</span></div>
+              </div>
+            </div>
+            <div id="reaction-preview-legend" class="reaction-legend"><span class="legend-empty">Add an emoji and role pair to see the role key.</span></div>
+          </article>
+        </div>
+        <article class="card" style="margin-top:16px">
+          <div class="card-head"><div><h2 class="card-title">Published reaction role posts</h2><p class="card-desc">Edit a post's message or pairs, or remove it and delete its message.</p></div><span id="reaction-post-total" class="tag muted">0 posts</span></div>
+          <div id="reaction-posts"><div class="empty">Loading reaction role posts…</div></div>
         </article>
       </section>
 
@@ -443,11 +544,11 @@
       const titles = {
         overview: ["Control center", "Overview", "Monitor connected servers and active moderation."],
         punishments: ["Moderation", "Punishments", "Manage timed role actions, warnings, and active cases."],
-        rules: ["Community", "Rules & reactions", "Publish rules and configure the acceptance reaction role."],
+        rules: ["Community", "Rules & reactions", "Publish the rules post and build multi-role reaction menus."],
         settings: ["Configuration", "Server settings", "Set role flow, staff alerts, and member notifications."],
         activity: ["Audit trail", "History", "Review recent completed and pardoned cases."],
       };
-      const state = { csrf: "", guildId: sessionStorage.getItem("pm.guild") || "", page: "overview", overview: null, detail: null, toastTimer: null };
+      const state = { csrf: "", guildId: sessionStorage.getItem("pm.guild") || "", page: "overview", overview: null, detail: null, toastTimer: null, reactionPosts: [], reactionConfig: null, reactionEditId: null };
       const $ = (id) => document.getElementById(id);
       const escapeHtml = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 
@@ -630,16 +731,27 @@
         $("stat-rules").textContent = state.detail.rules?.enabled ? "Active" : "Off";
         const select = $("server-select");
         if (select.value !== state.guildId) select.value = state.guildId;
-        fillSelect("rules-channel", state.detail.channels, state.detail.rules?.channelId, "Choose a text channel");
-        fillSelect("rules-role", state.detail.roles, state.detail.rules?.roleId, "Choose a role");
-        $("rules-text").value = state.detail.rules?.text || "";
-        updateRulesStatus(state.detail.rules || {});
+        // The rules form is for a *new* set unless an edit is in progress, so
+        // re-filling selects uses whatever the administrator already picked.
+        const rulesChannel = $("rules-channel").value;
+        const rulesRole = $("rules-role").value;
+        fillSelect("rules-channel", state.detail.channels, rulesChannel || null, "Choose a text channel");
+        fillSelect("rules-role", state.detail.roles, rulesRole || null, "Choose a role");
+        state.rulesets = state.detail.rules?.rulesets || [];
+        renderRulesets();
         fillSelect("settings-punish-role", state.detail.roles, state.detail.settings?.punishRoleId, "Choose a role");
         fillSelect("settings-post-role", state.detail.roles, state.detail.settings?.postRoleId, "Choose a role");
         fillSelect("settings-staff-role", state.detail.roles, state.detail.settings?.staffRoleId, "No staff role");
         fillSelect("settings-staff-channel", state.detail.channels, state.detail.settings?.staffChannelId, "No staff channel");
         $("settings-dm-user").value = String(state.detail.settings?.dmUser !== false);
-        $("rules-preview-title").textContent = `${guild.name || "Server"} Rules`;
+        updateRulesPreviewTitle();
+        // Keep whatever channel the administrator already picked for a new
+        // reaction-role post; the role dropdowns in the pair rows follow the
+        // server's role list.
+        const reactionChannel = $("reaction-channel").value;
+        fillSelect("reaction-channel", state.detail.channels, reactionChannel || null, "Choose a text channel");
+        $("reaction-preview-title").textContent = $("reaction-title").value.trim() || "Reaction roles";
+        refreshReactionRoleOptions();
         scheduleRulesPreview();
         if (state.detail.warningCount != null) $("warning-total").textContent = `${state.detail.warningCount} total`;
       }
@@ -655,25 +767,110 @@
         if (selected != null) select.value = String(selected);
       }
 
-      function updateRulesStatus(rules) {
+      function rulesetFor(rulesetId) {
+        return (state.rulesets || []).find((item) => String(item.rulesetId) === String(rulesetId));
+      }
+
+      // The embed title mirrors the server: "Guild Rules" for the default
+      // name, "Guild — <name>" for anything else (rules.rules_embed_title).
+      function updateRulesPreviewTitle() {
+        const guild = state.detail?.guild?.name || "Server";
+        const name = ($("rules-name").value || "").trim() || state.rulesConfig?.defaultName || "Server rules";
+        const isDefault = name.toLowerCase() === String(state.rulesConfig?.defaultName || "Server rules").toLowerCase();
+        $("rules-preview-title").textContent = isDefault ? `${guild} Rules` : `${guild} — ${name}`;
+      }
+
+      function updateRulesStatus() {
         const box = $("rules-status");
         const tag = $("rules-state");
-        const disable = $("disable-rules-button");
-        if (rules.enabled) {
+        const sets = state.rulesets || [];
+        const max = state.rulesConfig?.maxRulesets || 25;
+        if (sets.length) {
           box.classList.remove("disabled");
           box.querySelector(".status-icon").textContent = "✓";
-          box.querySelector("strong").textContent = "Rules acceptance is active";
-          const channel = (state.detail?.channels || []).find((x) => String(x.id) === String(rules.channelId));
-          const role = (state.detail?.roles || []).find((x) => String(x.id) === String(rules.roleId));
-          box.querySelector("span").textContent = `Posted in #${channel?.name || "unknown channel"} · grants ${role?.name || "configured role"}`;
-          tag.textContent = "Active"; tag.className = "tag success"; disable.classList.remove("hidden");
+          box.querySelector("strong").textContent = `${sets.length} rule set${sets.length === 1 ? "" : "s"} active`;
+          box.querySelector("span").textContent = "Reacting ✅ on a set's post grants that set's role.";
+          tag.textContent = "Active"; tag.className = "tag success";
         } else {
           box.classList.add("disabled");
           box.querySelector(".status-icon").textContent = "!";
-          box.querySelector("strong").textContent = "No active acceptance post";
-          box.querySelector("span").textContent = "Publish rules below to configure the reaction role.";
-          tag.textContent = "Not configured"; tag.className = "tag muted"; disable.classList.add("hidden");
+          box.querySelector("strong").textContent = "No published rule set";
+          box.querySelector("span").textContent = "Publish one below to configure its acceptance role.";
+          tag.textContent = "Not configured"; tag.className = "tag muted";
         }
+        $("rules-name-hint").textContent = `${sets.length} / ${max} sets`;
+      }
+
+      function renderRulesets() {
+        const root = $("ruleset-list");
+        const sets = state.rulesets || [];
+        updateRulesStatus();
+        if (!sets.length) {
+          root.innerHTML = `<span class="legend-empty">Publish your first rule set to see it here.</span>`;
+          return;
+        }
+        root.innerHTML = sets.map((ruleset) => {
+          const editing = String(state.rulesEditId) === String(ruleset.rulesetId);
+          const target = `#${escapeHtml(ruleset.channelName || "unknown channel")} → ${escapeHtml(ruleset.roleName || "role missing")}`;
+          const snippet = (ruleset.text || "").replace(/\s+/g, " ").slice(0, 120);
+          return `<div class="post-row">
+            <div class="post-main">
+              <div class="post-title">${escapeHtml(ruleset.name)}${editing ? `<span class="tag warn">Editing</span>` : ""}</div>
+              <div class="post-snippet">${escapeHtml(snippet)}</div>
+              <div class="subtle" style="margin-top:9px">${target} · message ${escapeHtml(ruleset.messageId || "?")}</div>
+            </div>
+            <div class="post-actions">
+              <button class="btn secondary small ruleset-edit" data-ruleset="${escapeHtml(ruleset.rulesetId)}" type="button">✎ Edit</button>
+              <button class="btn danger small ruleset-remove" data-ruleset="${escapeHtml(ruleset.rulesetId)}" type="button">Disable</button>
+            </div>
+          </div>`;
+        }).join("");
+        root.querySelectorAll(".ruleset-edit").forEach((button) => button.addEventListener("click", () => startRulesEdit(button.dataset.ruleset)));
+        root.querySelectorAll(".ruleset-remove").forEach((button) => button.addEventListener("click", () => disableRuleset(button.dataset.ruleset)));
+      }
+
+      function startRulesEdit(rulesetId) {
+        const ruleset = rulesetFor(rulesetId);
+        if (!ruleset) return;
+        state.rulesEditId = ruleset.rulesetId;
+        $("rules-name").value = ruleset.name || "";
+        $("rules-channel").value = String(ruleset.channelId || "");
+        $("rules-role").value = String(ruleset.roleId || "");
+        $("rules-text").value = ruleset.text || "";
+        $("rules-edit-state").textContent = "Editing rule set";
+        $("rules-edit-state").className = "tag warn";
+        $("rules-submit").textContent = "Save changes";
+        $("rules-cancel-edit").classList.remove("hidden");
+        renderRulesets();
+        updateRulesPreviewTitle();
+        scheduleRulesPreview();
+        $("rules-form").scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+
+      function cancelRulesEdit() {
+        state.rulesEditId = null;
+        $("rules-name").value = "";
+        $("rules-text").value = "";
+        $("rules-edit-state").textContent = "New rule set";
+        $("rules-edit-state").className = "tag muted";
+        $("rules-submit").textContent = "Publish rule set";
+        $("rules-cancel-edit").classList.add("hidden");
+        renderRulesets();
+        updateRulesPreviewTitle();
+        scheduleRulesPreview();
+      }
+
+      async function disableRuleset(rulesetId) {
+        const ruleset = rulesetFor(rulesetId);
+        const name = ruleset?.name || "this rule set";
+        if (!confirm(`Disable “${name}”? Its post is marked disabled and reactions stop granting the role. Existing role assignments stay as they are.`)) return;
+        try {
+          await api(`/api/guilds/${encodeURIComponent(state.guildId)}/rules/${encodeURIComponent(rulesetId)}`, { method: "DELETE" });
+          showToast(`Rule set “${name}” disabled.`);
+          if (String(state.rulesEditId) === String(rulesetId)) cancelRulesEdit();
+          await loadGuildDetail();
+          await loadOverview();
+        } catch (error) { showToast(friendlyError(error.message), true); }
       }
 
       async function loadPageData(page) {
@@ -682,6 +879,11 @@
         if (page === "punishments") await loadWarnings();
         if (page === "activity") await loadHistory();
         if (page === "rules" || page === "settings") await loadGuildDetail();
+        if (page === "rules") {
+          if (!reactionEntryRows().length) addReactionEntry();
+          await loadReactionRoles();
+          await refreshReactionPreview();
+        }
       }
 
       async function loadPunishments() {
@@ -815,25 +1017,40 @@
       };
       const MD_LINE_PREFIXES = { h1: "# ", h2: "## ", h3: "### ", bullet: "- ", quote: "> " };
       const MD_LINE_MARKERS = { h1: /^#{1,3} /, h2: /^#{1,3} /, h3: /^#{1,3} /, bullet: /^[-*+] /, quote: /^> /, number: /^\d{1,3}[.)] / };
-      let previewTimer = null;
-      let previewRequest = 0;
 
-      function rulesSelection() {
-        const area = $("rules-text");
+      // Both editors (the rules embed and a reaction-role message) share the
+      // same rendering endpoint, the same formatting toolbar and the same
+      // debounce, so the two cannot behave differently.
+      const editors = {
+        rules: {
+          text: "rules-text", preview: () => "rules-preview", hints: "rules-hints",
+          count: "rules-count", limit: () => 4096, compose: (value) => value,
+          timer: null, request: 0,
+        },
+        reaction: {
+          text: "reaction-message", hints: "reaction-hints", count: "reaction-count",
+          preview: () => ($("reaction-style").value === "plain" ? "reaction-preview-content" : "reaction-preview"),
+          limit: reactionMessageLimit, compose: (value) => value.trim() || reactionDefaultMessage(),
+          timer: null, request: 0,
+        },
+      };
+
+      function editorSelection(editor) {
+        const area = $(editor.text);
         return { area, value: area.value, start: area.selectionStart, end: area.selectionEnd };
       }
 
-      function wrapRulesSelection(open, close, placeholder) {
-        const { area, value, start, end } = rulesSelection();
+      function wrapEditorSelection(editor, open, close, placeholder) {
+        const { area, value, start, end } = editorSelection(editor);
         const selected = value.slice(start, end) || placeholder;
         area.value = value.slice(0, start) + open + selected + close + value.slice(end);
         area.focus();
         area.setSelectionRange(start + open.length, start + open.length + selected.length);
-        scheduleRulesPreview();
+        schedulePreview(editor);
       }
 
-      function prefixRulesLines(kind) {
-        const { area, value, start, end } = rulesSelection();
+      function prefixEditorLines(editor, kind) {
+        const { area, value, start, end } = editorSelection(editor);
         const lineStart = value.lastIndexOf("\n", start - 1) + 1;
         const found = value.indexOf("\n", end);
         const lineEnd = found === -1 ? value.length : found;
@@ -851,80 +1068,398 @@
         area.value = value.slice(0, lineStart) + updated + value.slice(lineEnd);
         area.focus();
         area.setSelectionRange(lineStart, lineStart + updated.length);
-        scheduleRulesPreview();
+        schedulePreview(editor);
       }
 
-      function insertMarkdown(kind) {
-        if (MD_WRAPS[kind]) { const [open, close, placeholder] = MD_WRAPS[kind]; wrapRulesSelection(open, close, placeholder); }
-        else prefixRulesLines(kind);
+      function insertMarkdown(editor, kind) {
+        if (MD_WRAPS[kind]) { const [open, close, placeholder] = MD_WRAPS[kind]; wrapEditorSelection(editor, open, close, placeholder); }
+        else prefixEditorLines(editor, kind);
       }
 
       document.querySelectorAll(".md-tool").forEach((button) => {
-        button.addEventListener("click", () => insertMarkdown(button.dataset.md));
+        button.addEventListener("click", () => insertMarkdown(editors[button.dataset.editor] || editors.rules, button.dataset.md));
       });
 
-      $("rules-text").addEventListener("keydown", (event) => {
-        if (!(event.ctrlKey || event.metaKey)) return;
-        const shortcut = { b: "bold", i: "italic", e: "code" }[event.key.toLowerCase()];
-        if (!shortcut) return;
-        event.preventDefault();
-        insertMarkdown(shortcut);
+      Object.values(editors).forEach((editor) => {
+        $(editor.text).addEventListener("keydown", (event) => {
+          if (!(event.ctrlKey || event.metaKey)) return;
+          const shortcut = { b: "bold", i: "italic", e: "code" }[event.key.toLowerCase()];
+          if (!shortcut) return;
+          event.preventDefault();
+          insertMarkdown(editor, shortcut);
+        });
+        $(editor.text).addEventListener("input", () => schedulePreview(editor));
       });
 
-      $("rules-preview").addEventListener("click", (event) => {
-        const spoiler = event.target.closest(".dm-spoiler");
-        if (spoiler) spoiler.classList.toggle("revealed");
+      document.querySelectorAll(".discord-post").forEach((post) => {
+        post.addEventListener("click", (event) => {
+          const spoiler = event.target.closest(".dm-spoiler");
+          if (spoiler) spoiler.classList.toggle("revealed");
+        });
       });
 
-      function renderRulesHints(warnings) {
-        const box = $("rules-hints");
+      function renderHints(editor, warnings) {
+        const box = $(editor.hints);
         box.innerHTML = (warnings || []).map((warning) => `<div class="md-hint"><span>⚠</span><span>${escapeHtml(warning)}</span></div>`).join("");
         box.classList.toggle("hidden", !warnings || !warnings.length);
       }
 
-      async function refreshRulesPreview() {
-        const text = $("rules-text").value;
+      function schedulePreview(editor) {
+        const limit = editor.limit();
+        $(editor.count).textContent = `${$(editor.text).value.length} / ${limit}`;
+        if (editor.timer) clearTimeout(editor.timer);
+        editor.timer = setTimeout(() => refreshPreview(editor), 250);
+      }
+
+      async function refreshPreview(editor) {
+        // compose() mirrors the server: the reaction editor falls back to the
+        // default prompt for an empty box, exactly like the publish path does.
+        const text = editor.compose($(editor.text).value);
         if (!state.guildId) return;
-        if (!text.trim()) {
-          $("rules-preview").innerHTML = `<span class="dm-empty">Start typing to preview…</span>`;
-          renderRulesHints([]);
+        if (text.length > editor.limit()) {
+          renderHints(editor, [`This post style is limited to ${editor.limit()} characters.`]);
           return;
         }
-        const request = ++previewRequest;
+        if (!text.trim()) {
+          $(editor.preview()).innerHTML = `<span class="dm-empty">Start typing to preview…</span>`;
+          renderHints(editor, []);
+          return;
+        }
+        const request = ++editor.request;
         try {
           const result = await api(`/api/guilds/${encodeURIComponent(state.guildId)}/rules/preview`, { method: "POST", body: JSON.stringify({ text }) });
-          if (request !== previewRequest) return;  // a newer keystroke already won
-          $("rules-preview").innerHTML = result.html || `<span class="dm-empty">Start typing to preview…</span>`;
-          renderRulesHints(result.warnings || []);
+          if (request !== editor.request) return;  // a newer keystroke already won
+          $(editor.preview()).innerHTML = result.html || `<span class="dm-empty">Start typing to preview…</span>`;
+          renderHints(editor, result.warnings || []);
         } catch (error) {
-          if (request !== previewRequest) return;
-          renderRulesHints([friendlyError(error.message)]);
+          if (request !== editor.request) return;
+          renderHints(editor, [friendlyError(error.message)]);
         }
       }
 
       function scheduleRulesPreview() {
-        $("rules-count").textContent = `${$("rules-text").value.length} / 4096`;
-        if (previewTimer) clearTimeout(previewTimer);
-        previewTimer = setTimeout(refreshRulesPreview, 250);
+        updateRulesPreviewTitle();
+        schedulePreview(editors.rules);
       }
 
-      $("rules-text").addEventListener("input", scheduleRulesPreview);
       $("rules-form").addEventListener("submit", async (event) => {
-        event.preventDefault(); const button = event.submitter; button.disabled = true;
+        event.preventDefault();
+        const name = $("rules-name").value.trim();
+        if (!name) { showToast("Give this rule set a name — it is how you edit or disable it later.", true); return; }
+        const payload = {
+          name,
+          channelId: $("rules-channel").value,
+          roleId: $("rules-role").value,
+          text: $("rules-text").value,
+        };
+        const editing = state.rulesEditId;
+        const button = event.submitter || $("rules-submit");
+        button.disabled = true;
         try {
-          await api(`/api/guilds/${encodeURIComponent(state.guildId)}/rules`, {
-            method: "PUT",
-            body: JSON.stringify({ channelId: $("rules-channel").value, roleId: $("rules-role").value, text: $("rules-text").value }),
-          });
-          showToast("Rules published and reaction role activated."); await loadGuildDetail(); await loadOverview();
+          if (editing) {
+            await api(`/api/guilds/${encodeURIComponent(state.guildId)}/rules/${encodeURIComponent(editing)}`, { method: "POST", body: JSON.stringify(payload) });
+            showToast(`Rule set “${name}” updated.`);
+          } else {
+            await api(`/api/guilds/${encodeURIComponent(state.guildId)}/rules`, { method: "PUT", body: JSON.stringify(payload) });
+            showToast(`Rule set “${name}” published; members can react to accept it.`);
+          }
+          cancelRulesEdit();
+          await loadGuildDetail();
+          await loadOverview();
         } catch (error) { showToast(friendlyError(error.message), true); }
         finally { button.disabled = false; }
       });
 
-      $("disable-rules-button").addEventListener("click", async () => {
-        if (!confirm("Disable rules reactions? Existing role assignments will stay as they are.")) return;
-        try { await api(`/api/guilds/${encodeURIComponent(state.guildId)}/rules`, { method: "DELETE" }); showToast("Rules reaction role disabled."); await loadGuildDetail(); await loadOverview(); }
-        catch (error) { showToast(friendlyError(error.message), true); }
+      $("rules-cancel-edit").addEventListener("click", cancelRulesEdit);
+      $("refresh-rulesets").addEventListener("click", () => loadGuildDetail().catch((error) => showToast(friendlyError(error.message), true)));
+      $("rules-name").addEventListener("input", updateRulesPreviewTitle);
+      $("rules-name").addEventListener("keydown", (event) => {
+        // Enter in a single-line input shouldn't submit the whole editor.
+        if (event.key === "Enter") event.preventDefault();
+      });
+
+      // ---- Reaction role menus ------------------------------------------- //
+      // Each post is one bot message with its own emoji → role pairs. The
+      // server posts it, adds the reactions and stores the mapping; the bot
+      // then grants/removes roles from raw reaction events (reaction_roles.py).
+      function reactionLimit(kind) {
+        const limits = state.reactionConfig?.limits || {};
+        return kind === "plain" ? (limits.plain ?? 2000) : (limits.embed ?? 4096);
+      }
+
+      function reactionMessageLimit() {
+        return reactionLimit($("reaction-style").value === "plain" ? "plain" : "embed");
+      }
+
+      function reactionMaxEntries() { return state.reactionConfig?.maxEntries || 20; }
+
+      function reactionDefaultMessage() {
+        return state.reactionConfig?.defaultMessage || "React with an emoji below to add or remove a role.";
+      }
+
+      function reactionEntryRows() {
+        return Array.from(document.querySelectorAll("#reaction-entries .reaction-entry"));
+      }
+
+      function readReactionEntries() {
+        return reactionEntryRows().map((row) => ({
+          emoji: row.querySelector(".reaction-emoji").value.trim(),
+          roleId: row.querySelector(".reaction-role").value,
+        }));
+      }
+
+      function roleName(roleId) {
+        const role = (state.detail?.roles || []).find((r) => String(r.id) === String(roleId));
+        return role ? role.name : "";
+      }
+
+      function addReactionEntry(emoji = "", roleId = "") {
+        if (reactionEntryRows().length >= reactionMaxEntries()) {
+          showToast(`A post can hold at most ${reactionMaxEntries()} emoji → role pairs.`, true);
+          return;
+        }
+        const row = document.createElement("div");
+        row.className = "reaction-entry";
+
+        const emojiInput = document.createElement("input");
+        emojiInput.className = "reaction-emoji";
+        emojiInput.maxLength = 100;
+        emojiInput.placeholder = "🎮";
+        emojiInput.value = emoji;
+        emojiInput.setAttribute("aria-label", "Reaction emoji");
+
+        const roleSelect = document.createElement("select");
+        roleSelect.className = "reaction-role";
+        roleSelect.setAttribute("aria-label", "Role granted by this emoji");
+        roleSelect.innerHTML = `<option value="">Choose a role</option>` + (state.detail?.roles || [])
+          .map((role) => `<option value="${role.id}">${escapeHtml(role.name)}</option>`).join("");
+        if (roleId) {
+          if (!roleName(roleId)) {
+            // Keep a mapping to a role the dashboard can no longer see instead
+            // of silently dropping it; the server reports it as invalid.
+            roleSelect.insertAdjacentHTML("beforeend", `<option value="${escapeHtml(String(roleId))}">Role ${escapeHtml(String(roleId))} (not found)</option>`);
+          }
+          roleSelect.value = String(roleId);
+        }
+
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "btn danger small";
+        remove.textContent = "✕";
+        remove.setAttribute("aria-label", "Remove this pair");
+        remove.addEventListener("click", () => {
+          row.remove();
+          updateReactionEntryCount();
+          refreshReactionPreview();
+        });
+
+        emojiInput.addEventListener("input", () => { updateReactionEntryCount(); scheduleReactionPreview(); });
+        roleSelect.addEventListener("change", () => { updateReactionEntryCount(); refreshReactionPreview(); });
+
+        row.append(emojiInput, roleSelect, remove);
+        $("reaction-entries").append(row);
+        updateReactionEntryCount();
+      }
+
+      function updateReactionEntryCount() {
+        $("reaction-entry-count").textContent = `${reactionEntryRows().length} / ${reactionMaxEntries()}`;
+      }
+
+      function renderReactionLegend() {
+        const box = $("reaction-preview-legend");
+        const entries = readReactionEntries().filter((entry) => entry.emoji);
+        if (!entries.length) {
+          box.innerHTML = `<span class="legend-empty">Add an emoji and role pair to see the role key.</span>`;
+          return;
+        }
+        box.innerHTML = entries.map((entry) => {
+          const name = roleName(entry.roleId) || (entry.roleId ? "role not found" : "no role chosen");
+          return `<div class="reaction-legend-row"><span class="reaction-legend-emoji">${escapeHtml(entry.emoji)}</span><span>${escapeHtml(name)}</span></div>`;
+        }).join("");
+      }
+
+      function updateReactionStyle() {
+        const useEmbed = $("reaction-style").value !== "plain";
+        $("reaction-title-field").classList.toggle("hidden", !useEmbed);
+        $("reaction-preview-embed").classList.toggle("hidden", !useEmbed);
+        $("reaction-preview-content").classList.toggle("hidden", useEmbed);
+        $("reaction-preview-style").textContent = useEmbed ? "Embed" : "Plain message";
+        $("reaction-message").maxLength = reactionMessageLimit();
+        refreshReactionPreview();
+      }
+
+      function scheduleReactionPreview() {
+        // Debounced like the rules editor, but the reaction preview also
+        // redraws the role key, so it goes through refreshReactionPreview.
+        const editor = editors.reaction;
+        $(editor.count).textContent = `${$(editor.text).value.length} / ${reactionMessageLimit()}`;
+        if (editor.timer) clearTimeout(editor.timer);
+        editor.timer = setTimeout(refreshReactionPreview, 250);
+      }
+
+      async function refreshReactionPreview() {
+        renderReactionLegend();
+        updateReactionEntryCount();
+        // The style decides the limit (2,000 plain / 4,096 embed), so the
+        // counter has to follow a style switch as well as a keystroke.
+        $(editors.reaction.count).textContent = `${$(editors.reaction.text).value.length} / ${reactionMessageLimit()}`;
+        $("reaction-preview-title").textContent = $("reaction-title").value.trim() || "Reaction roles";
+        await refreshPreview(editors.reaction);
+      }
+
+      function refreshReactionRoleOptions() {
+        const roles = state.detail?.roles || [];
+        const options = `<option value="">Choose a role</option>` + roles.map((role) => `<option value="${role.id}">${escapeHtml(role.name)}</option>`).join("");
+        document.querySelectorAll("#reaction-entries .reaction-role").forEach((select) => {
+          const current = select.value;
+          select.innerHTML = options;
+          select.value = current;
+        });
+        renderReactionLegend();
+      }
+
+      async function loadReactionRoles() {
+        if (!state.guildId) return;
+        const result = await api(`/api/guilds/${encodeURIComponent(state.guildId)}/reaction-roles`);
+        state.reactionConfig = result;
+        state.reactionPosts = result.posts || [];
+        const total = state.reactionPosts.length;
+        $("reaction-post-total").textContent = `${total} post${total === 1 ? "" : "s"}`;
+        renderReactionPosts();
+        updateReactionEntryCount();
+      }
+
+      function renderReactionPosts() {
+        const root = $("reaction-posts");
+        const posts = state.reactionPosts || [];
+        if (!posts.length) {
+          root.innerHTML = `<div class="empty"><strong>No reaction role posts yet</strong>Compose one above and press “Publish post”. Members pick their own roles by reacting.</div>`;
+          return;
+        }
+        root.innerHTML = posts.map((post) => {
+          const channel = (state.detail?.channels || []).find((c) => String(c.id) === String(post.channelId));
+          const chips = (post.entries || []).map((entry) => {
+            const name = roleName(entry.roleId) || `Role ${entry.roleId || "?"}`;
+            return `<span class="post-chip"><span class="chip-emoji">${escapeHtml(entry.emoji)}</span>${escapeHtml(name)}</span>`;
+          }).join("") || `<span class="post-chip">No pairs</span>`;
+          const message = post.message.length > 170 ? `${post.message.slice(0, 170)}…` : post.message;
+          return `<div class="post-row">
+            <div class="post-main">
+              <div class="post-title">${escapeHtml(post.title || "Reaction roles")}<span class="tag muted">${post.useEmbed ? "Embed" : "Message"}</span>${post.removeOnUnreact ? "" : `<span class="tag muted">Keeps role on unreact</span>`}</div>
+              <div class="post-snippet">${escapeHtml(message)}</div>
+              <div class="post-chips">${chips}</div>
+              <div class="subtle" style="margin-top:9px">#${escapeHtml(channel?.name || "unknown channel")} · message ${escapeHtml(post.messageId || "?")}</div>
+            </div>
+            <div class="post-actions">
+              <button class="btn secondary small reaction-edit" data-post="${escapeHtml(post.postId)}" type="button">✎ Edit</button>
+              <button class="btn danger small reaction-remove" data-post="${escapeHtml(post.postId)}" type="button">Remove</button>
+            </div>
+          </div>`;
+        }).join("");
+        root.querySelectorAll(".reaction-edit").forEach((button) => button.addEventListener("click", () => startReactionEdit(button.dataset.post)));
+        root.querySelectorAll(".reaction-remove").forEach((button) => button.addEventListener("click", () => removeReactionPost(button.dataset.post)));
+      }
+
+      function startReactionEdit(postId) {
+        const post = (state.reactionPosts || []).find((item) => String(item.postId) === String(postId));
+        if (!post) return;
+        state.reactionEditId = post.postId;
+        $("reaction-channel").value = String(post.channelId || "");
+        $("reaction-style").value = post.useEmbed ? "embed" : "plain";
+        $("reaction-title").value = post.title || "";
+        $("reaction-message").value = post.message || "";
+        $("reaction-remove-on-unreact").checked = post.removeOnUnreact !== false;
+        $("reaction-entries").innerHTML = "";
+        (post.entries || []).forEach((entry) => addReactionEntry(entry.emoji, entry.roleId));
+        if (!(post.entries || []).length) addReactionEntry();
+        $("reaction-edit-state").textContent = "Editing post";
+        $("reaction-edit-state").className = "tag warn";
+        $("reaction-submit").textContent = "Save changes";
+        $("reaction-cancel-edit").classList.remove("hidden");
+        updateReactionStyle();
+        $("reaction-form").scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+
+      function cancelReactionEdit() {
+        state.reactionEditId = null;
+        $("reaction-form").reset();
+        $("reaction-entries").innerHTML = "";
+        addReactionEntry();
+        $("reaction-edit-state").textContent = "New post";
+        $("reaction-edit-state").className = "tag muted";
+        $("reaction-submit").textContent = "Publish post";
+        $("reaction-cancel-edit").classList.add("hidden");
+        updateReactionStyle();
+      }
+
+      async function removeReactionPost(postId) {
+        if (!confirm("Remove this reaction role post and delete its Discord message? Members keep the roles they already picked.")) return;
+        try {
+          await api(`/api/guilds/${encodeURIComponent(state.guildId)}/reaction-roles/${encodeURIComponent(postId)}?deleteMessage=true`, { method: "DELETE" });
+          showToast("Reaction role post removed.");
+          if (String(state.reactionEditId) === String(postId)) cancelReactionEdit();
+          await loadReactionRoles();
+        } catch (error) { showToast(friendlyError(error.message), true); }
+      }
+
+      function insertReactionLegend() {
+        const lines = readReactionEntries().filter((entry) => entry.emoji).map((entry) => {
+          const name = roleName(entry.roleId) || (entry.roleId ? "role not found" : "no role chosen");
+          return `- ${entry.emoji} → ${name}`;
+        });
+        if (!lines.length) { showToast("Add an emoji and role pair first.", true); return; }
+        const area = $("reaction-message");
+        const block = `React to choose a role:\n${lines.join("\n")}`;
+        area.value = area.value.trim() ? `${area.value.replace(/\s+$/, "")}\n${block}` : block;
+        area.focus();
+        area.setSelectionRange(area.value.length, area.value.length);
+        scheduleReactionPreview();
+      }
+
+      $("reaction-style").addEventListener("change", updateReactionStyle);
+      $("reaction-title").addEventListener("input", () => { refreshReactionPreview(); });
+      $("reaction-add-entry").addEventListener("click", () => { addReactionEntry(); scheduleReactionPreview(); });
+      $("reaction-insert-legend").addEventListener("click", insertReactionLegend);
+      $("reaction-cancel-edit").addEventListener("click", cancelReactionEdit);
+      $("refresh-reaction-roles").addEventListener("click", () => loadReactionRoles().catch((error) => showToast(friendlyError(error.message), true)));
+      document.querySelectorAll("#reaction-quick-emoji button").forEach((button) => {
+        button.addEventListener("click", () => { addReactionEntry(button.dataset.emoji || ""); scheduleReactionPreview(); });
+      });
+
+      $("reaction-form").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const entries = [];
+        for (const row of reactionEntryRows()) {
+          const emoji = row.querySelector(".reaction-emoji").value.trim();
+          const roleId = row.querySelector(".reaction-role").value;
+          if (!emoji && !roleId) continue;
+          if (!emoji || !roleId) { showToast("Every pair needs both an emoji and a role.", true); return; }
+          entries.push({ emoji, roleId });
+        }
+        if (!entries.length) { showToast("Add at least one emoji and role pair.", true); return; }
+
+        const payload = {
+          channelId: $("reaction-channel").value,
+          useEmbed: $("reaction-style").value !== "plain",
+          title: $("reaction-title").value,
+          message: $("reaction-message").value,
+          removeOnUnreact: $("reaction-remove-on-unreact").checked,
+          entries,
+        };
+        const button = event.submitter || $("reaction-submit");
+        button.disabled = true;
+        try {
+          if (state.reactionEditId) {
+            await api(`/api/guilds/${encodeURIComponent(state.guildId)}/reaction-roles/${encodeURIComponent(state.reactionEditId)}`, { method: "POST", body: JSON.stringify(payload) });
+            showToast("Reaction role post updated.");
+          } else {
+            await api(`/api/guilds/${encodeURIComponent(state.guildId)}/reaction-roles`, { method: "PUT", body: JSON.stringify(payload) });
+            showToast("Reaction role post published.");
+          }
+          cancelReactionEdit();
+          await loadReactionRoles();
+        } catch (error) { showToast(friendlyError(error.message), true); }
+        finally { button.disabled = false; }
       });
 
       $("settings-form").addEventListener("submit", async (event) => {

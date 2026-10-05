@@ -388,7 +388,8 @@ class CommandTreeTests(unittest.TestCase):
         names = command_names(self.payload)
         for expected in (
             "punish", "punish apply", "punish pardon", "punish status",
-            "rules", "rules publish", "rules disable", "setup", "fixcommands",
+            "rules", "rules publish", "rules disable", "rules list",
+            "setup", "fixcommands",
         ):
             self.assertIn(expected, names, f"command tree has: {sorted(names)}")
 

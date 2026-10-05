@@ -54,8 +54,9 @@ class _Sandbox:
         for d in (self.home, self.app, self.bundle):
             d.mkdir(parents=True)
         for name in (
-            "bot.py", "paths.py", "rules.py", "discord_markdown.py",
-            "dashboard.py", "dashboard.html", "installer.py",
+            "bot.py", "paths.py", "rules.py", "reaction_roles.py",
+            "discord_markdown.py", "dashboard.py", "dashboard.html",
+            "installer.py",
         ):
             shutil.copy2(REPO_ROOT / name, self.bundle / name)
         if not app_writable:
@@ -178,8 +179,9 @@ class ReadOnlyAppDirTests(unittest.TestCase):
         leftovers = sorted(
             p.name for p in self.sb.bundle.iterdir()
             if p.name not in {
-                "bot.py", "paths.py", "rules.py", "discord_markdown.py",
-                "dashboard.py", "dashboard.html", "installer.py", "__pycache__",
+                "bot.py", "paths.py", "rules.py", "reaction_roles.py",
+                "discord_markdown.py", "dashboard.py", "dashboard.html",
+                "installer.py", "__pycache__",
             }
         )
         self.assertEqual(leftovers, [])

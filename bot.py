@@ -25,6 +25,7 @@ from discord.ext import commands, tasks
 
 import paths
 from dashboard import DashboardServer, ensure_dashboard_token
+from reaction_roles import ReactionRolesCog
 from rules import RulesCog
 
 
@@ -353,7 +354,8 @@ DEFAULT_CONFIG: dict = {
     # --- legacy / shared ---
     "token": "",
     "guilds": {},
-    "rules": {},              # per-guild published rules + reaction-role config
+    "rules": {},              # per-guild published rules + acceptance role
+    "reaction_roles": {},     # per-guild reaction-role menus (dashboard-published)
     "dashboard_enabled": True,
     "dashboard_host": "127.0.0.1",
     "dashboard_port": 8765,
@@ -2138,6 +2140,8 @@ async def _register_cog() -> None:
         await bot.add_cog(PunishmentCog(bot))
     if bot.get_cog("RulesCog") is None:
         await bot.add_cog(RulesCog(bot, save_config))
+    if bot.get_cog("ReactionRolesCog") is None:
+        await bot.add_cog(ReactionRolesCog(bot))
 
 
 # --------------------------------------------------------------------------- #
