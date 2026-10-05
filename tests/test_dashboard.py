@@ -14,7 +14,12 @@ if str(REPO_ROOT) not in sys.path:
 
 from aiohttp.test_utils import TestClient, TestServer  # noqa: E402
 
-from dashboard import DashboardServer, ensure_dashboard_token  # noqa: E402
+from dashboard import DashboardServer, _json_safe_ids, _snowflake, ensure_dashboard_token  # noqa: E402
+
+
+# A realistic Discord snowflake: larger than 2**53, so a JavaScript client
+# rounds it if it arrives as a JSON number (…789 comes back as …800).
+GUILD_ID = 1234567890123456789
 
 
 class FakeBot:
@@ -24,6 +29,55 @@ class FakeBot:
 
     def is_ready(self):
         return False
+
+
+class FakeGuild:
+    id = GUILD_ID
+    name = "Test Guild"
+    icon = None
+    member_count = 7
+    owner_id = 222222222222222222
+    roles = []
+    text_channels = []
+
+
+class GuildFakeBot(FakeBot):
+    guilds = [FakeGuild()]
+
+    def get_guild(self, guild_id):
+        return FakeGuild() if int(guild_id) == GUILD_ID else None
+
+
+class SnowflakeSerialisationTests(unittest.TestCase):
+    """Discord ids must cross the JSON boundary as strings.
+
+    Regression test: sending snowflakes as JSON numbers made the browser round
+    them, so selecting a server produced "The bot is not connected to that
+    server." even when the bot was connected.
+    """
+
+    def test_snowflake_helper(self) -> None:
+        self.assertEqual(_snowflake(GUILD_ID), str(GUILD_ID))
+        self.assertIsNone(_snowflake(None))
+        self.assertIsNone(_snowflake(""))
+
+    def test_row_ids_are_stringified(self) -> None:
+        row = _json_safe_ids(
+            {
+                "user_id": 333333333333333333,
+                "moderator_id": 444444444444444444,
+                "guild_id": 555555555555555555,
+                "id": 3,
+                "reason": "no reason",
+                "count": 2,
+            }
+        )
+        self.assertEqual(row["user_id"], "333333333333333333")
+        self.assertEqual(row["moderator_id"], "444444444444444444")
+        self.assertEqual(row["guild_id"], "555555555555555555")
+        self.assertEqual(row["id"], 3)  # database row key, not a snowflake
+        self.assertEqual(row["count"], 2)
+        self.assertEqual(row["reason"], "no reason")
 
 
 class DashboardTokenTests(unittest.TestCase):
@@ -107,6 +161,39 @@ class DashboardSessionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(logout.status, 200)
             denied_again = await client.get("/api/overview")
             self.assertEqual(denied_again.status, 401)
+
+    async def _login(self, client) -> str:
+        login = await client.post("/api/login", json={"token": self.server._token})
+        self.assertEqual(login.status, 200)
+        return (await login.json())["csrfToken"]
+
+    async def test_guild_ids_cross_the_wire_as_strings(self) -> None:
+        self.server.bot = GuildFakeBot()
+        async with TestClient(TestServer(self.server._build_app())) as client:
+            await self._login(client)
+
+            overview = await client.get("/api/overview")
+            self.assertEqual(overview.status, 200)
+            raw = await overview.text()
+            body = await overview.json()
+            self.assertIsInstance(body["guilds"][0]["id"], str)
+            self.assertEqual(body["guilds"][0]["id"], str(GUILD_ID))
+            # A JSON number here is what the browser rounds.
+            self.assertIn(f'"id": "{GUILD_ID}"', raw)
+
+            detail = await client.get(f"/api/guilds/{GUILD_ID}")
+            self.assertEqual(detail.status, 200)
+            self.assertEqual((await detail.json())["guild"]["ownerId"], "222222222222222222")
+
+    async def test_browser_rounded_id_is_rejected(self) -> None:
+        """Documents the failure the string encoding prevents."""
+        rounded = int(float(GUILD_ID))  # what JavaScript does to the number
+        self.assertNotEqual(rounded, GUILD_ID)
+        self.server.bot = GuildFakeBot()
+        async with TestClient(TestServer(self.server._build_app())) as client:
+            await self._login(client)
+            response = await client.get(f"/api/guilds/{rounded}")
+            self.assertEqual(response.status, 404)
 
 
 def main() -> int:
