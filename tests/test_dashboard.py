@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+import discord  # noqa: E402
 from aiohttp.test_utils import TestClient, TestServer  # noqa: E402
 
 from dashboard import DashboardServer, _json_safe_ids, _snowflake, ensure_dashboard_token  # noqa: E402
@@ -20,6 +23,7 @@ from dashboard import DashboardServer, _json_safe_ids, _snowflake, ensure_dashbo
 # A realistic Discord snowflake: larger than 2**53, so a JavaScript client
 # rounds it if it arrives as a JSON number (…789 comes back as …800).
 GUILD_ID = 1234567890123456789
+OWNER_ID = 222222222222222222
 
 
 class FakeBot:
@@ -194,6 +198,296 @@ class DashboardSessionTests(unittest.IsolatedAsyncioTestCase):
             await self._login(client)
             response = await client.get(f"/api/guilds/{rounded}")
             self.assertEqual(response.status, 404)
+
+
+class RulesPreviewTests(unittest.IsolatedAsyncioTestCase):
+    """The rules Markdown preview used by the dashboard editor.
+
+    Rendering lives in discord_markdown.py (well covered by
+    tests/test_markdown.py); these tests pin down the HTTP contract: the
+    endpoint is session- and CSRF-protected, it never mutates anything, and it
+    shares the publish path's length limit.
+    """
+
+    def setUp(self) -> None:
+        self.bot = GuildFakeBot()
+        self.saved = []
+        self.server = DashboardServer(
+            self.bot,
+            save_config=self.saved.append,
+            db_fetchall=lambda *_args: [],
+            db_fetchone=lambda *_args: None,
+            db_execute=lambda *_args: None,
+            archive_punishment=lambda *_args, **_kwargs: None,
+            get_guild_config=lambda *_args: None,
+            get_staff_channel_id=lambda *_args: None,
+            should_dm_user=lambda *_args: True,
+            is_protected_member=lambda *_args, **_kwargs: None,
+            parse_duration=lambda _value: None,
+            format_duration=lambda value: str(value),
+        )
+        self.server._token = "T" * 48
+
+    async def _login(self, client) -> str:
+        login = await client.post("/api/login", json={"token": self.server._token})
+        self.assertEqual(login.status, 200)
+        return (await login.json())["csrfToken"]
+
+    async def test_preview_renders_markdown_and_hints(self) -> None:
+        url = f"/api/guilds/{GUILD_ID}/rules/preview"
+        async with TestClient(TestServer(self.server._build_app())) as client:
+            csrf = await self._login(client)
+            response = await client.post(
+                url,
+                json={"text": "# Rules\n**be kind**\n- no spam\n\n**unclosed"},
+                headers={"X-CSRF-Token": csrf},
+            )
+            self.assertEqual(response.status, 200)
+            body = await response.json()
+            self.assertIn('class="dm-h1">Rules<', body["html"])
+            self.assertIn("<strong>be kind</strong>", body["html"])
+            self.assertIn("<li>no spam</li>", body["html"])
+            self.assertEqual(body["length"], len("# Rules\n**be kind**\n- no spam\n\n**unclosed"))
+            self.assertEqual(body["limit"], 4096)
+            self.assertTrue(any("bold" in note for note in body["warnings"]))
+            # Rendering a preview must not publish, save, or create a post.
+            self.assertEqual(self.saved, [])
+            self.assertFalse(hasattr(self.bot, "sent"))
+
+    async def test_preview_escapes_html_from_the_rules_text(self) -> None:
+        url = f"/api/guilds/{GUILD_ID}/rules/preview"
+        async with TestClient(TestServer(self.server._build_app())) as client:
+            csrf = await self._login(client)
+            response = await client.post(
+                url,
+                json={"text": "<img src=x onerror=alert(1)>"},
+                headers={"X-CSRF-Token": csrf},
+            )
+            body = await response.json()
+            self.assertNotIn("<img", body["html"])
+            self.assertIn("&lt;img", body["html"])
+
+    async def test_preview_rejects_overlong_text(self) -> None:
+        url = f"/api/guilds/{GUILD_ID}/rules/preview"
+        async with TestClient(TestServer(self.server._build_app())) as client:
+            csrf = await self._login(client)
+            response = await client.post(
+                url,
+                json={"text": "x" * 4097},
+                headers={"X-CSRF-Token": csrf},
+            )
+            self.assertEqual(response.status, 400)
+            self.assertIn("4096", (await response.json())["error"])
+
+    async def test_preview_requires_a_session_and_csrf(self) -> None:
+        url = f"/api/guilds/{GUILD_ID}/rules/preview"
+        async with TestClient(TestServer(self.server._build_app())) as client:
+            anonymous = await client.post(url, json={"text": "# hi"})
+            self.assertEqual(anonymous.status, 401)
+            csrf = await self._login(client)
+            no_csrf = await client.post(url, json={"text": "# hi"})
+            self.assertEqual(no_csrf.status, 403)
+            unknown_guild = await client.post(
+                "/api/guilds/999/rules/preview",
+                json={"text": "# hi"},
+                headers={"X-CSRF-Token": csrf},
+            )
+            self.assertEqual(unknown_guild.status, 404)
+
+
+class _FakeTextChannel:
+    """Stands in for discord.TextChannel (patched in during the test)."""
+
+    def __init__(self, guild, channel_id: int = 555) -> None:
+        self.id = channel_id
+        self.guild = guild
+        self.name = "rules"
+        self.mention = "#rules"
+        self.sent: list[dict] = []
+        self.reactions: list[str] = []
+
+    def permissions_for(self, _member):
+        return SimpleNamespace(
+            view_channel=True,
+            send_messages=True,
+            embed_links=True,
+            add_reactions=True,
+        )
+
+    async def send(self, *, content=None, embed=None, allowed_mentions=None):
+        message = _FakeMessage(self)
+        self.sent.append({"content": content, "embed": embed, "message": message})
+        return message
+
+
+class _FakeMessage:
+    def __init__(self, channel) -> None:
+        self.id = 777
+        self.channel = channel
+        self.author = SimpleNamespace(id=OWNER_ID)
+        self.deleted = False
+
+    async def add_reaction(self, emoji) -> None:
+        self.channel.reactions.append(str(emoji))
+
+    async def delete(self) -> None:
+        self.deleted = True
+
+
+class _PublishFakeGuild:
+    id = GUILD_ID
+    name = "Test Guild"
+
+    def __init__(self, channel) -> None:
+        self._channel = channel
+        self._role = SimpleNamespace(id=888, mention="<@&888>")
+
+    def get_channel(self, channel_id):
+        return self._channel if int(channel_id) == self._channel.id else None
+
+    def get_role(self, role_id):
+        return self._role if int(role_id) == self._role.id else None
+
+
+class _PublishFakeBot:
+    def __init__(self, guild) -> None:
+        self.config = {"guilds": {str(GUILD_ID): {}}}
+        self.user = None
+        self._guild = guild
+
+    def get_guild(self, guild_id):
+        return self._guild if int(guild_id) == GUILD_ID else None
+
+    def is_ready(self):
+        return True
+
+    def get_cog(self, name):
+        if name != "RulesCog":
+            return None
+        # The rules cog's own validation/config plumbing is covered by
+        # tests/test_rules.py; this test is about what gets posted.
+        return SimpleNamespace(
+            _validate_role=lambda *_args: None,
+            _updated_config=lambda guild_id, settings: {"rules": {str(guild_id): settings}},
+        )
+
+
+class DashboardPublishRulesTests(unittest.IsolatedAsyncioTestCase):
+    """The dashboard's publish button posts the same prompt as /rules publish."""
+
+    async def test_publish_posts_the_prompt_and_embed(self) -> None:
+        channel = _FakeTextChannel(guild=None)
+        guild = _PublishFakeGuild(channel)
+        channel.guild = guild
+        saved: list[dict] = []
+        server = DashboardServer(
+            _PublishFakeBot(guild),
+            save_config=saved.append,
+            db_fetchall=lambda *_args: [],
+            db_fetchone=lambda *_args: None,
+            db_execute=lambda *_args: None,
+            archive_punishment=lambda *_args, **_kwargs: None,
+            get_guild_config=lambda *_args: None,
+            get_staff_channel_id=lambda *_args: None,
+            should_dm_user=lambda *_args: True,
+            is_protected_member=lambda *_args, **_kwargs: None,
+            parse_duration=lambda _value: None,
+            format_duration=lambda value: str(value),
+        )
+        server._token = "T" * 48
+
+        with patch.object(discord, "TextChannel", _FakeTextChannel):
+            async with TestClient(TestServer(server._build_app())) as client:
+                login = await client.post("/api/login", json={"token": server._token})
+                csrf = (await login.json())["csrfToken"]
+                response = await client.put(
+                    f"/api/guilds/{GUILD_ID}/rules",
+                    json={"channelId": str(channel.id), "roleId": "888", "text": "Be kind."},
+                    headers={"X-CSRF-Token": csrf},
+                )
+                self.assertEqual(response.status, 201)
+                payload = await response.json()
+
+        # Message ids are snowflakes: they must cross the wire as strings.
+        self.assertEqual(payload["messageId"], "777")
+        self.assertEqual(len(channel.sent), 1)
+        posted = channel.sent[0]
+        from rules import RULES_POST_CONTENT
+
+        self.assertEqual(posted["content"], RULES_POST_CONTENT)
+        self.assertEqual(posted["embed"].title, "Test Guild Rules")
+        self.assertEqual(posted["embed"].description, "Be kind.")
+        self.assertEqual(channel.reactions, ["✅"])
+        self.assertEqual(saved[-1]["rules"][str(GUILD_ID)]["message_id"], 777)
+
+
+class DashboardMarkupTests(unittest.TestCase):
+    """Static checks on the served UI, which no test can click through.
+
+    The rules editor added a live preview whose elements are looked up by id in
+    the page script; a typo there fails silently in the browser (a null
+    dereference on the first keystroke), so every ``$("id")`` the script uses
+    must exist in the markup.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.html = (REPO_ROOT / "dashboard.html").read_text(encoding="utf-8")
+        cls.script = cls.html.rsplit("<script>", 1)[1]
+
+    def test_every_id_the_script_looks_up_exists(self) -> None:
+        markup_ids = set(re.findall(r'id="([^"]+)"', self.html))
+        used_ids = set(re.findall(r'\$\("([^"]+)"\)', self.script))
+        self.assertTrue(used_ids, "no element lookups found - did the script move?")
+        self.assertEqual(used_ids - markup_ids, set())
+
+    def test_rules_editor_exposes_a_preview_and_toolbar(self) -> None:
+        for element in (
+            'id="rules-text"',
+            'id="rules-preview"',
+            'id="rules-preview-title"',
+            'id="rules-hints"',
+            'id="rules-count"',
+            'id="rules-form"',
+            'class="md-toolbar"',
+        ):
+            with self.subTest(element=element):
+                self.assertIn(element, self.html)
+
+    def test_every_toolbar_button_has_a_handler(self) -> None:
+        kinds = set(re.findall(r'data-md="([^"]+)"', self.html))
+        self.assertTrue(kinds)
+        # insertMarkdown() dispatches through these tables: wrapping pairs for
+        # inline formatting, line prefixes for block-level formatting.
+        handled: set[str] = set()
+        for table in ("MD_WRAPS", "MD_LINE_PREFIXES", "MD_LINE_MARKERS"):
+            block = self.script.split(table, 1)[1].split("};", 1)[0]
+            # Object keys are preceded by the opening brace or a comma, which
+            # keeps a "https://…" value from being mistaken for an entry.
+            handled |= set(
+                re.findall(r"(?:^|[{,])\s*([A-Za-z]\w*)\s*:", block, re.M)
+            )
+        self.assertEqual(kinds - handled, set(), "toolbar buttons without a handler")
+        self.assertEqual(handled - kinds, set(), "handlers for buttons that do not exist")
+
+    def test_preview_shows_the_same_prompt_the_bot_posts(self) -> None:
+        """The preview must not quote a different prompt than the bot sends."""
+        from rules import RULES_POST_CONTENT
+
+        self.assertIn('id="rules-preview-content"', self.html)
+        shown = re.search(
+            r'id="rules-preview-content"[^>]*>([^<]+)<', self.html
+        )
+        self.assertIsNotNone(shown, "preview prompt element is empty")
+        self.assertEqual(shown.group(1).strip(), RULES_POST_CONTENT)
+
+    def test_unsupported_toolbar_buttons_are_not_offered(self) -> None:
+        # Discord shows tables, images and horizontal rules literally in an
+        # embed, so the editor must not suggest them.
+        lowered = self.html.lower()
+        for absent in ('data-md="table"', 'data-md="image"', 'data-md="hr"'):
+            with self.subTest(absent=absent):
+                self.assertNotIn(absent, lowered)
 
 
 def main() -> int:

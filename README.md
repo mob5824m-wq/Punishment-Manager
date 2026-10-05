@@ -2,13 +2,15 @@
 
 A cross-platform [discord.py](https://discordpy.readthedocs.io/) bot that
 temporarily swaps a user's role and posts Discord embeds to staff and the
-punished user. It also includes an authenticated server-side web dashboard for
-managing connected servers, punishments, rules, configuration, and history.
+punished user. It also includes warnings for quick, role-free moderation and
+an authenticated server-side web dashboard for managing connected servers,
+punishments, warnings, rules, configuration, and history.
 
 **Role flow**
 
 ```
 (any roles) ──/punish apply──▶  Punish role  ──timer──▶  Post-punish role
+(any roles) ──/punish warn───▶  unchanged roles + a recorded warning
 ```
 
 * When a moderator runs `/punish apply`, the bot **adds the punish
@@ -37,7 +39,9 @@ These checks run in `/punish apply` before any role change is made, so
 even if a mod mis-clicks, nothing happens.
 
 All active punishments are stored in a local SQLite database, so timers
-survive a bot restart.
+survive a bot restart. Warnings and completed punishments live in the same
+database, which is what `/punish status`, `/punish warnings`, and the
+dashboard's history read from.
 
 ---
 
@@ -178,15 +182,62 @@ This writes `config.json` with everything the bot needs.
    /rules publish channel:#rules role:@Verified rules_text:"1. Be respectful. 2. No spam or harassment."
    ```
 
-   The bot posts an embed and adds a ✅ reaction. Members who react receive
-   the configured role; removing their reaction removes that role. Publishing
-   again replaces the previous active bot post. Existing role assignments
-   are not changed by republishing; if you change the acceptance role, remove
-   the old role from existing members as needed. `/rules disable` turns off
-   reaction handling and leaves assignments unchanged.
+   The bot posts this message, an embed containing the rules, and adds a ✅
+   reaction:
 
-Rules text can be up to 4,096 characters. The bot stores the active post and
-role per server in `config.json`; no manual config edit is needed.
+   > By reacting to this you acknowledge the rules and will abide by them.
+
+   Members who react receive the configured role; removing their reaction
+   removes that role. Publishing again replaces the previous active bot post.
+   Existing role assignments are not changed by republishing; if you change
+   the acceptance role, remove the old role from existing members as needed.
+   `/rules disable` turns off reaction handling and leaves assignments
+   unchanged.
+
+The prompt sentence lives in `rules.py` as `RULES_POST_CONTENT`, so
+`/rules publish` and the dashboard's publish button always post the same
+wording (edit it there to change it everywhere). Rules text can be up to
+4,096 characters. The bot stores the active post and role per server in
+`config.json`; no manual config edit is needed.
+
+The rules post is sent with mentions disabled, so no `@` in the rules can ping
+anyone, and the post is only edited or deleted by the bot itself.
+
+#### Markdown in the rules
+
+The rules text is regular Discord Markdown, rendered by Discord's own client.
+Anything Discord supports inside an embed works:
+
+| Syntax | Result |
+|--------|--------|
+| `**bold**`, `*italic*` / `_italic_`, `__underline__`, `~~strikethrough~~`, `\|\|spoiler\|\|` | inline formatting |
+| `# Heading`, `## Heading`, `### Heading` | headings (`####` and more are shown as text) |
+| `- item`, `* item`, `1. item` | bulleted / numbered lists |
+| `> quote`, `>>> quote` | block quotes (the second quotes everything after it) |
+| `` `code` ``, ```` ```code``` ```` | inline code and code blocks |
+| `[label](https://example.com)`, `<https://example.com>` | clickable links |
+| `-# small note` | subtext |
+| `<@user>`, `<@&role>`, `<#channel>` | mentions (rendered, never pinged) |
+
+Discord does **not** render tables, images, task lists, horizontal rules
+(`---`), `####`+ headings or nested lists inside an embed — those are shown
+literally, so the bot's preview does not pretend otherwise.
+
+**In the dashboard.** The Rules page has a formatting toolbar (bold, italic,
+underline, strikethrough, spoiler, headings, lists, quote, code, code block,
+link — with `Ctrl`/`Cmd` + `B`, `I`, `E` shortcuts) and a **live preview** that
+shows the whole post exactly as Discord renders it: the prompt message, the
+embed body, the embed title and the footer. The preview is rendered by the bot
+(`discord_markdown.py`) rather than the browser, so what you see is what the
+published post looks like. While you
+type, the editor also flags syntax Discord would show as plain text — an
+unclosed `**`, a `####` heading, a missing space after `#`, or a non-http link.
+
+<sub>Want to verify the renderer without the browser?</sub>
+
+```bash
+python3 -c "from discord_markdown import render_markdown_html; print(render_markdown_html('# Rules\n**be kind**'))"
+```
 
 ### Option C — edit `config.json` directly
 
@@ -241,9 +292,9 @@ You should see:
 ### Server-side web dashboard
 
 When the bot is running, open **<http://127.0.0.1:8765>** on the bot host.
-The dashboard covers connected servers, active punishments, pardon/apply
-actions, rules and reaction roles, server role/channel settings, slash-command
-sync, and punishment history.
+The dashboard covers connected servers, active punishments, warnings,
+pardon/apply actions, rules and reaction roles, server role/channel settings,
+slash-command sync, and punishment history.
 
 **Finding the dashboard key.** The first startup generates a private
 dashboard key and saves it as `dashboard_token` in the bot's `config.json`.
@@ -301,8 +352,10 @@ admin setup utilities.
 | Command              | Who can use it                  | What it does |
 |----------------------|---------------------------------|--------------|
 | `/punish apply`      | Members with *Moderate Members* | Adds the punish role for the configured duration. Posts a staff embed and DMs the user. |
+| `/punish warn`       | Members with *Moderate Members* | Records a warning (reason + moderator + time). No role is changed. Posts a staff embed and DMs the user. |
+| `/punish warnings`   | Members with *Moderate Members* | Lists a user's recorded warnings. Pass `clear:true` to delete them all (this is logged to the staff channel). |
 | `/punish pardon`     | Members with *Moderate Members* | Ends the punishment early and removes the punish / post-punish role. Posts a staff embed and DMs the user. |
-| `/punish status`     | Anyone                          | Shows the server configuration and a list of active punishments. Pass a `user` to see that user's active status + history. |
+| `/punish status`     | Anyone                          | Shows the server configuration and a list of active punishments. Pass a `user` to see that user's active status, history, and warnings. |
 | `/rules publish`     | Server administrators           | Posts the rules and sets the active ✅ acceptance reaction role. |
 | `/rules disable`     | Server administrators           | Stops handling reactions on the active rules post. Existing roles are unchanged. |
 | `/setup`             | Server administrators           | Configures the punishment roles, staff channel, and DM behavior. |
@@ -316,6 +369,29 @@ admin setup utilities.
 * `reason` — optional, shown in the staff embed, the DM embed, and the DB.
 
 The maximum duration is 30 days. The minimum is 5 seconds.
+
+### Warnings
+
+`/punish warn <user> <reason>` is the light-weight option: unlike
+`/punish apply` it changes **no roles** and has no timer. Each warning is
+stored permanently in the bot's database with its reason, moderator, and
+timestamp, so a member's record survives restarts and pardons.
+
+* `/punish warnings <user>` lists a user's warnings (newest first) with the
+  running total. Moderators can send the same command with `clear:true` to
+  delete every warning for that member; the clear is announced in the staff
+  channel so it is never silent.
+* `/punish status <user>` includes the warning total and the three most recent
+  warnings next to the punishment history.
+* The dashboard's **Punishments** page has the same two actions:
+  a *Warn a member* form and a *Recent warnings* table with a **Clear**
+  button per member. Dashboard warnings are tagged `[Dashboard]` and are
+  attributed to the server owner, exactly like dashboard punishments.
+
+Protected members (admins, moderators, staff role holders, bots, and anyone
+above the bot's role) cannot be warned, and nobody can warn themselves.
+Warnings are DMed to the member and posted to the staff channel using the same
+`dm_user` / `staff_channel_id` settings as punishments.
 
 ---
 
@@ -357,6 +433,28 @@ The maximum duration is 30 days. The minimum is 5 seconds.
 * Color: green
 * Description confirming roles are restored
 * "Issued by" field
+
+**Staff channel embed** (on `/punish warn`):
+
+* Title: "Member warned"
+* Color: gold
+* Fields: User (mention + id), Moderator, Total warnings, Reason, Time
+* Thumbnail: the warned user's avatar
+* Footer: "User ID: ..."
+
+**Warned-user DM embed** (on `/punish warn`):
+
+* Title: "You've been warned in `<server name>`"
+* Color: gold
+* Fields: Reason, Total warnings, Time, Issued by
+* Friendly message about repeated warnings and talking to a moderator
+
+**Staff channel embed** (on `/punish warnings clear:true` and the dashboard's
+**Clear** button):
+
+* Title: "Warnings cleared"
+* Color: grey
+* Fields: User, Moderator, Warnings removed
 
 ---
 

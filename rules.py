@@ -20,6 +20,13 @@ logger = logging.getLogger("punishment_manager.rules")
 RULES_ACCEPT_EMOJI = "✅"
 MAX_RULES_LENGTH = 4096
 
+# The text that accompanies the rules embed. It is a module constant so the
+# /rules publish command and the dashboard's publish endpoint cannot drift
+# apart, and so the dashboard preview can show the same wording members see.
+RULES_POST_CONTENT = (
+    "By reacting to this you acknowledge the rules and will abide by them."
+)
+
 # A self-service reaction must never grant moderation or server-management
 # capabilities. Ordinary access/verified/member roles are fine.
 PRIVILEGED_ROLE_PERMISSIONS = (
@@ -142,16 +149,12 @@ class RulesCog(commands.Cog):
             color=discord.Color.blurple(),
         )
         embed.set_footer(text=f"React with {RULES_ACCEPT_EMOJI} to accept the rules")
-        content = (
-            f"React with {RULES_ACCEPT_EMOJI} below to accept these rules and "
-            f"receive {role.mention}. Removing your reaction removes the role."
-        )
         allowed_mentions = discord.AllowedMentions.none()
 
         posted_message: Optional[discord.Message] = None
         try:
             posted_message = await channel.send(
-                content=content,
+                content=RULES_POST_CONTENT,
                 embed=embed,
                 allowed_mentions=allowed_mentions,
             )

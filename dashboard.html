@@ -155,6 +155,35 @@
     .rules-top { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(250px, .7fr); gap: 16px; align-items: start; }
     .rules-tip { padding: 16px; border: 1px solid rgba(139,124,255,.18); border-radius: 13px; background: rgba(139,124,255,.06); color: #c6c1fa; font-size: 11px; line-height: 1.6; }
     .rules-tip strong { display: block; margin-bottom: 6px; color: #dedaff; font-size: 12px; }
+    .rules-editor { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; align-items: start; }
+    .md-toolbar { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+    .md-tool { min-width: 34px; min-height: 30px; padding: 5px 9px; border: 1px solid var(--line); border-radius: 8px; background: rgba(255,255,255,.03); color: var(--soft); font-size: 11px; font-weight: 700; }
+    .md-tool:hover { border-color: rgba(139,124,255,.35); background: rgba(139,124,255,.09); color: white; }
+    .md-hints { display: grid; gap: 6px; margin-top: 10px; }
+    .md-hint { display: flex; gap: 8px; padding: 9px 11px; border: 1px solid rgba(244,189,80,.2); border-radius: 10px; background: rgba(244,189,80,.055); color: #e8ce94; font-size: 11px; line-height: 1.45; }
+    .discord-post { display: grid; gap: 7px; }
+    .discord-post-content { color: var(--soft); font-size: 12px; line-height: 1.5; }
+    .discord-embed { min-height: 272px; padding: 15px 16px; border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 6px; background: #101320; font-size: 12.5px; line-height: 1.6; overflow-wrap: anywhere; }
+    .discord-embed-title { margin-bottom: 9px; color: #fff; font-size: 14px; font-weight: 750; }
+    .discord-embed-footer { margin-top: 12px; padding-top: 9px; border-top: 1px solid var(--line); color: var(--muted); font-size: 10px; }
+    .dm-empty { color: var(--muted); font-size: 11px; }
+    .dm-h1, .dm-h2, .dm-h3 { margin: 12px 0 6px; color: #fff; font-weight: 750; }
+    .dm-h1 { font-size: 17px; }
+    .dm-h2 { font-size: 15px; }
+    .dm-h3 { font-size: 13.5px; }
+    .discord-embed > :first-child { margin-top: 0; }
+    .dm-p { margin: 7px 0; }
+    .dm-list { margin: 7px 0; padding-left: 22px; }
+    .dm-list li { margin: 3px 0; }
+    .dm-quote { margin: 7px 0; padding: 2px 0 2px 11px; border-left: 3px solid #4e5a72; color: var(--soft); }
+    .dm-pre { margin: 9px 0; padding: 11px; border: 1px solid var(--line); border-radius: 8px; background: #0b0f1a; color: #cbd5e8; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; white-space: pre-wrap; }
+    .dm-code { padding: 1px 5px; border-radius: 5px; background: rgba(255,255,255,.07); color: #d9e2f5; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+    .dm-spoiler { border-radius: 4px; background: #1c2233; color: transparent; cursor: pointer; }
+    .dm-spoiler.revealed { background: rgba(255,255,255,.07); color: inherit; }
+    .dm-mention { padding: 1px 4px; border-radius: 4px; background: rgba(139,124,255,.16); color: #c7c0ff; font-weight: 650; }
+    .dm-link { color: var(--blue); text-decoration: none; }
+    .dm-link:hover { text-decoration: underline; }
+    .dm-subtext { color: var(--muted); font-size: 10.5px; }
     .banner { display: flex; gap: 11px; align-items: flex-start; margin-bottom: 18px; padding: 13px 15px; border: 1px solid rgba(244,189,80,.2); border-radius: 12px; background: rgba(244,189,80,.055); color: #e8ce94; font-size: 11px; line-height: 1.5; }
     .banner strong { color: #f7daa0; }
     .toast { position: fixed; z-index: 10; right: 22px; bottom: 22px; max-width: min(420px, calc(100vw - 44px)); padding: 13px 16px; border: 1px solid rgba(52,211,153,.24); border-radius: 12px; background: #14251f; color: #c9f7e5; box-shadow: 0 16px 50px rgba(0,0,0,.32); font-size: 12px; opacity: 0; transform: translateY(8px); pointer-events: none; transition: .22s ease; }
@@ -168,6 +197,7 @@
       .shell { grid-template-columns: 210px minmax(0, 1fr); }
       .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .two-col { grid-template-columns: 1fr; }
+      .rules-editor { grid-template-columns: 1fr; }
     }
     @media (max-width: 700px) {
       .shell { display: block; }
@@ -280,7 +310,7 @@
       </section>
 
       <section id="page-punishments" class="page">
-        <div class="toolbar"><div><h2>Active punishments</h2><p>Apply a timed role change or pardon an active case.</p></div><button id="refresh-punishments" class="btn secondary">↻ Refresh</button></div>
+        <div class="toolbar"><div><h2>Active punishments</h2><p>Apply a timed role change, warn a member, or pardon an active case.</p></div><button id="refresh-punishments" class="btn secondary">↻ Refresh</button></div>
         <div class="grid two-col">
           <article class="card">
             <div class="card-head"><div><h2 class="card-title">Apply punishment</h2><p class="card-desc">Uses the server's configured punish and post-punish roles.</p></div><span class="tag warn">Admin action</span></div>
@@ -307,6 +337,21 @@
           <div class="card-head"><div><h2 class="card-title">Current cases</h2><p class="card-desc">Remaining time is calculated from the persisted expiry.</p></div><span id="punishment-total" class="tag muted">0 active</span></div>
           <div id="punishment-table" class="table-wrap"><div class="empty">Loading cases…</div></div>
         </article>
+        <article class="card" style="margin-top:16px">
+          <div class="card-head"><div><h2 class="card-title">Warn a member</h2><p class="card-desc">Warnings are recorded with the moderator, reason, and time. No roles are changed.</p></div><span class="tag muted">No role change</span></div>
+          <form id="warn-form">
+            <div class="form-grid">
+              <div class="field"><label for="warn-member-query">Find member <span class="hint">Name or user ID</span></label><div class="member-search"><input id="warn-member-query" autocomplete="off" placeholder="Search this server…"><button id="warn-member-search-button" class="btn secondary" type="button">Search</button></div></div>
+              <div class="field"><label for="warn-member-select">Member</label><select id="warn-member-select" required><option value="">Search for a member first</option></select></div>
+              <div class="field full"><label for="warn-reason">Reason <span class="hint">Up to 900 characters</span></label><input id="warn-reason" maxlength="900" placeholder="Why are you warning this member?" required></div>
+            </div>
+            <div class="form-actions"><button class="btn" type="submit">Send warning</button></div>
+          </form>
+        </article>
+        <article class="card" style="margin-top:16px">
+          <div class="card-head"><div><h2 class="card-title">Recent warnings</h2><p class="card-desc">Newest first. Clearing removes every warning for that member.</p></div><div style="display:flex;align-items:center;gap:8px"><span id="warning-total" class="tag muted">0 total</span><button id="refresh-warnings" class="btn secondary small">↻ Refresh</button></div></div>
+          <div id="warning-table" class="table-wrap"><div class="empty">Loading warnings…</div></div>
+        </article>
       </section>
 
       <section id="page-rules" class="page">
@@ -319,12 +364,45 @@
           <aside class="rules-tip"><strong>How the reaction gate works</strong>Members react with ✅ to receive the selected role. Removing the reaction removes that role. The role cannot have moderation or server-management permissions and must be below the bot's role.</aside>
         </div>
         <article class="card" style="margin-top:16px">
-          <div class="card-head"><div><h2 class="card-title">Publish or replace rules</h2><p class="card-desc">The previous active bot post is retired after the new one is saved.</p></div></div>
+          <div class="card-head"><div><h2 class="card-title">Publish or replace rules</h2><p class="card-desc">Discord Markdown is supported — the preview on the right shows the embed exactly as it will render. The previous active bot post is retired after the new one is saved.</p></div><span class="tag muted">Markdown</span></div>
           <form id="rules-form">
             <div class="form-grid">
               <div class="field"><label for="rules-channel">Post channel</label><select id="rules-channel" required><option value="">Choose a text channel</option></select></div>
               <div class="field"><label for="rules-role">Acceptance role</label><select id="rules-role" required><option value="">Choose a role</option></select></div>
-              <div class="field full"><label for="rules-text">Rules text <span id="rules-count" class="hint">0 / 4096</span></label><textarea id="rules-text" maxlength="4096" placeholder="Write the server rules…" required></textarea></div>
+            </div>
+            <div class="rules-editor" style="margin-top:14px">
+              <div class="field">
+                <label for="rules-text">Rules text <span id="rules-count" class="hint">0 / 4096</span></label>
+                <div class="md-toolbar" role="group" aria-label="Insert Discord Markdown">
+                  <button type="button" class="md-tool" data-md="bold" title="Bold — **text** (Ctrl+B)"><strong>B</strong></button>
+                  <button type="button" class="md-tool" data-md="italic" title="Italic — *text* (Ctrl+I)"><em>I</em></button>
+                  <button type="button" class="md-tool" data-md="underline" title="Underline — __text__"><u>U</u></button>
+                  <button type="button" class="md-tool" data-md="strike" title="Strikethrough — ~~text~~"><s>S</s></button>
+                  <button type="button" class="md-tool" data-md="spoiler" title="Spoiler — ||text||">▨</button>
+                  <button type="button" class="md-tool" data-md="h1" title="Heading 1 — # text">H1</button>
+                  <button type="button" class="md-tool" data-md="h2" title="Heading 2 — ## text">H2</button>
+                  <button type="button" class="md-tool" data-md="h3" title="Heading 3 — ### text">H3</button>
+                  <button type="button" class="md-tool" data-md="bullet" title="Bulleted list — - item">• List</button>
+                  <button type="button" class="md-tool" data-md="number" title="Numbered list — 1. item">1. List</button>
+                  <button type="button" class="md-tool" data-md="quote" title="Quote — > text">❝</button>
+                  <button type="button" class="md-tool" data-md="code" title="Inline code — `code` (Ctrl+E)">&lt;/&gt;</button>
+                  <button type="button" class="md-tool" data-md="codeblock" title="Code block — ``` … ```">&#96;&#96;&#96;</button>
+                  <button type="button" class="md-tool" data-md="link" title="Link — [label](https://…)">🔗</button>
+                </div>
+                <textarea id="rules-text" maxlength="4096" placeholder="Write the server rules…" required></textarea>
+                <div id="rules-hints" class="md-hints hidden"></div>
+              </div>
+              <div class="field">
+                <label>Live preview <span class="hint">As Discord renders the embed</span></label>
+                <div class="discord-post">
+                  <div id="rules-preview-content" class="discord-post-content">By reacting to this you acknowledge the rules and will abide by them.</div>
+                  <div class="discord-embed">
+                    <div class="discord-embed-title" id="rules-preview-title">Rules</div>
+                    <div id="rules-preview"><span class="dm-empty">Start typing to preview…</span></div>
+                    <div class="discord-embed-footer">React with ✅ to accept the rules</div>
+                  </div>
+                </div>
+              </div>
             </div>
             <div class="form-actions"><button id="disable-rules-button" class="btn danger hidden" type="button">Disable reaction role</button><button class="btn" type="submit">Publish rules</button></div>
           </form>
@@ -364,7 +442,7 @@
     (() => {
       const titles = {
         overview: ["Control center", "Overview", "Monitor connected servers and active moderation."],
-        punishments: ["Moderation", "Punishments", "Manage timed role actions and active cases."],
+        punishments: ["Moderation", "Punishments", "Manage timed role actions, warnings, and active cases."],
         rules: ["Community", "Rules & reactions", "Publish rules and configure the acceptance reaction role."],
         settings: ["Configuration", "Server settings", "Set role flow, staff alerts, and member notifications."],
         activity: ["Audit trail", "History", "Review recent completed and pardoned cases."],
@@ -561,7 +639,9 @@
         fillSelect("settings-staff-role", state.detail.roles, state.detail.settings?.staffRoleId, "No staff role");
         fillSelect("settings-staff-channel", state.detail.channels, state.detail.settings?.staffChannelId, "No staff channel");
         $("settings-dm-user").value = String(state.detail.settings?.dmUser !== false);
-        $("rules-count").textContent = `${($("rules-text").value || "").length} / 4096`;
+        $("rules-preview-title").textContent = `${guild.name || "Server"} Rules`;
+        scheduleRulesPreview();
+        if (state.detail.warningCount != null) $("warning-total").textContent = `${state.detail.warningCount} total`;
       }
 
       function fillSelect(id, items, selected, placeholder) {
@@ -599,6 +679,7 @@
       async function loadPageData(page) {
         if (!state.guildId) return;
         if (page === "overview" || page === "punishments") await loadPunishments();
+        if (page === "punishments") await loadWarnings();
         if (page === "activity") await loadHistory();
         if (page === "rules" || page === "settings") await loadGuildDetail();
       }
@@ -632,21 +713,68 @@
         return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
       }
 
-      $("member-search-button").addEventListener("click", searchMembers);
-      $("member-query").addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); searchMembers(); } });
-      async function searchMembers() {
-        const query = $("member-query").value.trim();
-        if (query.length < 2) return showToast("Enter at least two characters to search.", true);
-        const button = $("member-search-button"); button.disabled = true;
+      function wireMemberSearch(queryId, buttonId, selectId) {
+        async function search() {
+          const query = $(queryId).value.trim();
+          if (query.length < 2) return showToast("Enter at least two characters to search.", true);
+          const button = $(buttonId); button.disabled = true;
+          try {
+            const result = await api(`/api/guilds/${encodeURIComponent(state.guildId)}/members?q=${encodeURIComponent(query)}`);
+            const select = $(selectId);
+            select.innerHTML = result.members?.length ? result.members.map((m) => `<option value="${m.id}">${escapeHtml(m.name)} · ${escapeHtml(m.username)} · ${m.id}</option>`).join("") : `<option value="">No members found</option>`;
+            if (result.members?.length) showToast(`Found ${result.members.length} member${result.members.length === 1 ? "" : "s"}.`);
+            else showToast("No members found for that search.", true);
+          } catch (error) { showToast(friendlyError(error.message), true); }
+          finally { button.disabled = false; }
+        }
+        $(buttonId).addEventListener("click", () => search());
+        $(queryId).addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); search(); } });
+        return search;
+      }
+
+      wireMemberSearch("member-query", "member-search-button", "member-select");
+      wireMemberSearch("warn-member-query", "warn-member-search-button", "warn-member-select");
+
+      async function loadWarnings() {
+        const result = await api(`/api/guilds/${encodeURIComponent(state.guildId)}/warnings`);
+        const rows = result.warnings || [];
+        $("warning-total").textContent = `${result.total || 0} total`;
+        const root = $("warning-table");
+        if (!rows.length) { root.innerHTML = `<div class="empty"><strong>No warnings recorded</strong>Members you warn will appear here.</div>`; return; }
+        root.innerHTML = `<table><thead><tr><th>Member</th><th>Reason</th><th>Moderator ID</th><th>When</th><th>Total</th><th>Action</th></tr></thead><tbody>${rows.map((w) => `
+          <tr><td><div class="member-cell">${w.memberAvatar ? `<img class="member-pic" src="${escapeHtml(w.memberAvatar)}" alt="">` : ""}<span>${escapeHtml(w.memberName)}</span></div><div class="subtle">ID ${escapeHtml(w.user_id)}</div></td>
+          <td>${escapeHtml(w.reason || "—")}</td><td>${escapeHtml(w.moderator_id)}</td><td>${escapeHtml(formatDate(w.created_at))}</td><td><span class="tag warn">${escapeHtml(w.totalForMember)}</span></td>
+          <td><button class="btn secondary small clear-warning-btn" data-user="${w.user_id}">Clear</button></td></tr>`).join("")}</tbody></table>`;
+        root.querySelectorAll(".clear-warning-btn").forEach((button) => button.addEventListener("click", () => clearWarnings(button.dataset.user)));
+      }
+
+      async function clearWarnings(userId) {
+        if (!confirm("Clear every warning for this member? This cannot be undone.")) return;
         try {
-          const result = await api(`/api/guilds/${encodeURIComponent(state.guildId)}/members?q=${encodeURIComponent(query)}`);
-          const select = $("member-select");
-          select.innerHTML = result.members?.length ? result.members.map((m) => `<option value="${m.id}">${escapeHtml(m.name)} · ${escapeHtml(m.username)} · ${m.id}</option>`).join("") : `<option value="">No members found</option>`;
-          if (result.members?.length) showToast(`Found ${result.members.length} member${result.members.length === 1 ? "" : "s"}.`);
-          else showToast("No members found for that search.", true);
+          const result = await api(`/api/guilds/${encodeURIComponent(state.guildId)}/warnings/${encodeURIComponent(userId)}`, { method: "DELETE" });
+          showToast(`Cleared ${result.cleared} warning(s).`);
+          await loadWarnings();
+        } catch (error) { showToast(friendlyError(error.message), true); }
+      }
+
+      $("warn-form").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const button = event.submitter; button.disabled = true;
+        try {
+          const userId = $("warn-member-select").value;
+          if (!userId) throw new Error("Choose a member first.");
+          const reason = $("warn-reason").value.trim();
+          if (!reason) throw new Error("Enter a reason for the warning.");
+          const result = await api(`/api/guilds/${encodeURIComponent(state.guildId)}/warnings`, {
+            method: "POST",
+            body: JSON.stringify({ userId, reason }),
+          });
+          $("warn-reason").value = "";
+          showToast(`Warning recorded (${result.totalForMember} on record).`);
+          await loadWarnings();
         } catch (error) { showToast(friendlyError(error.message), true); }
         finally { button.disabled = false; }
-      }
+      });
 
       $("punishment-form").addEventListener("submit", async (event) => {
         event.preventDefault();
@@ -672,7 +800,115 @@
         } catch (error) { showToast(friendlyError(error.message), true); }
       }
 
-      $("rules-text").addEventListener("input", () => { $("rules-count").textContent = `${$("rules-text").value.length} / 4096`; });
+      // ---- Rules Markdown editor ----------------------------------------- //
+      // The preview is rendered by the bot (discord_markdown.py) so it matches
+      // what Discord shows instead of what a generic Markdown parser would.
+      const MD_WRAPS = {
+        bold: ["**", "**", "bold text"],
+        italic: ["*", "*", "italic text"],
+        underline: ["__", "__", "underlined text"],
+        strike: ["~~", "~~", "strikethrough"],
+        spoiler: ["||", "||", "spoiler"],
+        code: ["`", "`", "code"],
+        codeblock: ["```\n", "\n```", "code block"],
+        link: ["[", "](https://example.com)", "link label"],
+      };
+      const MD_LINE_PREFIXES = { h1: "# ", h2: "## ", h3: "### ", bullet: "- ", quote: "> " };
+      const MD_LINE_MARKERS = { h1: /^#{1,3} /, h2: /^#{1,3} /, h3: /^#{1,3} /, bullet: /^[-*+] /, quote: /^> /, number: /^\d{1,3}[.)] / };
+      let previewTimer = null;
+      let previewRequest = 0;
+
+      function rulesSelection() {
+        const area = $("rules-text");
+        return { area, value: area.value, start: area.selectionStart, end: area.selectionEnd };
+      }
+
+      function wrapRulesSelection(open, close, placeholder) {
+        const { area, value, start, end } = rulesSelection();
+        const selected = value.slice(start, end) || placeholder;
+        area.value = value.slice(0, start) + open + selected + close + value.slice(end);
+        area.focus();
+        area.setSelectionRange(start + open.length, start + open.length + selected.length);
+        scheduleRulesPreview();
+      }
+
+      function prefixRulesLines(kind) {
+        const { area, value, start, end } = rulesSelection();
+        const lineStart = value.lastIndexOf("\n", start - 1) + 1;
+        const found = value.indexOf("\n", end);
+        const lineEnd = found === -1 ? value.length : found;
+        const block = value.slice(lineStart, lineEnd);
+        const lines = block.split("\n");
+        const marker = MD_LINE_MARKERS[kind];
+        const togglingOff = lines.every((line) => marker.test(line));
+        let counter = 0;
+        const updated = lines.map((line) => {
+          const bare = line.replace(/^\s*(?:[-*+] |\d{1,3}[.)] |#{1,3} |> )?/, "");
+          if (togglingOff) return bare;
+          if (kind === "number") { counter += 1; return `${counter}. ${bare}`; }
+          return `${MD_LINE_PREFIXES[kind]}${bare}`;
+        }).join("\n");
+        area.value = value.slice(0, lineStart) + updated + value.slice(lineEnd);
+        area.focus();
+        area.setSelectionRange(lineStart, lineStart + updated.length);
+        scheduleRulesPreview();
+      }
+
+      function insertMarkdown(kind) {
+        if (MD_WRAPS[kind]) { const [open, close, placeholder] = MD_WRAPS[kind]; wrapRulesSelection(open, close, placeholder); }
+        else prefixRulesLines(kind);
+      }
+
+      document.querySelectorAll(".md-tool").forEach((button) => {
+        button.addEventListener("click", () => insertMarkdown(button.dataset.md));
+      });
+
+      $("rules-text").addEventListener("keydown", (event) => {
+        if (!(event.ctrlKey || event.metaKey)) return;
+        const shortcut = { b: "bold", i: "italic", e: "code" }[event.key.toLowerCase()];
+        if (!shortcut) return;
+        event.preventDefault();
+        insertMarkdown(shortcut);
+      });
+
+      $("rules-preview").addEventListener("click", (event) => {
+        const spoiler = event.target.closest(".dm-spoiler");
+        if (spoiler) spoiler.classList.toggle("revealed");
+      });
+
+      function renderRulesHints(warnings) {
+        const box = $("rules-hints");
+        box.innerHTML = (warnings || []).map((warning) => `<div class="md-hint"><span>⚠</span><span>${escapeHtml(warning)}</span></div>`).join("");
+        box.classList.toggle("hidden", !warnings || !warnings.length);
+      }
+
+      async function refreshRulesPreview() {
+        const text = $("rules-text").value;
+        if (!state.guildId) return;
+        if (!text.trim()) {
+          $("rules-preview").innerHTML = `<span class="dm-empty">Start typing to preview…</span>`;
+          renderRulesHints([]);
+          return;
+        }
+        const request = ++previewRequest;
+        try {
+          const result = await api(`/api/guilds/${encodeURIComponent(state.guildId)}/rules/preview`, { method: "POST", body: JSON.stringify({ text }) });
+          if (request !== previewRequest) return;  // a newer keystroke already won
+          $("rules-preview").innerHTML = result.html || `<span class="dm-empty">Start typing to preview…</span>`;
+          renderRulesHints(result.warnings || []);
+        } catch (error) {
+          if (request !== previewRequest) return;
+          renderRulesHints([friendlyError(error.message)]);
+        }
+      }
+
+      function scheduleRulesPreview() {
+        $("rules-count").textContent = `${$("rules-text").value.length} / 4096`;
+        if (previewTimer) clearTimeout(previewTimer);
+        previewTimer = setTimeout(refreshRulesPreview, 250);
+      }
+
+      $("rules-text").addEventListener("input", scheduleRulesPreview);
       $("rules-form").addEventListener("submit", async (event) => {
         event.preventDefault(); const button = event.submitter; button.disabled = true;
         try {
@@ -716,6 +952,7 @@
         finally { button.disabled = false; }
       });
       $("refresh-punishments").addEventListener("click", () => loadPunishments().catch((e) => showToast(friendlyError(e.message), true)));
+      $("refresh-warnings").addEventListener("click", () => loadWarnings().catch((e) => showToast(friendlyError(e.message), true)));
       $("refresh-history").addEventListener("click", () => loadHistory().catch((e) => showToast(friendlyError(e.message), true)));
 
       async function initialize() {

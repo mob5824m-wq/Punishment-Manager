@@ -122,6 +122,20 @@ CREATE TABLE IF NOT EXISTS punishment_history (
 );
 CREATE INDEX IF NOT EXISTS idx_punishment_history_user
     ON punishment_history (guild_id, user_id, started_at DESC);
+
+-- Warnings are lighter than punishments: nothing is timed and no role is
+-- swapped. They are kept until a moderator clears them, so /punish warnings
+-- <user> can show the full record (with the escalating totals) later.
+CREATE TABLE IF NOT EXISTS warnings (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id     INTEGER NOT NULL,
+    user_id      INTEGER NOT NULL,
+    moderator_id INTEGER NOT NULL,
+    reason       TEXT NOT NULL,
+    created_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_warnings_user
+    ON warnings (guild_id, user_id, created_at DESC);
 """
 
 
@@ -219,6 +233,101 @@ def archive_punishment(record: dict, ended_reason: str) -> None:
         )
     except sqlite3.Error as exc:
         logger.warning("Failed to archive punishment %s: %s", record.get("id"), exc)
+
+
+# --------------------------------------------------------------------------- #
+# Warnings
+# --------------------------------------------------------------------------- #
+# A warning is a permanent-on-record note attached to a member: no role is
+# swapped, nothing expires, and moderators can list or clear them. Every read
+# tolerates a missing table so a database created by an older build keeps
+# working before the next ``init_db()`` migration adds it.
+MAX_WARNING_REASON_LENGTH = 900
+
+
+def add_warning(
+    guild_id: int,
+    user_id: int,
+    moderator_id: int,
+    reason: str,
+) -> Optional[int]:
+    """Record a warning. Returns its row id, or None if the write failed."""
+    try:
+        with closing(sqlite3.connect(DB_PATH)) as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO warnings
+                    (guild_id, user_id, moderator_id, reason, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    int(guild_id),
+                    int(user_id),
+                    int(moderator_id),
+                    reason,
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+            conn.commit()
+            return int(cursor.lastrowid)
+    except sqlite3.Error as exc:
+        logger.warning("Failed to record warning for user %s: %s", user_id, exc)
+        return None
+
+
+def count_warnings(guild_id: int, user_id: int) -> int:
+    """How many warnings a member currently has on record."""
+    try:
+        row = db_fetchone(
+            "SELECT COUNT(*) AS count FROM warnings "
+            "WHERE guild_id = ? AND user_id = ?",
+            (int(guild_id), int(user_id)),
+        )
+    except sqlite3.OperationalError:
+        # Older database without the warnings table yet.
+        return 0
+    return int(row["count"]) if row is not None else 0
+
+
+def list_warnings(
+    guild_id: int,
+    user_id: Optional[int] = None,
+    *,
+    limit: int = 10,
+) -> list[sqlite3.Row]:
+    """Warnings for one member (or the whole guild), newest first."""
+    limit = max(1, int(limit))
+    try:
+        if user_id is None:
+            return db_fetchall(
+                "SELECT * FROM warnings WHERE guild_id = ? "
+                "ORDER BY created_at DESC, id DESC LIMIT ?",
+                (int(guild_id), limit),
+            )
+        return db_fetchall(
+            "SELECT * FROM warnings WHERE guild_id = ? AND user_id = ? "
+            "ORDER BY created_at DESC, id DESC LIMIT ?",
+            (int(guild_id), int(user_id), limit),
+        )
+    except sqlite3.OperationalError:
+        return []
+
+
+def clear_warnings(guild_id: int, user_id: int) -> int:
+    """Delete every warning for a member. Returns how many were removed.
+
+    Raises ``sqlite3.Error`` if the delete fails; callers distinguish "nothing
+    to clear" (0) from "the database refused the delete" instead of silently
+    reporting success.
+    """
+    removed = count_warnings(guild_id, user_id)
+    if removed == 0:
+        return 0
+    db_execute(
+        "DELETE FROM warnings WHERE guild_id = ? AND user_id = ?",
+        (int(guild_id), int(user_id)),
+    )
+    return removed
 
 
 # --------------------------------------------------------------------------- #
@@ -952,6 +1061,86 @@ class PunishmentBot(commands.Bot):
         e.set_footer(text="Punishment Manager")
         return e
 
+    def _build_warn_staff_embed(
+        self,
+        *,
+        member: discord.Member,
+        moderator: discord.Member,
+        reason: str,
+        created_at: datetime,
+        total: int,
+    ) -> discord.Embed:
+        """Embed posted in the staff channel when a member is warned."""
+        e = discord.Embed(
+            title="Member warned",
+            color=discord.Color.gold(),
+            timestamp=created_at,
+        )
+        e.add_field(name="User", value=f"{member.mention} (`{member.id}`)", inline=True)
+        e.add_field(name="Moderator", value=f"{moderator.mention}", inline=True)
+        e.add_field(name="Total warnings", value=str(int(total)), inline=True)
+        e.add_field(name="Reason", value=reason, inline=False)
+        e.add_field(
+            name="Time",
+            value=f"<t:{int(created_at.timestamp())}:F>",
+            inline=True,
+        )
+        if member.display_avatar:
+            e.set_thumbnail(url=member.display_avatar.url)
+        e.set_footer(text=f"User ID: {member.id}")
+        return e
+
+    def _build_warn_dm_embed(
+        self,
+        *,
+        guild_name: str,
+        moderator_name: str,
+        reason: str,
+        total: int,
+        created_at: datetime,
+    ) -> discord.Embed:
+        """Embed DMed to the user who was just warned."""
+        e = discord.Embed(
+            title=f"You've been warned in {guild_name}",
+            description=(
+                "A moderator has recorded a warning against your account. "
+                "No roles were changed, but repeated warnings may lead to "
+                "further moderation. If you believe this was a mistake, "
+                "please reach out to a moderator."
+            ),
+            color=discord.Color.gold(),
+            timestamp=created_at,
+        )
+        e.add_field(name="Reason", value=reason, inline=False)
+        e.add_field(name="Total warnings", value=str(int(total)), inline=True)
+        e.add_field(
+            name="Time",
+            value=f"<t:{int(created_at.timestamp())}:F>",
+            inline=True,
+        )
+        e.add_field(name="Issued by", value=moderator_name, inline=False)
+        e.set_footer(text="Punishment Manager")
+        return e
+
+    def _build_warn_clear_staff_embed(
+        self,
+        *,
+        member: discord.Member,
+        moderator: discord.Member,
+        removed: int,
+    ) -> discord.Embed:
+        """Embed posted when a member's warnings are cleared."""
+        e = discord.Embed(
+            title="Warnings cleared",
+            color=discord.Color.dark_grey(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        e.add_field(name="User", value=f"{member.mention} (`{member.id}`)", inline=True)
+        e.add_field(name="Moderator", value=f"{moderator.mention}", inline=True)
+        e.add_field(name="Warnings removed", value=str(int(removed)), inline=True)
+        e.set_footer(text=f"User ID: {member.id}")
+        return e
+
     def _build_pardon_staff_embed(
         self,
         *,
@@ -1181,7 +1370,7 @@ class PunishmentCog(commands.Cog):
     # tests/test_commands.py checks every description against that limit.
     punish_group = app_commands.Group(
         name="punish",
-        description="Temporarily swap a user's role.",
+        description="Timed role punishments, pardons, and recorded warnings.",
     )
 
     @punish_group.command(
@@ -1211,6 +1400,38 @@ class PunishmentCog(commands.Cog):
         self, interaction: discord.Interaction, user: discord.Member
     ) -> None:
         await self._handle_pardon(interaction, user)
+
+    @punish_group.command(
+        name="warn",
+        description="Record a warning against a user without changing their roles.",
+    )
+    @app_commands.describe(
+        user="The user to warn.",
+        reason="Why they are being warned. Shown in the staff log and the user's DM.",
+    )
+    async def punish_warn(
+        self,
+        interaction: discord.Interaction,
+        user: discord.Member,
+        reason: str,
+    ) -> None:
+        await self._handle_warn(interaction, user, reason)
+
+    @punish_group.command(
+        name="warnings",
+        description="List a user's recorded warnings, or clear them with clear:true.",
+    )
+    @app_commands.describe(
+        user="The user whose warnings to show.",
+        clear="Set to true to delete all of this user's warnings.",
+    )
+    async def punish_warnings(
+        self,
+        interaction: discord.Interaction,
+        user: discord.Member,
+        clear: Optional[bool] = False,
+    ) -> None:
+        await self._handle_warnings(interaction, user, bool(clear))
 
     @punish_group.command(
         name="status",
@@ -1374,6 +1595,175 @@ class PunishmentCog(commands.Cog):
                 logger.info(
                     "Skipped DM to %s: DMs unavailable.", user.id
                 )
+
+    @staticmethod
+    def _can_moderate(interaction: discord.Interaction) -> bool:
+        """Whether the caller may clear warnings.
+
+        Discord hides the command from members without *Moderate Members* via
+        ``default_member_permissions``, but a server can relax that per
+        integration, so the destructive path re-checks the permission here.
+        """
+        perms = getattr(interaction.user, "guild_permissions", None)
+        if perms is None:
+            return False
+        return bool(
+            getattr(perms, "administrator", False)
+            or getattr(perms, "moderate_members", False)
+        )
+
+    async def _handle_warn(
+        self,
+        interaction: discord.Interaction,
+        user: discord.Member,
+        reason: str,
+    ) -> None:
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.defer(ephemeral=True)
+        except discord.InteractionResponded:
+            pass
+        except discord.HTTPException:
+            return
+
+        if interaction.guild is None or interaction.guild_id is None:
+            await self._safe_followup(
+                interaction, "Warnings only work inside a server."
+            )
+            return
+
+        if user.id == interaction.user.id:
+            await self._safe_followup(interaction, "You can't warn yourself.")
+            return
+
+        protected_reason = is_protected_member(
+            user, self.bot.config, guild=interaction.guild
+        )
+        if protected_reason is not None:
+            await self._safe_followup(interaction, protected_reason)
+            return
+
+        cleaned = (reason or "").strip()
+        if not cleaned:
+            await self._safe_followup(
+                interaction, "Please provide a reason for the warning."
+            )
+            return
+        if len(cleaned) > MAX_WARNING_REASON_LENGTH:
+            await self._safe_followup(
+                interaction,
+                f"Keep the reason under {MAX_WARNING_REASON_LENGTH} characters.",
+            )
+            return
+
+        warning_id = add_warning(
+            interaction.guild_id, user.id, interaction.user.id, cleaned
+        )
+        if warning_id is None:
+            await self._safe_followup(
+                interaction, "Could not save the warning (database error)."
+            )
+            return
+
+        total = count_warnings(interaction.guild_id, user.id)
+        created_at = datetime.now(timezone.utc)
+        await self._safe_followup(
+            interaction,
+            f"Warned {user.mention} - warning **#{total}** on record.\n"
+            f"Reason: {cleaned}",
+        )
+
+        staff_embed = self.bot._build_warn_staff_embed(
+            member=user,
+            moderator=interaction.user,  # type: ignore[arg-type]
+            reason=cleaned,
+            created_at=created_at,
+            total=total,
+        )
+        await self.bot._send_staff_embed(interaction.guild, staff_embed)
+
+        if should_dm_user(self.bot.config, interaction.guild_id):
+            dm_embed = self.bot._build_warn_dm_embed(
+                guild_name=interaction.guild.name,
+                moderator_name=str(interaction.user),
+                reason=cleaned,
+                total=total,
+                created_at=created_at,
+            )
+            sent = await self.bot._dm_embed(user, dm_embed)
+            if not sent:
+                logger.info("Skipped warning DM to %s: DMs unavailable.", user.id)
+
+    async def _handle_warnings(
+        self,
+        interaction: discord.Interaction,
+        user: discord.Member,
+        clear: bool = False,
+    ) -> None:
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.defer(ephemeral=True)
+        except discord.InteractionResponded:
+            pass
+        except discord.HTTPException:
+            return
+
+        if interaction.guild is None or interaction.guild_id is None:
+            await self._safe_followup(
+                interaction, "Warnings only work inside a server."
+            )
+            return
+
+        if clear:
+            if not self._can_moderate(interaction):
+                await self._safe_followup(
+                    interaction,
+                    "You need the Moderate Members permission to clear warnings.",
+                )
+                return
+            try:
+                removed = clear_warnings(interaction.guild_id, user.id)
+            except sqlite3.Error as exc:
+                logger.warning("Failed to clear warnings for %s: %s", user.id, exc)
+                await self._safe_followup(
+                    interaction, "Could not clear the warnings (database error)."
+                )
+                return
+            if removed == 0:
+                await self._safe_followup(
+                    interaction, f"{user.mention} has no warnings to clear."
+                )
+                return
+            await self._safe_followup(
+                interaction,
+                f"Cleared **{removed}** warning(s) for {user.mention}.",
+            )
+            staff_embed = self.bot._build_warn_clear_staff_embed(
+                member=user,
+                moderator=interaction.user,  # type: ignore[arg-type]
+                removed=removed,
+            )
+            await self.bot._send_staff_embed(interaction.guild, staff_embed)
+            return
+
+        total = count_warnings(interaction.guild_id, user.id)
+        rows = list_warnings(interaction.guild_id, user.id, limit=15)
+        lines = [f"**Warnings for {user.mention}:** {total}", ""]
+        if rows:
+            for row in rows:
+                try:
+                    created = datetime.fromisoformat(row["created_at"])
+                    stamp = f"<t:{int(created.timestamp())}:d>"
+                except (TypeError, ValueError):
+                    stamp = str(row["created_at"])
+                lines.append(
+                    f"- {stamp} by <@{row['moderator_id']}> - {row['reason']}"
+                )
+            if total > len(rows):
+                lines.append(f"... and {total - len(rows)} older warning(s).")
+        else:
+            lines.append("- (none recorded)")
+        await self._safe_followup(interaction, "\n".join(lines))
 
     async def _handle_pardon(
         self, interaction: discord.Interaction, user: discord.Member
@@ -1694,6 +2084,30 @@ class PunishmentCog(commands.Cog):
                     f"for {format_duration(duration_s)} "
                     f"by <@{mod_id}> - ended: {ended} - "
                     f"reason: {row['reason'] or 'n/a'}"
+                )
+        else:
+            lines.append("- (none recorded)")
+
+        # Warnings are tracked separately from punishments and never expire,
+        # so a member's status shows the running total plus the latest few.
+        warning_total = count_warnings(interaction.guild_id, user.id)
+        recent_warnings = list_warnings(interaction.guild_id, user.id, limit=3)
+        lines.append("")
+        lines.append(f"**Warnings:** {warning_total}")
+        if recent_warnings:
+            for row in recent_warnings:
+                try:
+                    created = datetime.fromisoformat(row["created_at"])
+                    stamp = f"<t:{int(created.timestamp())}:d>"
+                except (TypeError, ValueError):
+                    stamp = str(row["created_at"])
+                lines.append(
+                    f"- {stamp} by <@{row['moderator_id']}> - {row['reason']}"
+                )
+            if warning_total > len(recent_warnings):
+                lines.append(
+                    f"... and {warning_total - len(recent_warnings)} more "
+                    "(use `/punish warnings`)."
                 )
         else:
             lines.append("- (none recorded)")
