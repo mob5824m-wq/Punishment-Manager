@@ -4,7 +4,8 @@ A cross-platform [discord.py](https://discordpy.readthedocs.io/) bot that
 temporarily swaps a user's role and posts Discord embeds to staff and the
 punished user. It also includes warnings for quick, role-free moderation and
 an authenticated server-side web dashboard for managing connected servers,
-punishments, warnings, rules, configuration, and history.
+punishments, warnings, the rules post, reaction-role menus, configuration, and
+history.
 
 **Role flow**
 
@@ -405,8 +406,10 @@ and the admin-only `/fixcommands` command does the same thing on demand.
 
 ## 5. Commands
 
-The bot provides punishment commands, rules/reaction-role commands, and
-admin setup utilities.
+The bot provides punishment commands, rules commands, and admin setup
+utilities. Reaction-role menus are configured from the dashboard (see
+[Reaction role menus](#reaction-role-menus-dashboard)) rather than a command,
+since they need a message box, a live preview, and one role picker per emoji.
 
 | Command              | Who can use it                  | What it does |
 |----------------------|---------------------------------|--------------|
