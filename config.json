@@ -8,6 +8,13 @@
   "dm_user": true,
   "token": "",
   "guilds": {},
+  "rules": {},
+  "dashboard_enabled": true,
+  "dashboard_host": "127.0.0.1",
+  "dashboard_port": 8765,
+  "dashboard_secure_cookie": false,
+  "dashboard_allowed_hosts": [],
+  "dashboard_token": "",
   "default_duration_minutes": 30,
   "log_channel_id": null
 }

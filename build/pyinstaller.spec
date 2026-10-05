@@ -2,8 +2,8 @@
 """
 PyInstaller spec for the Punishment Manager.
 
-Builds `bot.py` (and its companion `installer.py`) into a single
-self-contained binary on the host platform:
+Builds `bot.py` and its imported modules (`rules.py`, `dashboard.py`), plus
+its companion `installer.py` and dashboard UI, into a self-contained binary:
 
   Linux:   dist/punishment-manager/punishment-manager
   macOS:   dist/Punishment Manager.app/Contents/MacOS/punishment-manager
@@ -51,8 +51,9 @@ VERSION = _read_version()
 
 DATA_FILES = [
     # Bundle installer.py alongside the binary so the main entry point
-    # can `import installer` at runtime.
+    # can `import installer` at runtime, and ship the dashboard's web UI.
     (str(PROJECT_ROOT / 'installer.py'), '.'),
+    (str(PROJECT_ROOT / 'dashboard.html'), '.'),
     (str(PROJECT_ROOT / 'VERSION'), '.'),
 ]
 
@@ -95,6 +96,7 @@ a = Analysis(
         'discord.ext.commands',
         'discord.ext.tasks',
         'aiohttp',
+        'aiohttp.web',
         'sqlite3',
         # bot.py's `import paths` is picked up by the analysis, but
         # installer.py is bundled as a data file (not analysed), so list the

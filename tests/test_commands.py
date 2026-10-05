@@ -388,7 +388,7 @@ class CommandTreeTests(unittest.TestCase):
         names = command_names(self.payload)
         for expected in (
             "punish", "punish apply", "punish pardon", "punish status",
-            "setup", "fixcommands",
+            "rules", "rules publish", "rules disable", "setup", "fixcommands",
         ):
             self.assertIn(expected, names, f"command tree has: {sorted(names)}")
 
@@ -402,7 +402,7 @@ class CommandTreeTests(unittest.TestCase):
 
     def test_admin_commands_are_guild_only_and_admin_only(self) -> None:
         # Administrator = 1 << 3 = 8.
-        for name in ("setup", "fixcommands"):
+        for name in ("setup", "fixcommands", "rules"):
             with self.subTest(command=name):
                 self.assertTrue(self.meta[name]["guild_only"], f"/{name} is guild-only")
                 self.assertEqual(
@@ -429,13 +429,13 @@ class CommandTreeTests(unittest.TestCase):
             [
                 ["get-global", None],
                 ["clear", None], ["sync", None, 0],   # duplicates deleted
-                ["copy", 101], ["sync", 101, 3],      # configured server_id
-                ["copy", 202], ["sync", 202, 3],      # other connected guild
-                ["copy", 303], ["sync", 303, 3],      # joined after startup
+                ["copy", 101], ["sync", 101, 4],      # configured server_id
+                ["copy", 202], ["sync", 202, 4],      # other connected guild
+                ["copy", 303], ["sync", 303, 4],      # joined after startup
                 # /fixcommands: fresh duplicate found and removed ...
                 ["get-global", None], ["clear", None], ["sync", None, 0],
                 # ... and this server's copy re-uploaded, then verified empty.
-                ["sync", 202, 3], ["get-global", None],
+                ["sync", 202, 4], ["get-global", None],
             ],
             "unexpected command registration traffic",
         )
@@ -449,7 +449,7 @@ class CommandTreeTests(unittest.TestCase):
         # Guild copies are made from the local global tree, so emptying the
         # Discord-side registry must not remove the commands locally.
         self.assertEqual(
-            self.sync["local_commands"], ["fixcommands", "punish", "setup"]
+            self.sync["local_commands"], ["fixcommands", "punish", "rules", "setup"]
         )
 
     def test_fixcommands_removes_duplicates_and_reports_it(self) -> None:
