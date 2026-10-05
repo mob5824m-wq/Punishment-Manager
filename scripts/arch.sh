@@ -75,6 +75,21 @@ macos_arch_label() {
     esac
 }
 
+# The Python to run the helper scripts with: $SENTINEL_PYTHON if set, else the
+# first of python3/python on PATH. Prints the command, or fails.
+sentinels_python() {
+    local candidate
+    for candidate in "${SENTINEL_PYTHON:-}" python3 python; do
+        [ -n "$candidate" ] || continue
+        if command -v "$candidate" >/dev/null 2>&1; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+    echo "ERROR: no python3/python on PATH; set SENTINEL_PYTHON." >&2
+    return 1
+}
+
 # Fail unless the binary at $1 was built for canonical architecture $2.
 # Reads the file's own header (ELF / Mach-O / PE), so it catches a build that
 # silently produced the host's architecture instead of the requested one - the
@@ -82,19 +97,8 @@ macos_arch_label() {
 verify_binary_arch() {
     local path="$1"
     local arch="$2"
-    local python=""
+    local python
 
-    for candidate in "${SENTINEL_PYTHON:-}" python3 python; do
-        [ -n "$candidate" ] || continue
-        if command -v "$candidate" >/dev/null 2>&1; then
-            python="$candidate"
-            break
-        fi
-    done
-    if [ -z "$python" ]; then
-        echo "ERROR: no python3/python on PATH to verify $path." >&2
-        return 1
-    fi
-
+    python="$(sentinels_python)" || return 1
     "$python" "$ARCH_SH_DIR/check_arch.py" file "$path" --expect "$arch"
 }

@@ -446,14 +446,65 @@ the interpreter's architecture before building, and the Windows batch script
 re-runs the Python installer when the interpreter on PATH is the emulated one.
 `tests/test_arch.py` covers the resolver, the header reader and that wiring.
 
+### 18. The arm64 .deb would not start on Raspberry Pi OS
+
+**Problem:** fix 17 made the artifact *architecturally* right - an aarch64
+`.deb`, built on `ubuntu-24.04-arm` - but an architecture match is not enough
+to run. PyInstaller bundles the build machine's CPython runtime, so the
+runner's glibc becomes the artifact's floor: built on Ubuntu 24.04 (glibc
+2.39) the arm64 `.deb` dies on Raspberry Pi OS 64-bit "Bookworm" (Debian 12,
+glibc 2.36) with
+
+```
+sentinel: /lib/aarch64-linux-gnu/libc.so.6: version `GLIBC_2.38' not found
+```
+
+and no amount of `dpkg -i` changes that. The `.deb` also claimed
+`Depends: libc6 (>= 2.31)`, which let it install on distributions that could
+never run it.
+
+**Fix:** move both Linux legs to **Ubuntu 22.04** (`ubuntu-22.04` /
+`ubuntu-22.04-arm`) and Python 3.10, the newest jammy has a `libpython` for
+(`libpython3.11` does not exist in jammy). Jammy's glibc is 2.35, so the
+artifacts run on Debian 12 / Raspberry Pi OS 64-bit Bookworm and Trixie, and
+on Ubuntu 22.04+, while the app still supports Python 3.9+.
+
+On top of that the floor is now *measured and enforced* rather than assumed:
+
+- `scripts/check_glibc.py` reads the version requirement out of every ELF
+  file's `.gnu.version_r` table (ELF32/ELF64, either byte order) and reports
+  the bundle's real floor.
+- The Linux legs run it with `--max 2.36` (Debian 12 = Raspberry Pi OS 64-bit
+  Bookworm) and publish the measured number as a check annotation, so a runner
+  or Python bump raises a red build instead of a user's `GLIBC_x.y not found`.
+- `build_linux.sh` writes the same number into the package's
+  `Depends: libc6 (>= …)` line, so `apt` refuses an install on a distribution
+  too old to run it rather than leaving a broken binary behind.
+- The finished bundle is executed inside `debian:bookworm-slim` and
+  `debian:trixie-slim` - the Raspberry Pi OS 64-bit bases - when Docker is
+  available on the runner.
+
+**Still not covered:** 32-bit Raspberry Pi OS (`armhf`). PyInstaller's wheels
+carry no 32-bit ARM Linux bootloader (`Linux-64bit-intel` and
+`Linux-64bit-arm` are what ship, for amd64 and aarch64), so an armhf package
+would be a separate build pipeline, not a matrix entry; 32-bit Pi users run
+from source. Raspberry Pi OS 64-bit "Bullseye" (glibc 2.31) is also below the
+2.35 floor - Bookworm or newer is what the `.deb` supports.
+
+**Regression gate:** `tests/test_glibc.py` covers the reader (synthetic ELF32,
+ELF64, big-endian and version-less fixtures), the CLI exit codes and the
+workflow wiring - including that the Linux legs stay off `ubuntu-24.04` and
+that the `.deb` derives its `Depends` from the measured floor.
+
 ## Test gate in CI
 
 Every leg of `build.yml` and of the reusable `build-installers.yml` runs
 `python -m pytest tests`, which covers runtime path resolution (fixes 12 and
 14), the version plumbing (fix 13), the slash-command definitions (fix 15),
-the reaction-role menus and the merge/tag release automation (fix 16), and the
-per-architecture build plumbing (fix 17). The suites are plain `unittest`, so
-they also run standalone: `python tests/test_paths.py`.
+the reaction-role menus and the merge/tag release automation (fix 16), the
+per-architecture build plumbing (fix 17) and the glibc floor (fix 18). The
+suites are plain `unittest`, so they also run standalone:
+`python tests/test_paths.py`.
 
 ## Other notes
 

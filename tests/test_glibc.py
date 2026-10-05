@@ -298,6 +298,19 @@ class CommandLineTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("not a glibc version", result.stderr)
 
+    def test_quiet_prints_only_the_version(self) -> None:
+        # build_linux.sh reads the floor this way for the .deb's Depends line.
+        self.fixture(["2.35"], "lib")
+        result = self.run_cli("dir", str(self.tmp), "--quiet")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "2.35")
+
+    def test_quiet_reports_the_floor_it_rejected(self) -> None:
+        self.fixture(["2.38"], "lib")
+        result = self.run_cli("dir", str(self.tmp), "--quiet", "--max", "2.36")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout.strip(), "2.38")
+
     def test_an_empty_directory_is_exit_2_when_capped(self) -> None:
         empty = self.tmp / "empty"
         empty.mkdir()
@@ -320,6 +333,14 @@ class HelperWiringTests(unittest.TestCase):
         text = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("check_glibc.py dir dist/sentinel --max", text)
         self.assertIn("glibc_max: '2.36'", text)
+
+    def test_the_deb_depends_on_the_floor_it_was_measured_at(self) -> None:
+        # Not a hard-coded libc6 version: the control file has to state what the
+        # bundle actually needs, so apt can refuse a too-old distribution.
+        text = (REPO_ROOT / "build" / "build_linux.sh").read_text(encoding="utf-8")
+        self.assertIn("check_glibc.py dir dist/sentinel --quiet", text)
+        self.assertIn("Depends: libc6 (>= ${GLIBC_FLOOR})", text)
+        self.assertNotIn("libc6 (>= 2.31)", text)
 
     def test_the_linux_artifacts_are_built_on_the_pi_compatible_baseline(self) -> None:
         # Ubuntu 24.04's glibc (2.39) exceeds the cap enforced above, so the

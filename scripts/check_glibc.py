@@ -259,6 +259,7 @@ def main(argv: list[str] | None = None) -> int:
         command = sub.add_parser(name, help=f"check a {'single binary' if name == 'file' else 'directory of binaries'}")
         command.add_argument("path")
         command.add_argument("--max", metavar="GLIBC", default=None, help="e.g. 2.36; fail if the build needs newer")
+        command.add_argument("--quiet", action="store_true", help="print only the version (e.g. 2.35), for scripts")
 
     args = parser.parse_args(argv)
 
@@ -276,7 +277,10 @@ def main(argv: list[str] | None = None) -> int:
         except UnknownFloor as error:
             print(f"ERROR: {error}", file=sys.stderr)
             return 2
-        print(f"{path}: requires GLIBC {format_version(highest)}")
+        if args.quiet:
+            print(format_version(highest))
+        else:
+            print(f"{path}: requires GLIBC {format_version(highest)}")
         if cap and highest > cap:
             print(
                 f"ERROR: {path} needs GLIBC {format_version(highest)} but the cap is "
@@ -291,14 +295,22 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     highest, versions, elfs, skipped = scan(path)
-    report(path, highest, versions, elfs, skipped)
+    if not args.quiet:
+        report(path, highest, versions, elfs, skipped)
     if cap is None:
+        if args.quiet:
+            if not elfs:
+                print(f"ERROR: no ELF files in {path}", file=sys.stderr)
+                return 2
+            print(format_version(highest))
         return 0
     if not elfs:
         print(f"ERROR: nothing to check in {path}", file=sys.stderr)
         return 2
     if highest > cap:
         offenders = versions.get(highest, [])[:5]
+        if args.quiet:
+            print(format_version(highest))
         print(
             f"ERROR: this build needs GLIBC {format_version(highest)}, above the "
             f"{format_version(cap)} cap.",
@@ -312,7 +324,10 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
-    print(f"    within the {format_version(cap)} cap")
+    if args.quiet:
+        print(format_version(highest))
+    else:
+        print(f"    within the {format_version(cap)} cap")
     return 0
 
 

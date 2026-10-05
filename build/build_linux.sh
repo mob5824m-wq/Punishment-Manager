@@ -54,6 +54,16 @@ fi
 echo "==> Verifying the binary is ${DEB_ARCH}"
 verify_binary_arch dist/sentinel/sentinel "$ARCH"
 
+# The glibc the bundle actually needs, read from the ELF files themselves.
+# PyInstaller bundles this machine's CPython runtime, so this is the build
+# host's glibc, not ours to choose - but it does belong in the control file:
+# `Depends: libc6 (>= X)` lets apt refuse an install on a distribution too old
+# to run it (Raspberry Pi OS 64-bit "Bullseye", say) instead of leaving a
+# binary that dies with "version `GLIBC_2.35' not found".
+PYTHON_BIN="$(sentinels_python)"
+GLIBC_FLOOR="$("$PYTHON_BIN" scripts/check_glibc.py dir dist/sentinel --quiet)"
+echo "    requires GLIBC >= ${GLIBC_FLOOR}"
+
 echo "==> Staging .deb structure"
 STAGE="dist/deb-staging"
 rm -rf "$STAGE"
@@ -79,7 +89,7 @@ Version: ${VERSION}
 Section: net
 Priority: optional
 Architecture: ${ARCH}
-Depends: libc6 (>= 2.31)
+Depends: libc6 (>= ${GLIBC_FLOOR})
 Maintainer: Arena <noreply@arena.ai>
 Description: Discord server management bot (moderation, rules, roles).
  Sentinel manages a Discord server from one /manage command tree:

@@ -73,7 +73,7 @@ Pre-built native installers are attached to every GitHub release:
 | **macOS**   | Apple Silicon (`arm64`) | `Sentinel-X.Y.Z-arm64.dmg`      | Open the `.dmg`, drag the `.app` into `/Applications` |
 | **macOS**   | Intel (`x86_64`)        | `Sentinel-X.Y.Z-x86_64.dmg`     | Same, on an Intel Mac |
 | **Linux**   | x86-64 (`amd64`)        | `sentinel_X.Y.Z_amd64.deb`      | `sudo dpkg -i ...` and you're done |
-| **Linux**   | ARM64 (`arm64`)         | `sentinel_X.Y.Z_arm64.deb`      | Raspberry Pi 4/5, Graviton, Ampere, … |
+| **Linux**   | ARM64 (`arm64`)         | `sentinel_X.Y.Z_arm64.deb`      | 64-bit Raspberry Pi OS (Bookworm or newer), Graviton, Ampere, … |
 | **Windows** | x64 (`amd64`)           | `Sentinel-Setup-X.Y.Z.exe`       | Run the installer; it adds the bot to your Start Menu |
 | **Windows** | ARM64 (`arm64`)         | `Sentinel-Setup-X.Y.Z-arm64.exe` | Windows on ARM (Snapdragon X, Surface Pro X, …) |
 | **Source**  | —                       | `Source code (zip)` / `Source code (tar.gz)` | For everyone who'd rather run from source |
@@ -82,6 +82,17 @@ Each installer is built natively on a runner of its own architecture — an arm6
 installer cannot be produced by an amd64 machine, because PyInstaller does not
 cross-compile — so an arm64 machine downloads the file matching its CPU rather
 than an emulated build. Filenames always say which is which.
+
+**Raspberry Pi** — `sentinel_X.Y.Z_arm64.deb` is a native aarch64 package: it
+runs on **64-bit Raspberry Pi OS** (Bookworm or Trixie; Pi 3, 4, 5, Zero 2 W
+with the 64-bit image) and on other ARM64 Linux boards. It is built and tested
+against Debian 12, i.e. exactly what Raspberry Pi OS 64-bit "Bookworm" is
+based on, and the package's `Depends: libc6` states the glibc version it was
+measured against, so an older system refuses the install instead of failing at
+run time. The **32-bit** Raspberry Pi OS (`armhf`) is *not* covered by the
+pre-built `.deb` — that needs an entirely separate 32-bit ARM build — so run
+[from source](#2-setup-macos-linux-windows) there; the bot supports Python 3.9+
+and has no compiled dependencies beyond `aiohttp`.
 
 Releases are produced automatically by GitHub Actions whenever a
 `v*` tag is pushed. See `.github/workflows/release.yml` for the
@@ -768,7 +779,17 @@ set `CODESIGN_IDENTITY` to your Developer ID.
 Requirements: Python 3.9+, `pyinstaller`, `dpkg`, `fakeroot`,
 `lintian` (optional). The `.deb` is built for the machine's own architecture
 (`dpkg --print-architecture`), so run it on an amd64 host for `amd64` and on
-an arm64 host for `arm64`:
+an arm64 host for `arm64`.
+
+How old a distribution the result runs on is decided by the *build* machine:
+PyInstaller bundles that machine's CPython runtime, so the runner's glibc
+becomes the package's floor. CI builds the `.deb` on Ubuntu 22.04 (glibc 2.35),
+which covers Debian 12 / Raspberry Pi OS 64-bit "Bookworm" and newer;
+`scripts/check_glibc.py` reads the requirement back out of the finished bundle
+and fails the build if it exceeds 2.36, and the same number is written into the
+package's `Depends: libc6 (>= …)` line. Building on a newer distribution
+raises the floor (Ubuntu 24.04 → glibc 2.39) and quietly drops support for
+older targets, which is why the runner is pinned and checked:
 
 ```bash
 build/build_linux.sh             # names the .deb after this host's architecture
@@ -1017,6 +1038,19 @@ python3 tests/test_dashboard.py      # run dashboard auth tests alone
   architecture you asked for (`SENTINEL_TARGET_ARCH`) is not the machine's.
   PyInstaller cannot cross-compile, so build on a host of that architecture
   (or drop the variable and let the script use the host's).
+* **`version 'GLIBC_2.35' not found` when starting `sentinel`** — the system is
+  older than the distribution the `.deb` was built on. The arm64 and amd64
+  packages are built on Ubuntu 22.04 and run on Debian 12 / Raspberry Pi OS
+  64-bit "Bookworm" or newer; on something older (Debian 11, Raspberry Pi OS
+  64-bit "Bullseye") run
+  [from source](#2-setup-macos-linux-windows) instead, or rebuild the package
+  on that distribution with `build/build_linux.sh`.
+* **Raspberry Pi: `dpkg: package architecture (arm64) does not match system
+  (armhf)`** — the pre-built package is 64-bit only. Either flash the 64-bit
+  Raspberry Pi OS image (Pi 3/4/5, Zero 2 W) or run
+  [from source](#2-setup-macos-linux-windows) on 32-bit Raspberry Pi OS; there
+  is no 32-bit ARM installer, because PyInstaller ships no 32-bit ARM Linux
+  bootloader for it to build with.
 * **The installer won't run on an arm64 machine** ("bad CPU type", or an
   ARM64 Windows error) — you have the other architecture's file. The names say
   which is which: `...-arm64.dmg`, `..._arm64.deb` and

@@ -60,8 +60,8 @@ architecture without guessing:
 
 | Runner | Artifact | Installer |
 |--------|----------|-----------|
-| `ubuntu-24.04` | `sentinel-linux-amd64` | `sentinel_<VERSION>_amd64.deb` |
-| `ubuntu-24.04-arm` | `sentinel-linux-arm64` | `sentinel_<VERSION>_arm64.deb` |
+| `ubuntu-22.04` | `sentinel-linux-amd64` | `sentinel_<VERSION>_amd64.deb` |
+| `ubuntu-22.04-arm` | `sentinel-linux-arm64` | `sentinel_<VERSION>_arm64.deb` |
 | `macos-latest` (Apple Silicon) | `sentinel-macos-arm64` | `Sentinel-<VERSION>-arm64.dmg` |
 | `macos-15-intel` | `sentinel-macos-x86_64` | `Sentinel-<VERSION>-x86_64.dmg` |
 | `windows-latest` | `sentinel-windows-x64` | `Sentinel-Setup-<VERSION>.exe` |
@@ -72,6 +72,17 @@ not that architecture (`python scripts/check_arch.py host --expect ...`); the
 build scripts verify the artifact they produced as well, so a leg cannot
 publish a mislabelled installer. The arm64 runners are GitHub's standard
 arm64 machines, free for public repositories.
+
+The two Linux legs are pinned to **Ubuntu 22.04** (Python 3.10, the newest
+jammy packages a `libpython` for, and the app supports 3.9+). PyInstaller
+bundles the build runner's CPython runtime, so the runner's glibc is the
+artifact's floor: jammy's 2.35 keeps the `.deb` runnable on Debian 12 —
+Raspberry Pi OS 64-bit "Bookworm" — while Ubuntu 24.04's 2.39 would not.
+`scripts/check_glibc.py` reads the requirement out of every ELF file in the
+bundle and **fails the build above 2.36** (publishing the measured value as a
+check annotation), so bumping the runner cannot silently drop older targets,
+and the bundle is additionally executed inside `debian:bookworm-slim` and
+`debian:trixie-slim` when Docker is available on the runner.
 
 ## Cutting a release
 
