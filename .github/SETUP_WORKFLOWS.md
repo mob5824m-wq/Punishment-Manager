@@ -57,7 +57,7 @@ Live releases:
 | `v2.0.0` | attached by CI | **Broken for installed builds** — crashes on first launch; superseded by v2.1.0. |
 | `v1.0.0` | source archives only | Created by hand before `release.yml` worked. |
 
-<https://github.com/mob5824m-wq/Punishment-Manager/releases/latest> points at
+<https://github.com/mob5824m-wq/Sentinel/releases/latest> points at
 the newest release, so users always get the fixed build.
 
 ## A note about the agent's GitHub App token
@@ -77,7 +77,7 @@ In practice this means:
 ## Verifying the workflows work
 
 1. **Build workflow** runs on every push / PR. Watch it at
-   <https://github.com/mob5824m-wq/Punishment-Manager/actions>.
+   <https://github.com/mob5824m-wq/Sentinel/actions>.
 
 2. **Release workflow** runs on `v*` tags. To smoke-test it with a
    throwaway tag:

@@ -66,7 +66,7 @@ applies a single permission to a whole command group.
 
 Pre-built native installers are attached to every GitHub release:
 
-[**Latest release →**](https://github.com/mob5824m-wq/Punishment-Manager/releases/latest)
+[**Latest release →**](https://github.com/mob5824m-wq/Sentinel/releases/latest)
 
 | Platform | File | Notes |
 |----------|------|-------|
@@ -655,7 +655,7 @@ git push origin v3.0.0
 ```
 
 Either way, the release page appears at
-`https://github.com/mob5824m-wq/Punishment-Manager/releases/tag/v3.0.0`
+`https://github.com/mob5824m-wq/Sentinel/releases/tag/v3.0.0`
 a few minutes later with the `.dmg`, `.deb`, and `.exe` ready to
 download.
 

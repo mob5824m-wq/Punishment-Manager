@@ -2331,7 +2331,7 @@ def _service_uninstall() -> int:
 # wherever the executable actually lives.
 _LINUX_UNIT_TEMPLATE = """[Unit]
 Description=Sentinel Discord bot
-Documentation=https://github.com/mob5824m-wq/Punishment-Manager
+Documentation=https://github.com/mob5824m-wq/Sentinel
 After=network-online.target
 Wants=network-online.target
 

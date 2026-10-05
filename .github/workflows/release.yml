@@ -14,7 +14,7 @@ name: release
 #   (or just: git tag v1.0.0 && git push origin v1.0.0)
 #
 # Then visit:
-#   https://github.com/mob5824m-wq/Punishment-Manager/releases/tag/v1.0.0
+#   https://github.com/mob5824m-wq/Sentinel/releases/tag/v1.0.0
 
 on:
   push:

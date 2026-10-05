@@ -66,7 +66,7 @@ Description: Discord server management bot (moderation, rules, roles).
  Sentinel manages a Discord server from one /manage command tree:
  timed punishment roles, warnings, rules posts with reaction-role
  acceptance, reaction-role menus, and an authenticated web dashboard.
-Homepage: https://github.com/mob5824m-wq/Punishment-Manager
+Homepage: https://github.com/mob5824m-wq/Sentinel
 EOF
 
 cat > "$STAGE/DEBIAN/conffiles" <<EOF
