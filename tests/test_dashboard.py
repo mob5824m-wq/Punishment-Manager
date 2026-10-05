@@ -495,7 +495,9 @@ class DashboardPublishRulesTests(unittest.IsolatedAsyncioTestCase):
         from rules import RULES_POST_CONTENT
 
         self.assertEqual(posted["content"], RULES_POST_CONTENT)
-        self.assertEqual(posted["embed"].title, "Test Guild Rules")
+        # The post named "Server rules" is a custom set now, so its title is
+        # the name as typed (only the default, "Zone rules", gets "Guild Rules").
+        self.assertEqual(posted["embed"].title, "Test Guild — Server rules")
         self.assertEqual(posted["embed"].description, "Be kind.")
         self.assertEqual(channel.reactions, ["✅"])
         stored = saved[-1]["rules"][str(GUILD_ID)]
@@ -718,7 +720,7 @@ class DashboardRuleSetsTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual([item["name"] for item in body["rulesets"]], ["Server rules", "Event rules"])
                 self.assertEqual([item["roleName"] for item in body["rulesets"]], ["Verified", "Verified"])
                 self.assertEqual(body["rulesets"][0]["channelId"], str(self.channel.id))
-                self.assertEqual(body["defaultName"], "Server rules")
+                self.assertEqual(body["defaultName"], "Zone rules")
                 self.assertEqual(body["maxRulesets"], 25)
                 self.assertTrue(body["prompt"])
 
@@ -739,8 +741,48 @@ class DashboardRuleSetsTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(removed.status, 200)
                 self.assertEqual([item["name"] for item in self._sets], ["Server rules"])
 
-        # Blank names fall back to the default set name.
-        self.assertEqual(self.channel.sent[0]["embed"].title, "Test Guild Rules")
+        # A set named "Server rules" keeps that name: it is a custom name now,
+        # so it gets its own title instead of the default set's short one.
+        self.assertEqual(
+            self.channel.sent[0]["embed"].title, "Test Guild — Server rules"
+        )
+
+    async def test_naming_a_set_server_rules_is_not_auto_corrected(self) -> None:
+        """The regression: a typed title must survive untouched.
+
+        Publishing (or renaming to) "Server Rules" must store and list exactly
+        that, title the embed with it, and leave the default name alone — the
+        title must never be rewritten to the default ("Zone rules").
+        """
+        with patch.object(discord, "TextChannel", _FakeTextChannel):
+            async with TestClient(TestServer(self.server._build_app())) as client:
+                csrf = await self._login(client)
+                created = await client.put(
+                    f"/api/guilds/{GUILD_ID}/rules",
+                    json=self._body(name="Server Rules"),
+                    headers={"X-CSRF-Token": csrf},
+                )
+                self.assertEqual(created.status, 201, await created.text())
+                ruleset_id = (await created.json())["rulesetId"]
+
+                listed = await client.get(f"/api/guilds/{GUILD_ID}/rules")
+                body = await listed.json()
+
+                # Renaming it back to itself keeps it, and the default stays
+                # "Zone rules" for sets that have no name of their own.
+                renamed = await client.post(
+                    f"/api/guilds/{GUILD_ID}/rules/{ruleset_id}",
+                    json=self._body(name="Server Rules", text="Be kind, still."),
+                    headers={"X-CSRF-Token": csrf},
+                )
+                self.assertEqual(renamed.status, 200, await renamed.text())
+
+        self.assertEqual(self._sets[0]["name"], "Server Rules", "stored verbatim")
+        self.assertEqual([item["name"] for item in body["rulesets"]], ["Server Rules"])
+        self.assertEqual(body["defaultName"], "Zone rules")
+        self.assertEqual(
+            self.channel.sent[0]["embed"].title, "Test Guild — Server Rules"
+        )
 
     async def test_edit_reposts_when_the_channel_changes(self) -> None:
         with patch.object(discord, "TextChannel", _FakeTextChannel):

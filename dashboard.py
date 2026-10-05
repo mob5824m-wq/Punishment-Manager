@@ -1187,7 +1187,13 @@ class DashboardServer:
 
     @staticmethod
     def _ruleset_name(data: dict, others: list[dict]) -> tuple[Optional[str], Optional[str]]:
-        """Validate a rule set name, which doubles as its dashboard handle."""
+        """Validate a rule set name, which doubles as its dashboard handle.
+
+        The name is stored exactly as typed. It is never normalised towards
+        :const:`DEFAULT_RULESET_NAME`, so a set the administrator titles
+        "Server rules" keeps that name instead of being auto-corrected to the
+        default; the default only applies when the field is left empty.
+        """
         name = str(data.get("name") or "").strip() or DEFAULT_RULESET_NAME
         if len(name) > MAX_RULESET_NAME_LENGTH:
             return None, (

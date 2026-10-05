@@ -326,7 +326,7 @@
             <div class="card-head"><div><h2 class="card-title">Quick actions</h2><p class="card-desc">Jump into common server operations.</p></div></div>
             <div class="quick-actions">
               <button class="quick-action" data-jump="punishments"><span class="qicon">＋</span><span><strong>Apply a punishment</strong><small>Set a duration and reason</small></span></button>
-              <button class="quick-action" data-jump="rules"><span class="qicon">✓</span><span><strong>Publish server rules</strong><small>Enable the rules acceptance role</small></span></button>
+              <button class="quick-action" data-jump="rules"><span class="qicon">✓</span><span><strong>Publish zone rules</strong><small>Enable the rules acceptance role</small></span></button>
               <button class="quick-action" data-jump="settings"><span class="qicon">⚙</span><span><strong>Review server settings</strong><small>Roles, staff channel, and DMs</small></span></button>
             </div>
             <div style="height:14px"></div>
@@ -388,13 +388,13 @@
             <div id="rules-status" class="inline-status disabled"><div class="status-icon">!</div><div><strong>No published rule set</strong><span>Publish one below to configure its acceptance role.</span></div></div>
             <div id="ruleset-list" class="reaction-legend"><span class="legend-empty">Publish your first rule set to see it here.</span></div>
           </article>
-          <aside class="rules-tip"><strong>How the reaction gate works</strong>Members react with ✅ to receive that set's role. Removing the reaction removes the role. The role cannot have moderation or server-management permissions and must be below the bot's role. One server can run several rule sets — for example a "Server rules" post and a shorter "Event rules" post — each with its own channel, role and text.</aside>
+          <aside class="rules-tip"><strong>How the reaction gate works</strong>Members react with ✅ to receive that set's role. Removing the reaction removes the role. The role cannot have moderation or server-management permissions and must be below the bot's role. One server can run several rule sets — for example a "Zone rules" post and a shorter "Event rules" post — each with its own channel, role and text. The name you type is kept exactly as written: name a set "Server rules" and it stays that, with its own title.</aside>
         </div>
         <article class="card" style="margin-top:16px">
           <div class="card-head"><div><h2 class="card-title">Publish or edit a rule set</h2><p class="card-desc">Discord Markdown is supported — the preview on the right shows the embed exactly as it will render. Publishing with a name that already exists replaces that set's post.</p></div><span id="rules-edit-state" class="tag muted">New rule set</span></div>
           <form id="rules-form">
             <div class="form-grid">
-              <div class="field"><label for="rules-name">Rule set name <span id="rules-name-hint" class="hint">Up to 80 characters</span></label><input id="rules-name" maxlength="80" placeholder="Server rules" required></div>
+              <div class="field"><label for="rules-name">Rule set name <span id="rules-name-hint" class="hint">Up to 80 characters · kept exactly as typed</span></label><input id="rules-name" maxlength="80" placeholder="Zone rules" required></div>
               <div class="field"><label for="rules-channel">Post channel</label><select id="rules-channel" required><option value="">Choose a text channel</option></select></div>
               <div class="field"><label for="rules-role">Acceptance role</label><select id="rules-role" required><option value="">Choose a role</option></select></div>
             </div>
@@ -779,8 +779,12 @@
       // name, "Guild — <name>" for anything else (rules.rules_embed_title).
       function updateRulesPreviewTitle() {
         const guild = state.detail?.guild?.name || "Server";
-        const name = ($("rules-name").value || "").trim() || state.rulesConfig?.defaultName || "Server rules";
-        const isDefault = name.toLowerCase() === String(state.rulesConfig?.defaultName || "Server rules").toLowerCase();
+        // The typed name wins: only the current default ("Zone rules", any
+        // case) gets the short "Guild Rules" title, so a set deliberately
+        // named "Server rules" keeps its own title instead of being corrected.
+        const fallback = state.rulesConfig?.defaultName || "Zone rules";
+        const name = ($("rules-name").value || "").trim() || fallback;
+        const isDefault = name.toLowerCase() === String(fallback).toLowerCase();
         $("rules-preview-title").textContent = isDefault ? `${guild} Rules` : `${guild} — ${name}`;
       }
 

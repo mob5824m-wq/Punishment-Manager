@@ -1,6 +1,6 @@
 """Rules publication and reaction-role support for Sentinel.
 
-An administrator can publish any number of *rule sets* per server — a "Server
+An administrator can publish any number of *rule sets* per server — a "Zone
 rules" post, an "Event rules" post, a "Contest rules" post and so on. Members
 react with :const:`RULES_ACCEPT_EMOJI` on any of those posts to receive that
 set's role; removing the reaction removes the role.
@@ -12,7 +12,7 @@ so the behavior survives restarts::
         "123456789012345678": [
             {
                 "ruleset_id": "6f1c0b3a",
-                "name": "Server rules",
+                "name": "Zone rules",
                 "channel_id": 111,
                 "message_id": 222,
                 "role_id": 333,
@@ -20,6 +20,13 @@ so the behavior survives restarts::
             }
         ]
     }
+
+A stored ``name`` is what the administrator typed: it is shown, matched and
+titled exactly as written, and is never rewritten to :const:`DEFAULT_RULESET_NAME`
+(or to whatever the default happens to be at the time). Naming a set
+``"Server rules"`` today — the old default — therefore keeps that name and gets
+its own embed title instead of being folded into the default one. The default
+only fills in where no name was given at all.
 
 Older configs stored a single set as a plain object rather than a list
 (``"rules": {"123…": {"channel_id": …}}``). Those are still read — the object
@@ -46,7 +53,13 @@ MAX_RULES_LENGTH = 4096
 
 # Every set gets a name: it labels the post in the dashboard, titles the embed
 # and is how /manage rules publish and /manage rules disable address a set.
-DEFAULT_RULESET_NAME = "Server rules"
+#
+# This is only the *default* — the name new posts get when the administrator
+# leaves the box empty, and what a legacy set (stored without a name) is read
+# as. A name that is stored is never auto-corrected to it: an explicit
+# "Server rules" stays "Server rules" (see the module docstring), so renaming
+# this default never rewrites anyone's sets.
+DEFAULT_RULESET_NAME = "Zone rules"
 MAX_RULESET_NAME_LENGTH = 80
 MAX_RULESETS_PER_GUILD = 25
 
@@ -95,13 +108,25 @@ def ruleset_id(settings: dict) -> str:
 
 
 def ruleset_name(settings: dict) -> str:
-    """The display name of a stored rule set (legacy sets get the default)."""
+    """The display name of a stored rule set (legacy sets get the default).
+
+    The stored name is returned exactly as the administrator typed it — no
+    case-folding, no replacing a name that happens to match an old default —
+    and only a set that has no name at all falls back to
+    :const:`DEFAULT_RULESET_NAME`.
+    """
     name = str(settings.get("name") or "").strip()
     return name or DEFAULT_RULESET_NAME
 
 
 def rules_embed_title(guild_name: str, name: str) -> str:
-    """The embed title for a set: "Guild Rules" for the default set."""
+    """The embed title for a set: "Guild Rules" for the *current* default name.
+
+    Only a name that matches :const:`DEFAULT_RULESET_NAME` gets the short
+    title. Anything else keeps its own title, so a set named "Server rules" —
+    the default of older versions — is titled "Guild — Server rules" rather
+    than being mistaken for the default set.
+    """
     label = (name or "").strip() or DEFAULT_RULESET_NAME
     if label.casefold() == DEFAULT_RULESET_NAME.casefold():
         return f"{guild_name} Rules"
@@ -346,7 +371,7 @@ class RulesMixin:
         channel="Channel where the rules post should appear.",
         role="Non-staff role granted when a member accepts these rules.",
         rules_text="Rules shown in the embed (maximum 4,096 characters).",
-        name="Rule set name. Publishing again with the same name replaces its post.",
+        name='Rule set name, kept exactly as typed. Defaults to "Zone rules".',
     )
     async def publish_rules(
         self,

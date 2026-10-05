@@ -246,18 +246,23 @@ This writes `config.json` with everything the bot needs.
 
 #### Several rule sets on one server
 
-A server can run more than one rule set — a full "Server rules" post plus a
+A server can run more than one rule set — a full "Zone rules" post plus a
 short "Event rules" or "Contest rules" post, each with its own channel, role
 and text. Give each set a name and it stays independent:
 
 ```text
-/manage rules publish channel:#rules role:@Verified name:"Server rules" rules_text:"1. Be respectful. 2. No spam."
+/manage rules publish channel:#rules role:@Verified name:"Zone rules" rules_text:"1. Be respectful. 2. No spam."
 /manage rules publish channel:#events role:@Events name:"Event rules" rules_text:"1. Keep chat on topic. 2. No spoilers."
 ```
 
 * `/manage rules publish` with an existing name (case-insensitive) replaces only that
-  set's post; other sets are untouched. The default name is `Server rules`, so
-  existing single-post installs are unchanged.
+  set's post; other sets are untouched. The default name — used when you leave
+  the name out — is `Zone rules`, so an unnamed post is the default set.
+* **A name you type is kept exactly as written.** Nothing normalises it towards
+  the default: name a set `Server rules` (the default of older versions) and it
+  stays `Server rules`, stored, listed and titled as "Your Server — Server
+  rules". Only a name matching the current default, `Zone rules`, gets the
+  short "Your Server Rules" title.
 * `/manage rules disable name:"Event rules"` disables one set — its post is marked
   disabled and its ✅ is removed, but roles already granted are left alone.
   With only one set published, `name` can be omitted.
@@ -272,7 +277,7 @@ wording (edit it there to change it everywhere). Rules text can be up to
 4,096 characters. The bot stores every set per server in `config.json`; no
 manual config edit is needed, and a config written by an older version (a
 single object instead of a list, no names) keeps working as one set named
-`Server rules`.
+`Zone rules` — sets that do carry a name keep it untouched.
 
 The rules post is sent with mentions disabled, so no `@` in the rules can ping
 anyone, and the post is only edited or deleted by the bot itself.
@@ -431,7 +436,7 @@ Publishing rule sets from Discord or the dashboard fills `rules` like this:
   "987654321098765432": [
     {
       "ruleset_id": "6f1c0b3a",
-      "name": "Server rules",
+      "name": "Zone rules",
       "channel_id": 111111111111111111,
       "message_id": 222222222222222222,
       "role_id": 333333333333333333,
