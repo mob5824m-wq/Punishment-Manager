@@ -80,6 +80,21 @@ def other_arch(arch: str) -> str:
     return "arm64" if arch == "amd64" else "amd64"
 
 
+def single_arch_bytes(arch: str) -> bytes:
+    """A minimal binary of this platform's format, for one architecture only.
+
+    Tests that need "a binary of the *other* architecture" cannot use
+    ``sys.executable``: the Python on macOS runners is a universal2 Mach-O that
+    legitimately contains both slices (and setup-python's Linux/Windows builds
+    are thin, so the same test would pass there for the wrong reason).
+    """
+    if sys.platform == "darwin":
+        return macho_bytes(0x0100000C if arch == "arm64" else 0x01000007)
+    if sys.platform.startswith("win"):
+        return pe_bytes(0xAA64 if arch == "arm64" else 0x8664)
+    return elf_bytes(0xB7 if arch == "arm64" else 0x3E)
+
+
 # --------------------------------------------------------------------------- #
 # Synthetic binaries: one small fixture per format, so detection is checked
 # against known-good bytes rather than only against whatever this machine is.
@@ -164,8 +179,11 @@ class DetectArchTests(unittest.TestCase):
         self.assertEqual(check_arch.detect_arch(self.write("x64.exe", pe_bytes(0x8664))), "amd64")
 
     def test_the_running_interpreter_is_a_known_architecture(self) -> None:
-        # The build scripts check this before they build anything.
-        self.assertEqual(check_arch.detect_arch(sys.executable), host_arch_for_this_machine())
+        # The build scripts check this before they build anything. The
+        # interpreter may be a universal2 Mach-O, so look for the slice this
+        # machine runs rather than expecting exactly one.
+        found = check_arch.detect_arch(sys.executable)
+        self.assertIn(host_arch_for_this_machine(), found.split("+"))
 
     def test_junk_is_not_an_architecture(self) -> None:
         for name, data in (("text", b"#!/bin/sh\necho hi\n"), ("empty", b""), ("short", b"MZ")):
@@ -203,9 +221,33 @@ class CommandLineTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_a_mismatch_fails_the_build(self) -> None:
-        result = self.run_cli("file", sys.executable, "--expect", other_arch(host_arch_for_this_machine()))
+        host = host_arch_for_this_machine()
+        path = self.fixture(other_arch(host), "other-arch")
+        result = self.run_cli("file", str(path), "--expect", host)
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn("requested", result.stderr)
+
+    def fixture(self, arch: str, name: str) -> Path:
+        directory = Path(tempfile.mkdtemp(prefix="sentinel-arch-cli-"))
+        self.addCleanup(shutil.rmtree, directory, ignore_errors=True)
+        path = directory / name
+        path.write_bytes(single_arch_bytes(arch))
+        return path
+
+    def test_a_universal_binary_satisfies_either_architecture(self) -> None:
+        # Apple's Python (what CI builds with) is a universal2 Mach-O. Such a
+        # binary is not mislabelled for either architecture, so both build
+        # legs may accept it; only a binary missing the requested slice is an
+        # error.
+        directory = Path(tempfile.mkdtemp(prefix="sentinel-arch-fat-"))
+        self.addCleanup(shutil.rmtree, directory, ignore_errors=True)
+        path = directory / "universal"
+        path.write_bytes(universal_bytes(0x01000007, 0x0100000C))
+        for arch in ("amd64", "arm64", "x86_64"):
+            with self.subTest(arch=arch):
+                result = self.run_cli("file", str(path), "--expect", arch)
+                self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("amd64+arm64", self.run_cli("file", str(path)).stdout)
 
     def test_host_subcommand(self) -> None:
         self.assertEqual(self.run_cli("host").returncode, 0)
@@ -255,11 +297,19 @@ class ArchShellHelperTests(unittest.TestCase):
         result = self.shell('macos_arch_label amd64; macos_arch_label arm64')
         self.assertEqual(result.stdout.split(), ["x86_64", "arm64"])
 
-    def test_verify_binary_arch_accepts_the_host_and_rejects_the_other(self) -> None:
-        host = check_arch.host_arch()
-        good = self.shell(f'verify_binary_arch "{sys.executable}" {host}')
+    def test_verify_binary_arch_accepts_the_host_architecture(self) -> None:
+        # The interpreter itself: on macOS that is a universal2 Mach-O, which
+        # is a valid build for either architecture.
+        good = self.shell(f'verify_binary_arch "{sys.executable}" {check_arch.host_arch()}')
         self.assertEqual(good.returncode, 0, good.stderr)
-        bad = self.shell(f'verify_binary_arch "{sys.executable}" {other_arch(host)}')
+
+    def test_verify_binary_arch_rejects_the_other_architecture(self) -> None:
+        tmp = Path(tempfile.mkdtemp(prefix="sentinel-arch-sh-"))
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        other = other_arch(check_arch.host_arch())
+        path = tmp / "other-arch"
+        path.write_bytes(single_arch_bytes(other))
+        bad = self.shell(f'verify_binary_arch "{path}" {check_arch.host_arch()}')
         self.assertNotEqual(bad.returncode, 0)
         self.assertIn("refusing to package", bad.stderr)
 
