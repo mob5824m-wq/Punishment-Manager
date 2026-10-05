@@ -4,19 +4,19 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
-  <title>Punishment Manager · Server Console</title>
+  <title>Sentinel · Server Console</title>
   <style>
     :root {
-      --bg: #090c14;
-      --panel: #111725;
-      --panel-2: #151e2e;
-      --panel-3: #1a2538;
-      --line: rgba(163, 181, 211, .12);
-      --text: #edf3ff;
-      --muted: #8997ae;
-      --soft: #b4c0d4;
-      --accent: #8b7cff;
-      --accent-2: #b4a8ff;
+      --bg: #0d0e11;
+      --panel: #16181c;
+      --panel-2: #1b1e23;
+      --panel-3: #22262c;
+      --line: rgba(233, 238, 245, .1);
+      --text: #f4f6f8;
+      --muted: #9aa1ab;
+      --soft: #c4cbd4;
+      --accent: #f0a63c;
+      --accent-2: #ffd18a;
       --green: #34d399;
       --yellow: #f4bd50;
       --red: #fb7185;
@@ -27,14 +27,14 @@
     * { box-sizing: border-box; }
     body {
       min-height: 100vh; margin: 0; color: var(--text);
-      background: radial-gradient(ellipse at 76% -20%, rgba(93, 73, 214, .2), transparent 46%), var(--bg);
+      background: radial-gradient(ellipse at 76% -20%, rgba(240, 166, 60, .14), transparent 46%), var(--bg);
     }
     button, input, select, textarea { font: inherit; }
     button { cursor: pointer; }
     .hidden { display: none !important; }
     .login-wrap { min-height: 100vh; display: grid; place-items: center; padding: 24px; }
-    .login-card { width: min(450px, 100%); padding: 36px; border: 1px solid var(--line); border-radius: 24px; background: linear-gradient(145deg, rgba(23,31,48,.98), rgba(14,19,31,.98)); box-shadow: 0 30px 90px rgba(0,0,0,.45); }
-    .brand-mark { width: 48px; height: 48px; display: grid; place-items: center; border-radius: 15px; color: white; background: linear-gradient(140deg, #9385ff, #6054dc); font-size: 22px; box-shadow: 0 8px 28px rgba(116,98,255,.32); }
+    .login-card { width: min(450px, 100%); padding: 36px; border: 1px solid var(--line); border-radius: 24px; background: linear-gradient(145deg, rgba(32,35,40,.98), rgba(21,23,27,.98)); box-shadow: 0 30px 90px rgba(0,0,0,.45); }
+    .brand-mark { width: 48px; height: 48px; display: grid; place-items: center; border-radius: 15px; color: white; background: linear-gradient(140deg, #ffc76b, #e0881a); font-size: 22px; box-shadow: 0 8px 28px rgba(240,166,60,.28); }
     .login-card h1 { margin: 22px 0 8px; font-size: 26px; letter-spacing: -.5px; }
     .login-card p { margin: 0 0 26px; color: var(--muted); line-height: 1.55; }
     .login-card label { display: block; margin-bottom: 8px; color: var(--soft); font-size: 13px; font-weight: 650; }
@@ -46,20 +46,20 @@
     .key-help ol { margin: 0; padding-left: 19px; display: grid; gap: 10px; }
     .key-help li { padding-left: 2px; }
     .key-cmd { display: block; margin-top: 7px; }
-    .key-cmd code { display: block; padding: 8px 10px; border: 1px solid var(--line); border-radius: 9px; background: rgba(255,255,255,.04); color: #ccd7ea; font-size: 11.5px; white-space: nowrap; overflow-x: auto; }
-    .key-cmd span { display: block; margin-top: 4px; color: #65738a; font-size: 10.5px; }
+    .key-cmd code { display: block; padding: 8px 10px; border: 1px solid var(--line); border-radius: 9px; background: rgba(255,255,255,.04); color: #d6dbe2; font-size: 11.5px; white-space: nowrap; overflow-x: auto; }
+    .key-cmd span { display: block; margin-top: 4px; color: #7b828c; font-size: 10.5px; }
     .login-card .key-help-note { margin: 14px 0 0; color: var(--muted); font-size: 11px; line-height: 1.55; }
     .shell { min-height: 100vh; display: grid; grid-template-columns: 248px minmax(0, 1fr); }
-    .sidebar { position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; padding: 23px 16px 16px; border-right: 1px solid var(--line); background: rgba(12,16,26,.88); backdrop-filter: blur(16px); }
+    .sidebar { position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; padding: 23px 16px 16px; border-right: 1px solid var(--line); background: rgba(16,18,21,.88); backdrop-filter: blur(16px); }
     .brand { display: flex; align-items: center; gap: 12px; padding: 0 8px 24px; }
     .brand .brand-mark { width: 38px; height: 38px; border-radius: 12px; font-size: 17px; }
     .brand-title { font-size: 14px; font-weight: 760; letter-spacing: .1px; }
     .brand-sub { margin-top: 4px; color: var(--muted); font-size: 11px; }
-    .side-label { padding: 8px 11px; color: #65738a; font-size: 10px; font-weight: 750; letter-spacing: 1.5px; text-transform: uppercase; }
+    .side-label { padding: 8px 11px; color: #7b828c; font-size: 10px; font-weight: 750; letter-spacing: 1.5px; text-transform: uppercase; }
     .nav { display: grid; gap: 5px; }
-    .nav-btn { display: flex; align-items: center; gap: 12px; width: 100%; padding: 11px 12px; border: 1px solid transparent; border-radius: 11px; background: transparent; color: #9aa8be; text-align: left; font-size: 13px; font-weight: 620; transition: .18s ease; }
+    .nav-btn { display: flex; align-items: center; gap: 12px; width: 100%; padding: 11px 12px; border: 1px solid transparent; border-radius: 11px; background: transparent; color: #a7aeb7; text-align: left; font-size: 13px; font-weight: 620; transition: .18s ease; }
     .nav-btn:hover { background: rgba(255,255,255,.035); color: var(--text); }
-    .nav-btn.active { border-color: rgba(139,124,255,.2); background: rgba(139,124,255,.12); color: #c4bcff; }
+    .nav-btn.active { border-color: rgba(240,166,60,.2); background: rgba(240,166,60,.12); color: #ffd9a3; }
     .nav-icon { width: 18px; text-align: center; font-size: 15px; }
     .side-spacer { flex: 1; }
     .connection-card { margin: 12px 4px 14px; padding: 12px; border: 1px solid var(--line); border-radius: 13px; background: rgba(255,255,255,.025); }
@@ -85,10 +85,10 @@
     @keyframes fade-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
     .grid { display: grid; gap: 16px; }
     .stats { grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 18px; }
-    .stat-card, .card { border: 1px solid var(--line); border-radius: var(--radius); background: linear-gradient(145deg, rgba(20,28,43,.94), rgba(15,21,33,.94)); box-shadow: 0 10px 34px rgba(0,0,0,.12); }
+    .stat-card, .card { border: 1px solid var(--line); border-radius: var(--radius); background: linear-gradient(145deg, rgba(28,31,36,.94), rgba(21,23,27,.94)); box-shadow: 0 10px 34px rgba(0,0,0,.12); }
     .stat-card { min-height: 122px; padding: 18px 19px; }
     .stat-head { display: flex; align-items: center; justify-content: space-between; color: var(--muted); font-size: 12px; font-weight: 620; }
-    .stat-icon { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 9px; background: rgba(139,124,255,.12); color: var(--accent-2); }
+    .stat-icon { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 9px; background: rgba(240,166,60,.12); color: var(--accent-2); }
     .stat-value { margin-top: 15px; font-size: 29px; line-height: 1; letter-spacing: -.8px; font-weight: 750; }
     .stat-note { margin-top: 7px; color: var(--muted); font-size: 11px; }
     .two-col { grid-template-columns: minmax(0, 1.45fr) minmax(275px, .9fr); align-items: start; }
@@ -99,8 +99,8 @@
     .subtle { color: var(--muted); font-size: 11px; }
     .guild-list { display: grid; gap: 8px; }
     .guild-row { display: flex; align-items: center; gap: 12px; padding: 11px; border: 1px solid transparent; border-radius: 12px; background: rgba(255,255,255,.025); cursor: pointer; transition: .18s ease; }
-    .guild-row:hover { border-color: rgba(139,124,255,.2); background: rgba(139,124,255,.07); }
-    .guild-avatar { display: grid; flex: 0 0 36px; place-items: center; width: 36px; height: 36px; border-radius: 12px; background: #302e52; color: #d5cfff; font-size: 13px; font-weight: 750; overflow: hidden; }
+    .guild-row:hover { border-color: rgba(240,166,60,.2); background: rgba(240,166,60,.07); }
+    .guild-avatar { display: grid; flex: 0 0 36px; place-items: center; width: 36px; height: 36px; border-radius: 12px; background: #2b2620; color: #f3dcb4; font-size: 13px; font-weight: 750; overflow: hidden; }
     .guild-avatar img { width: 100%; height: 100%; object-fit: cover; }
     .guild-info { min-width: 0; flex: 1; }
     .guild-name { overflow: hidden; color: var(--text); font-size: 12px; font-weight: 680; text-overflow: ellipsis; white-space: nowrap; }
@@ -108,8 +108,8 @@
     .guild-count { color: var(--soft); font-size: 11px; white-space: nowrap; }
     .quick-actions { display: grid; gap: 10px; }
     .quick-action { display: flex; align-items: center; gap: 12px; padding: 13px; border: 1px solid var(--line); border-radius: 12px; background: rgba(255,255,255,.02); color: var(--text); text-align: left; transition: .18s ease; }
-    .quick-action:hover { border-color: rgba(139,124,255,.35); background: rgba(139,124,255,.07); }
-    .quick-action .qicon { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; background: rgba(139,124,255,.12); color: var(--accent-2); }
+    .quick-action:hover { border-color: rgba(240,166,60,.35); background: rgba(240,166,60,.07); }
+    .quick-action .qicon { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; background: rgba(240,166,60,.12); color: var(--accent-2); }
     .quick-action strong { display: block; font-size: 12px; }
     .quick-action small { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; }
     .toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 15px; }
@@ -120,12 +120,12 @@
     .field.full { grid-column: 1 / -1; }
     .field label { display: flex; justify-content: space-between; gap: 10px; margin: 0 0 7px; color: var(--soft); font-size: 12px; font-weight: 650; }
     .field .hint { color: var(--muted); font-size: 10px; font-weight: 450; }
-    input, select, textarea { width: 100%; min-height: 42px; padding: 10px 12px; border: 1px solid rgba(156,174,205,.15); border-radius: 10px; outline: none; background: #0d1421; color: var(--text); transition: border-color .15s ease, box-shadow .15s ease; }
-    input::placeholder, textarea::placeholder { color: #637189; }
-    input:focus, select:focus, textarea:focus { border-color: rgba(139,124,255,.7); box-shadow: 0 0 0 3px rgba(139,124,255,.12); }
+    input, select, textarea { width: 100%; min-height: 42px; padding: 10px 12px; border: 1px solid rgba(226,232,240,.14); border-radius: 10px; outline: none; background: #101215; color: var(--text); transition: border-color .15s ease, box-shadow .15s ease; }
+    input::placeholder, textarea::placeholder { color: #767d87; }
+    input:focus, select:focus, textarea:focus { border-color: rgba(240,166,60,.7); box-shadow: 0 0 0 3px rgba(240,166,60,.12); }
     select { color-scheme: dark; }
     textarea { min-height: 190px; resize: vertical; line-height: 1.6; }
-    .btn { min-height: 40px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 9px 14px; border: 1px solid transparent; border-radius: 10px; background: linear-gradient(135deg, #8c7eff, #6759e8); color: white; font-size: 12px; font-weight: 720; box-shadow: 0 5px 18px rgba(110,94,240,.2); transition: transform .15s ease, filter .15s ease; }
+    .btn { min-height: 40px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 9px 14px; border: 1px solid transparent; border-radius: 10px; background: linear-gradient(135deg, #f7b955, #dd8a1c); color: #241703; font-size: 12px; font-weight: 720; box-shadow: 0 5px 18px rgba(240,166,60,.22); transition: transform .15s ease, filter .15s ease; }
     .btn:hover { transform: translateY(-1px); filter: brightness(1.08); }
     .btn:disabled { cursor: wait; opacity: .55; transform: none; }
     .btn.secondary { border-color: var(--line); background: rgba(255,255,255,.04); color: var(--soft); box-shadow: none; }
@@ -136,11 +136,11 @@
     .member-search { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
     .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; }
     table { width: 100%; border-collapse: collapse; min-width: 680px; }
-    th { padding: 11px 13px; background: rgba(255,255,255,.025); color: #7f8ea6; font-size: 10px; font-weight: 760; letter-spacing: .8px; text-align: left; text-transform: uppercase; white-space: nowrap; }
+    th { padding: 11px 13px; background: rgba(255,255,255,.025); color: #8d949e; font-size: 10px; font-weight: 760; letter-spacing: .8px; text-align: left; text-transform: uppercase; white-space: nowrap; }
     td { padding: 12px 13px; border-top: 1px solid var(--line); color: var(--soft); font-size: 11px; vertical-align: middle; }
     tbody tr:hover { background: rgba(255,255,255,.018); }
     .member-cell { display: flex; align-items: center; gap: 9px; color: var(--text); font-weight: 650; }
-    .member-pic { width: 27px; height: 27px; border-radius: 9px; background: #28294a; object-fit: cover; }
+    .member-pic { width: 27px; height: 27px; border-radius: 9px; background: #26231d; object-fit: cover; }
     .tag { display: inline-flex; align-items: center; gap: 6px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 999px; color: var(--soft); font-size: 10px; white-space: nowrap; }
     .tag.success { border-color: rgba(52,211,153,.2); background: rgba(52,211,153,.07); color: #73e4ba; }
     .tag.warn { border-color: rgba(244,189,80,.2); background: rgba(244,189,80,.07); color: #f4ce79; }
@@ -153,8 +153,8 @@
     .inline-status strong { display: block; font-size: 12px; }
     .inline-status span { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; }
     .rules-top { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(250px, .7fr); gap: 16px; align-items: start; }
-    .rules-tip { padding: 16px; border: 1px solid rgba(139,124,255,.18); border-radius: 13px; background: rgba(139,124,255,.06); color: #c6c1fa; font-size: 11px; line-height: 1.6; }
-    .rules-tip strong { display: block; margin-bottom: 6px; color: #dedaff; font-size: 12px; }
+    .rules-tip { padding: 16px; border: 1px solid rgba(240,166,60,.18); border-radius: 13px; background: rgba(240,166,60,.06); color: #f7dcb0; font-size: 11px; line-height: 1.6; }
+    .rules-tip strong { display: block; margin-bottom: 6px; color: #ffe3b8; font-size: 12px; }
     .rules-editor { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; align-items: start; }
     .reaction-subhead { margin-top: 28px; }
     .reaction-entries { display: grid; gap: 8px; }
@@ -165,7 +165,7 @@
     .reaction-entry-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
     .reaction-quick { display: inline-flex; flex-wrap: wrap; gap: 4px; }
     .reaction-quick button { min-width: 31px; min-height: 29px; padding: 3px 6px; border: 1px solid var(--line); border-radius: 8px; background: rgba(255,255,255,.03); font-size: 14px; line-height: 1; }
-    .reaction-quick button:hover { border-color: rgba(139,124,255,.35); background: rgba(139,124,255,.09); }
+    .reaction-quick button:hover { border-color: rgba(240,166,60,.35); background: rgba(240,166,60,.09); }
     .reaction-legend { display: grid; gap: 6px; margin-top: 12px; }
     .reaction-legend-row { display: flex; align-items: center; gap: 9px; color: var(--soft); font-size: 11px; }
     .reaction-legend-emoji { min-width: 40px; font-size: 16px; text-align: center; }
@@ -182,12 +182,12 @@
     .post-actions { display: flex; gap: 7px; }
     .md-toolbar { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
     .md-tool { min-width: 34px; min-height: 30px; padding: 5px 9px; border: 1px solid var(--line); border-radius: 8px; background: rgba(255,255,255,.03); color: var(--soft); font-size: 11px; font-weight: 700; }
-    .md-tool:hover { border-color: rgba(139,124,255,.35); background: rgba(139,124,255,.09); color: white; }
+    .md-tool:hover { border-color: rgba(240,166,60,.35); background: rgba(240,166,60,.09); color: white; }
     .md-hints { display: grid; gap: 6px; margin-top: 10px; }
     .md-hint { display: flex; gap: 8px; padding: 9px 11px; border: 1px solid rgba(244,189,80,.2); border-radius: 10px; background: rgba(244,189,80,.055); color: #e8ce94; font-size: 11px; line-height: 1.45; }
     .discord-post { display: grid; gap: 7px; }
     .discord-post-content { color: var(--soft); font-size: 12px; line-height: 1.5; }
-    .discord-embed { min-height: 272px; padding: 15px 16px; border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 6px; background: #101320; font-size: 12.5px; line-height: 1.6; overflow-wrap: anywhere; }
+    .discord-embed { min-height: 272px; padding: 15px 16px; border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 6px; background: #17181b; font-size: 12.5px; line-height: 1.6; overflow-wrap: anywhere; }
     .discord-embed-title { margin-bottom: 9px; color: #fff; font-size: 14px; font-weight: 750; }
     .discord-embed-footer { margin-top: 12px; padding-top: 9px; border-top: 1px solid var(--line); color: var(--muted); font-size: 10px; }
     .dm-empty { color: var(--muted); font-size: 11px; }
@@ -199,12 +199,12 @@
     .dm-p { margin: 7px 0; }
     .dm-list { margin: 7px 0; padding-left: 22px; }
     .dm-list li { margin: 3px 0; }
-    .dm-quote { margin: 7px 0; padding: 2px 0 2px 11px; border-left: 3px solid #4e5a72; color: var(--soft); }
-    .dm-pre { margin: 9px 0; padding: 11px; border: 1px solid var(--line); border-radius: 8px; background: #0b0f1a; color: #cbd5e8; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; white-space: pre-wrap; }
-    .dm-code { padding: 1px 5px; border-radius: 5px; background: rgba(255,255,255,.07); color: #d9e2f5; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
-    .dm-spoiler { border-radius: 4px; background: #1c2233; color: transparent; cursor: pointer; }
+    .dm-quote { margin: 7px 0; padding: 2px 0 2px 11px; border-left: 3px solid #565c64; color: var(--soft); }
+    .dm-pre { margin: 9px 0; padding: 11px; border: 1px solid var(--line); border-radius: 8px; background: #101114; color: #cdd3da; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; white-space: pre-wrap; }
+    .dm-code { padding: 1px 5px; border-radius: 5px; background: rgba(255,255,255,.07); color: #dde2e8; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+    .dm-spoiler { border-radius: 4px; background: #23262b; color: transparent; cursor: pointer; }
     .dm-spoiler.revealed { background: rgba(255,255,255,.07); color: inherit; }
-    .dm-mention { padding: 1px 4px; border-radius: 4px; background: rgba(139,124,255,.16); color: #c7c0ff; font-weight: 650; }
+    .dm-mention { padding: 1px 4px; border-radius: 4px; background: rgba(240,166,60,.16); color: #ffdca8; font-weight: 650; }
     .dm-link { color: var(--blue); text-decoration: none; }
     .dm-link:hover { text-decoration: underline; }
     .dm-subtext { color: var(--muted); font-size: 10.5px; }
@@ -214,7 +214,7 @@
     .toast.error { border-color: rgba(251,113,133,.27); background: #2a1820; color: #ffd1d8; }
     .toast.show { opacity: 1; transform: translateY(0); }
     .loading { padding: 30px; color: var(--muted); text-align: center; font-size: 12px; }
-    .bot-avatar { width: 34px; height: 34px; border-radius: 12px; object-fit: cover; background: #242d43; }
+    .bot-avatar { width: 34px; height: 34px; border-radius: 12px; object-fit: cover; background: #23262b; }
     .toolbar-right { display: flex; gap: 8px; }
     .stat-dot { color: var(--green); }
     @media (max-width: 1000px) {
@@ -250,9 +250,9 @@
 <body>
   <section id="login-view" class="login-wrap hidden">
     <form id="login-form" class="login-card">
-      <div class="brand-mark">⚖</div>
-      <h1>Server Console</h1>
-      <p>Sign in with the local dashboard key to manage your bot's servers, punishments, rules, and settings.</p>
+      <div class="brand-mark">⛨</div>
+      <h1>Sentinel</h1>
+      <p>Sign in with the local dashboard key to manage your bot's servers, moderation, rules, and settings.</p>
       <label for="dashboard-key">Dashboard key</label>
       <input id="dashboard-key" type="password" autocomplete="current-password" placeholder="Paste your dashboard key" required>
       <p id="login-error" class="login-error hidden" role="alert"></p>
@@ -262,12 +262,12 @@
         <ol>
           <li>Open a terminal <strong>on the machine that runs the bot</strong> (this page only listens there).</li>
           <li>Run the command for your install:
-            <span class="key-cmd"><code>punishment-manager --dashboard-token</code><span>Installed app (.dmg, .deb, Windows Setup)</span></span>
+            <span class="key-cmd"><code>sentinel --dashboard-token</code><span>Installed app (.dmg, .deb, Windows Setup)</span></span>
             <span class="key-cmd"><code>python3 bot.py --dashboard-token</code><span>Running from source</span></span>
           </li>
           <li>Copy the key that is printed (the first run creates it if needed) and paste it above.</li>
         </ol>
-        <p class="key-help-note">The key is also saved as <code>dashboard_token</code> in the bot's <code>config.json</code> — run <code>punishment-manager --paths</code> (or <code>python3 bot.py --paths</code>) to see where that file lives. This is <strong>not</strong> your Discord bot token.</p>
+        <p class="key-help-note">The key is also saved as <code>dashboard_token</code> in the bot's <code>config.json</code> — run <code>sentinel --paths</code> (or <code>python3 bot.py --paths</code>) to see where that file lives. This is <strong>not</strong> your Discord bot token.</p>
       </div>
     </form>
   </section>
@@ -275,14 +275,14 @@
   <div id="app-view" class="shell hidden">
     <aside class="sidebar">
       <div class="brand">
-        <div class="brand-mark">⚖</div>
-        <div><div class="brand-title">Punishment Manager</div><div class="brand-sub">Server Console</div></div>
+        <div class="brand-mark">⛨</div>
+        <div><div class="brand-title">Sentinel</div><div class="brand-sub">Server Console</div></div>
       </div>
       <div class="side-label">Workspace</div>
       <nav class="nav" aria-label="Dashboard sections">
         <button class="nav-btn active" data-page="overview"><span class="nav-icon">◈</span> Overview</button>
-        <button class="nav-btn" data-page="punishments"><span class="nav-icon">⛨</span> Punishments</button>
-        <button class="nav-btn" data-page="rules"><span class="nav-icon">☷</span> Rules & reactions</button>
+        <button class="nav-btn" data-page="punishments"><span class="nav-icon">⚑</span> Moderation</button>
+        <button class="nav-btn" data-page="rules"><span class="nav-icon">§</span> Rules & reactions</button>
         <button class="nav-btn" data-page="settings"><span class="nav-icon">⚙</span> Server settings</button>
         <button class="nav-btn" data-page="activity"><span class="nav-icon">◷</span> History</button>
       </nav>
@@ -536,7 +536,7 @@
       </section>
 
       <section id="page-activity" class="page">
-        <div class="toolbar"><div><h2>Punishment history</h2><p>Recently completed or pardoned actions for the selected server.</p></div><button id="refresh-history" class="btn secondary">↻ Refresh</button></div>
+        <div class="toolbar"><div><h2>Moderation history</h2><p>Recently completed or pardoned actions for the selected server.</p></div><button id="refresh-history" class="btn secondary">↻ Refresh</button></div>
         <article class="card"><div id="history-table" class="table-wrap"><div class="empty">Loading history…</div></div></article>
       </section>
     </main>
@@ -547,7 +547,7 @@
     (() => {
       const titles = {
         overview: ["Control center", "Overview", "Monitor connected servers and active moderation."],
-        punishments: ["Moderation", "Punishments", "Manage timed role actions, warnings, and active cases."],
+        punishments: ["Moderation", "Moderation", "Manage timed role actions, warnings, and active cases."],
         rules: ["Community", "Rules & reactions", "Publish the rules post and build multi-role reaction menus."],
         settings: ["Configuration", "Server settings", "Set role flow, staff alerts, and member notifications."],
         activity: ["Audit trail", "History", "Review recent completed and pardoned cases."],
@@ -697,7 +697,7 @@
           $("stat-guilds").textContent = bot.guildCount ?? 0;
           $("stat-punishments").textContent = bot.activePunishments ?? 0;
           $("connection-label").textContent = bot.ready ? "Discord connected" : "Bot is connecting";
-          $("connection-sub").textContent = bot.name || "Punishment Manager";
+          $("connection-sub").textContent = bot.name || "Sentinel";
           $("connection-pulse").style.background = bot.ready ? "var(--green)" : "var(--yellow)";
           if (bot.avatar) { $("bot-avatar").src = bot.avatar; $("bot-avatar").classList.remove("hidden"); }
           const guilds = state.overview.guilds || [];

@@ -1,11 +1,11 @@
 #!/bin/sh
-# Pre-remove script for the Punishment Manager .deb.
+# Pre-remove script for the Sentinel .deb.
 # Stops and disables the service before the package files are removed.
 set -e
 
 if [ -d /run/systemd/system ]; then
-    systemctl disable --quiet punishment-manager.service || true
-    systemctl stop    --quiet punishment-manager.service || true
+    systemctl disable --quiet sentinel.service || true
+    systemctl stop    --quiet sentinel.service || true
 fi
 
 exit 0

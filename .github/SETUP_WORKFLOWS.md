@@ -48,7 +48,7 @@ the matrix) is fixed on `main`; `docs/CI_FIXES.md` keeps the history.
 | Per merge | `v<VERSION>-build.<run_number>` | Created once per merge from the `VERSION` file and the workflow run number, so an older build stays downloadable after the next merge lands. |
 
 Both are marked **prerelease**, so
-`https://github.com/mob5824m-wq/Punishment-Manager/releases/latest` keeps
+`https://github.com/mob5824m-wq/Sentinel/releases/latest` keeps
 pointing at the newest versioned release instead of at a build from `main`.
 Merges queue (`cancel-in-progress: false`), so a burst of merges publishes
 every build rather than cancelling all but the last one.
@@ -81,16 +81,17 @@ Live releases:
 
 | Tag | Installers | Notes |
 |-----|-----------|-------|
-| `v2.1.1` | `.deb`, `.dmg`, `.exe` attached by CI | Current. Path resolution skips a candidate the user can't access instead of stopping there: portable installs next to a `.deb`'s `0750 /etc/punishment-manager` find their own `config.json` again, and the startup note names the skipped candidate instead of saying "resolution failed". |
-| `v2.1.0` | `.deb`, `.dmg`, `.exe` attached by CI | Fixes packaged installs crashing at startup (`PermissionError` on `/opt/punishment-manager/_internal/data`). Safe to run; superseded by v2.1.1. |
+| `v3.0.0` | `.deb`, `.dmg`, `.exe` attached by CI | Current. Sentinel: everything moves under the `/manage` command group, the app/data directories are renamed to `sentinel`, env vars become `SENTINEL_*`, and the dashboard is reskinned. Existing installs must move `config.json` + `punishments.db` and reinstall the service - see the README's upgrade table. |
+| `v2.1.1` | `.deb`, `.dmg`, `.exe` attached by CI | Superseded by v3.0.0. Path resolution skips a candidate the user can't access instead of stopping there: portable installs next to a `.deb`'s `0750 /etc/sentinel` find their own `config.json` again, and the startup note names the skipped candidate instead of saying "resolution failed". |
+| `v2.1.0` | `.deb`, `.dmg`, `.exe` attached by CI | Fixes packaged installs crashing at startup (`PermissionError` on `/opt/sentinel/_internal/data`). Safe to run; superseded by v2.1.1. |
 | `v2.0.0` | attached by CI | **Broken for installed builds** — crashes on first launch; superseded by v2.1.0. |
 | `v1.0.0` | source archives only | Created by hand before `release.yml` worked. |
 
-<https://github.com/mob5824m-wq/Punishment-Manager/releases/latest> points at
+<https://github.com/mob5824m-wq/Sentinel/releases/latest> points at
 the newest release, so users always get the fixed build. Because the merge
 builds are prereleases, they are skipped by `/releases/latest` and by
 `gh release list --exclude-pre-releases`; the rolling one lives at
-<https://github.com/mob5824m-wq/Punishment-Manager/releases/tag/latest-build>.
+<https://github.com/mob5824m-wq/Sentinel/releases/tag/latest-build>.
 
 ## A note about the agent's GitHub App token
 
@@ -110,7 +111,7 @@ In practice this means:
 
 1. **Build workflow** runs on every pull request and `arena/*` push.
    Watch it at
-   <https://github.com/mob5824m-wq/Punishment-Manager/actions>.
+   <https://github.com/mob5824m-wq/Sentinel/actions>.
 
 2. **Merge release** runs on every merge to `main`; the quickest smoke test is
    to merge anything (even a docs change) and watch

@@ -1,5 +1,5 @@
 @echo off
-REM Build a Windows .exe installer for the Punishment Manager.
+REM Build a Windows .exe installer for the Sentinel.
 REM
 REM Requirements (run on Windows):
 REM   - Python 3.9+ on PATH (any install; we re-pip-install pyinstaller
@@ -8,18 +8,18 @@ REM   - NSIS 3.x in PATH (download from https://nsis.sourceforge.io)
 REM   - Optional: a code-signing certificate in the Windows certificate
 REM     store. If present, signtool will sign the installer.
 REM
-REM Output: dist\PunishmentManager-Setup-<VERSION>.exe
+REM Output: dist\Sentinel-Setup-<VERSION>.exe
 REM
 REM The version comes from the VERSION file at the project root (same source
 REM as build_linux.sh / build_macos.sh / pyinstaller.spec), so a release tag
-REM and the installer it produces can't disagree. PM_VERSION overrides it.
+REM and the installer it produces can't disagree. SENTINEL_VERSION overrides it.
 setlocal enableextensions enabledelayedexpansion
 
 set "SCRIPT_DIR=%~dp0"
 pushd "%SCRIPT_DIR%.." || exit /b 1
 
-if defined PM_VERSION (
-    set "VERSION=%PM_VERSION%"
+if defined SENTINEL_VERSION (
+    set "VERSION=%SENTINEL_VERSION%"
 ) else (
     rem First line of the VERSION file; `for /f` trims the CRLF.
     set "VERSION="
@@ -28,9 +28,9 @@ if defined PM_VERSION (
     )
     if not defined VERSION set "VERSION=0.0.0+unknown"
 )
-set "INSTALLER_NAME=PunishmentManager-Setup-%VERSION%.exe"
+set "INSTALLER_NAME=Sentinel-Setup-%VERSION%.exe"
 
-echo ==^> Building Punishment Manager %VERSION%
+echo ==^> Building Sentinel %VERSION%
 echo ==^> Cleaning previous PyInstaller output (keeps build\ source dir)
 if exist dist rmdir /s /q dist
 mkdir dist
@@ -85,13 +85,13 @@ if errorlevel 1 (
     exit /b 1
 )
 
-if not exist "dist\punishment-manager\punishment-manager.exe" (
+if not exist "dist\sentinel\sentinel.exe" (
     echo ERROR: PyInstaller did not produce the expected binary.
     type pyinstaller.log
     exit /b 1
 )
-echo     PyInstaller output: dist\punishment-manager\
-dir /s /b dist\punishment-manager 2>nul
+echo     PyInstaller output: dist\sentinel\
+dir /s /b dist\sentinel 2>nul
 
 echo ==^> Building NSIS installer
 REM The Install NSIS step in the workflow sets a MAKENSIS_PATH

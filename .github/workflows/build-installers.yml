@@ -11,7 +11,7 @@ name: build-installers
 #                        rolling `latest-build` release and to a per-merge
 #                        prerelease
 #
-# The artifact names are fixed (punishment-manager-linux / -macos / -windows)
+# The artifact names are fixed (sentinel-linux / -macos / -windows)
 # and the files keep the names the build scripts give them, so the callers can
 # find them with actions/download-artifact and glob the three extensions.
 
@@ -51,7 +51,7 @@ jobs:
       - name: Upload .deb
         uses: actions/upload-artifact@v4
         with:
-          name: punishment-manager-linux
+          name: sentinel-linux
           path: dist/*.deb
           if-no-files-found: error
           retention-days: 3
@@ -85,7 +85,7 @@ jobs:
       - name: Upload .dmg
         uses: actions/upload-artifact@v4
         with:
-          name: punishment-manager-macos
+          name: sentinel-macos
           path: dist/*.dmg
           if-no-files-found: error
           retention-days: 3
@@ -118,7 +118,7 @@ jobs:
       - name: Upload .exe
         uses: actions/upload-artifact@v4
         with:
-          name: punishment-manager-windows
+          name: sentinel-windows
           path: dist/*.exe
           if-no-files-found: error
           retention-days: 3

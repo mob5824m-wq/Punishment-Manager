@@ -3,11 +3,11 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.arena.punishment-manager</string>
+    <string>com.arena.sentinel</string>
 
     <key>ProgramArguments</key>
     <array>
-        <string>/Applications/Punishment Manager.app/Contents/MacOS/punishment-manager</string>
+        <string>/Applications/Sentinel.app/Contents/MacOS/sentinel</string>
     </array>
 
     <key>RunAtLoad</key>
@@ -25,12 +25,12 @@
     <integer>10</integer>
 
     <key>StandardOutPath</key>
-    <string>/tmp/punishment-manager.out.log</string>
+    <string>/tmp/sentinel.out.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/tmp/punishment-manager.err.log</string>
+    <string>/tmp/sentinel.err.log</string>
 
     <key>WorkingDirectory</key>
-    <string>/Applications/Punishment Manager.app/Contents/MacOS</string>
+    <string>/Applications/Sentinel.app/Contents/MacOS</string>
 </dict>
 </plist>

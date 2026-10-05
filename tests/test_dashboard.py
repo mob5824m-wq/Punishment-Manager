@@ -24,6 +24,11 @@ from dashboard import (  # noqa: E402
     _snowflake,
     ensure_dashboard_token,
 )
+from rules import (  # noqa: E402
+    RulesMixin,
+    validate_post_channel,
+    validate_self_assignable_role,
+)
 
 
 # A realistic Discord snowflake: larger than 2**53, so a JavaScript client
@@ -103,7 +108,7 @@ class DashboardTokenTests(unittest.TestCase):
 
     def test_environment_token_overrides_stored_value(self) -> None:
         config = {"dashboard_token": "S" * 40}
-        with patch.dict(os.environ, {"PUNISHMENT_MANAGER_DASHBOARD_TOKEN": "E" * 40}):
+        with patch.dict(os.environ, {"SENTINEL_DASHBOARD_TOKEN": "E" * 40}):
             token = ensure_dashboard_token(
                 config,
                 lambda _cfg: self.fail("environment token should not be saved"),
@@ -153,8 +158,8 @@ class DashboardSessionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(login.status, 200)
             body = await login.json()
             csrf = body["csrfToken"]
-            self.assertTrue(login.cookies.get("pm_dashboard_session").value)
-            self.assertTrue(login.cookies.get("pm_dashboard_session")["httponly"])
+            self.assertTrue(login.cookies.get("sentinel_dashboard_session").value)
+            self.assertTrue(login.cookies.get("sentinel_dashboard_session")["httponly"])
 
             overview = await client.get("/api/overview")
             self.assertEqual(overview.status, 200)
@@ -393,8 +398,32 @@ class _PublishFakeGuild:
 
 
 def _publish_bot_stub():
-    """A bot object good enough for RulesCog._mark_post_disabled."""
+    """A bot object good enough for RulesMixin._mark_post_disabled."""
     return SimpleNamespace(user=SimpleNamespace(id=OWNER_ID))
+
+
+class _DashboardRulesMixin(RulesMixin):
+    """The rules half of the real cog, wired to this test's fakes.
+
+    The dashboard finds the helpers by looking for a RulesMixin among the
+    bot's cogs (they belong to the cog that owns /manage), so the test has to
+    provide a real one rather than a stand-in namespace.
+    """
+
+    def __init__(self, bot) -> None:
+        super().__init__(bot, lambda _config: None)
+
+    @staticmethod
+    def _validate_role(guild, channel, role):
+        return validate_self_assignable_role(guild, role) or validate_post_channel(
+            guild, channel
+        )
+
+    async def _mark_post_disabled(self, guild, settings):
+        # Same work, against a stub bot: this test cares about what is posted,
+        # not about the reaction cleanup (see tests/test_rules.py).
+        mixin = RulesMixin(_publish_bot_stub(), lambda _config: None)
+        await mixin._mark_post_disabled(guild, settings)
 
 
 class _PublishFakeBot:
@@ -402,6 +431,11 @@ class _PublishFakeBot:
         self.config = {"guilds": {str(GUILD_ID): {}}}
         self.user = None
         self._guild = guild
+        self._cogs = {"SentinelCog": _DashboardRulesMixin(self)}
+
+    @property
+    def cogs(self):
+        return self._cogs
 
     def get_guild(self, guild_id):
         return self._guild if int(guild_id) == GUILD_ID else None
@@ -410,21 +444,7 @@ class _PublishFakeBot:
         return True
 
     def get_cog(self, name):
-        if name != "RulesCog":
-            return None
-        # The rules cog's own validation/config plumbing is covered by
-        # tests/test_rules.py; this test is about what gets posted.
-        from rules import RulesCog, validate_post_channel, validate_self_assignable_role
-
-        return SimpleNamespace(
-            _validate_role=lambda guild, channel, role: (
-                validate_self_assignable_role(guild, role)
-                or validate_post_channel(guild, channel)
-            ),
-            _mark_post_disabled=lambda guild, settings: RulesCog(
-                _publish_bot_stub(), lambda _config: None
-            )._mark_post_disabled(guild, settings),
-        )
+        return self._cogs.get(name)
 
 
 class DashboardPublishRulesTests(unittest.IsolatedAsyncioTestCase):

@@ -1,4 +1,4 @@
-"""Reaction-role menus for Punishment Manager.
+"""Reaction-role menus for Sentinel.
 
 The rules-acceptance gate in :mod:`rules` grants exactly one role for one ✅.
 This module covers *additional* self-service role menus: an administrator can
@@ -63,7 +63,7 @@ from discord.ext import commands
 from rules import validate_self_assignable_role
 
 
-logger = logging.getLogger("punishment_manager.reaction_roles")
+logger = logging.getLogger("sentinel.reaction_roles")
 
 REACTION_ROLES_KEY = "reaction_roles"
 

@@ -1,4 +1,4 @@
-"""Authenticated server-side web dashboard for Punishment Manager.
+"""Authenticated server-side web dashboard for Sentinel.
 
 The dashboard is deliberately bound to loopback by default. Its token is a
 high-privilege, bot-wide credential; remote deployments should put it behind
@@ -48,6 +48,7 @@ from rules import (
     PRIVILEGED_ROLE_PERMISSIONS,
     RULES_ACCEPT_EMOJI,
     RULES_POST_CONTENT,
+    RulesMixin,
     fetch_configured_message,
     find_ruleset,
     get_guild_rulesets,
@@ -61,8 +62,8 @@ from rules import (
 )
 
 
-logger = logging.getLogger("punishment_manager.dashboard")
-SESSION_COOKIE = "pm_dashboard_session"
+logger = logging.getLogger("sentinel.dashboard")
+SESSION_COOKIE = "sentinel_dashboard_session"
 SESSION_TTL_SECONDS = 8 * 60 * 60
 MAX_LOGIN_FAILURES = 5
 LOGIN_WINDOW_SECONDS = 5 * 60
@@ -90,11 +91,11 @@ def ensure_dashboard_token(
 ) -> str:
     """Return the dashboard credential, creating a private config value once.
 
-    ``PUNISHMENT_MANAGER_DASHBOARD_TOKEN`` overrides the stored value. A
+    ``SENTINEL_DASHBOARD_TOKEN`` overrides the stored value. A
     generated token is written through the same private config writer as the
     Discord bot token, and is never printed by the dashboard server itself.
     """
-    env_token = os.environ.get("PUNISHMENT_MANAGER_DASHBOARD_TOKEN", "").strip()
+    env_token = os.environ.get("SENTINEL_DASHBOARD_TOKEN", "").strip()
     configured = env_token or config.get("dashboard_token")
     if isinstance(configured, str) and configured:
         if len(configured) < 32:
@@ -172,11 +173,11 @@ class DashboardServer:
             return False
 
         self._host = os.environ.get(
-            "PUNISHMENT_MANAGER_DASHBOARD_HOST",
+            "SENTINEL_DASHBOARD_HOST",
             str(config.get("dashboard_host") or "127.0.0.1"),
         )
         raw_port = os.environ.get(
-            "PUNISHMENT_MANAGER_DASHBOARD_PORT",
+            "SENTINEL_DASHBOARD_PORT",
             str(config.get("dashboard_port", 8765)),
         )
         try:
@@ -205,7 +206,7 @@ class DashboardServer:
             self._port,
         )
         logger.info(
-            "Dashboard login key: run 'punishment-manager --dashboard-token' on the bot host "
+            "Dashboard login key: run 'sentinel --dashboard-token' on the bot host "
             "(from source: 'python3 bot.py --dashboard-token'); it is also saved as "
             "'dashboard_token' in the bot's config.json."
         )
@@ -742,7 +743,7 @@ class DashboardServer:
         if self._should_dm_user(self.bot.config, guild.id):
             dm = self.bot._build_punish_dm_embed(
                 guild_name=guild.name,
-                moderator_name="Punishment Manager dashboard",
+                moderator_name="Sentinel dashboard",
                 duration_seconds=seconds,
                 reason=full_reason,
                 started_at=started_at,
@@ -804,7 +805,7 @@ class DashboardServer:
         if self._should_dm_user(self.bot.config, guild.id):
             dm = self.bot._build_pardon_dm_embed(
                 guild_name=guild.name,
-                moderator_name="Punishment Manager dashboard",
+                moderator_name="Sentinel dashboard",
             )
             await self.bot._dm_embed(member, dm)
         logger.warning(
@@ -817,7 +818,7 @@ class DashboardServer:
 
     # ---- Warnings ------------------------------------------------------- #
     # Warnings never change roles and never expire; these endpoints mirror
-    # /punish warn and /punish warnings so both surfaces share one record.
+    # /manage warn and /manage warnings so both surfaces share one record.
     async def list_warnings(self, request: web.Request) -> web.Response:
         guild = self._guild_from_request(request)
         rows = self._db_fetchall(
@@ -903,7 +904,7 @@ class DashboardServer:
         if self._should_dm_user(self.bot.config, guild.id):
             dm_embed = self.bot._build_warn_dm_embed(
                 guild_name=guild.name,
-                moderator_name="Punishment Manager dashboard",
+                moderator_name="Sentinel dashboard",
                 reason=full_reason,
                 total=total,
                 created_at=created_at,
@@ -1173,10 +1174,16 @@ class DashboardServer:
         return web.json_response({"disabled": True, "rulesetId": ruleset_id(settings)})
 
     def _rules_cog(self):
-        rules_cog = self.bot.get_cog("RulesCog")
-        if rules_cog is None:
-            raise web.HTTPServiceUnavailable(text="Rules module is not loaded.")
-        return rules_cog
+        """The cog the rules commands and their helpers live in.
+
+        Those commands hang off the shared ``/manage`` group, so they are mixed
+        into the bot's main cog rather than registered as a ``RulesCog`` of
+        their own. Find it by what it is instead of by name.
+        """
+        for cog in self.bot.cogs.values():
+            if isinstance(cog, RulesMixin):
+                return cog
+        raise web.HTTPServiceUnavailable(text="Rules module is not loaded.")
 
     @staticmethod
     def _ruleset_name(data: dict, others: list[dict]) -> tuple[Optional[str], Optional[str]]:

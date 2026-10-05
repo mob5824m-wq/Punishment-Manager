@@ -36,7 +36,7 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 PROJECT_ROOT="$( cd "$SCRIPT_DIR/.." && pwd )"
 
 if [ ! -d "$PROJECT_ROOT/.github" ]; then
-    echo "ERROR: $PROJECT_ROOT/.github does not exist. Are you in the Punishment-Manager repo?" >&2
+    echo "ERROR: $PROJECT_ROOT/.github does not exist. Are you in the Sentinel repo?" >&2
     exit 1
 fi
 

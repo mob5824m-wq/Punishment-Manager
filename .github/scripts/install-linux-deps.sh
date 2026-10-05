@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Installs the system packages needed to build the Punishment Manager
+# Installs the system packages needed to build the Sentinel
 # .deb on a GitHub-hosted Ubuntu runner.
 #
 # Why this lives in its own file: pasting a multi-line `run: |` block

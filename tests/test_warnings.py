@@ -177,7 +177,7 @@ async def main():
         "staff_role_id": None,
         "dm_user": True,
     }
-    cog = bot.PunishmentCog(bot.bot)
+    cog = bot.SentinelCog(bot.bot)
     results = {}
 
     first = FakeInteraction(guild, moderator)
@@ -275,9 +275,9 @@ def _isolated_test_env(home: Path) -> dict[str, str]:
         "XDG_STATE_HOME": str(home / ".local" / "state"),
         "XDG_DATA_HOME": str(home / ".local" / "share"),
         "XDG_CONFIG_HOME": str(home / ".config"),
-        "PUNISHMENT_MANAGER_HOME": "",
-        "PUNISHMENT_MANAGER_DATA": str(home / "data"),
-        "PUNISHMENT_MANAGER_CONFIG": str(home / "config.json"),
+        "SENTINEL_HOME": "",
+        "SENTINEL_DATA": str(home / "data"),
+        "SENTINEL_CONFIG": str(home / "config.json"),
         "PYTHONIOENCODING": "utf-8",
     }
 
@@ -286,6 +286,9 @@ def dump_bot_warnings() -> dict:
     with tempfile.TemporaryDirectory(prefix="pm-warnings-test-") as tmp:
         home = Path(tmp).resolve()
         out = home / "warnings.json"
+        # Pointed at a file that does not exist, paths.py would fall back to
+        # the checkout's ./config.json; give the child its own empty one.
+        (home / "config.json").write_text("{}\n", encoding="utf-8")
         result = subprocess.run(
             [sys.executable, "-c", _DUMP_BOT_WARNINGS, str(out), str(REPO_ROOT)],
             capture_output=True, encoding="utf-8", errors="replace",
@@ -300,7 +303,7 @@ def dump_bot_warnings() -> dict:
 
 
 class BotWarningCommandTests(unittest.TestCase):
-    """`/punish warn`, `/punish warnings` and the SQLite helpers behind them."""
+    """`/manage warn`, `/manage warnings` and the SQLite helpers behind them."""
 
     @classmethod
     def setUpClass(cls) -> None:

@@ -1,6 +1,20 @@
 """
-Punishment Manager - a discord.py bot that temporarily swaps a user's role
-sequence:  Normal -> Punished -> PostPunished
+Sentinel - a discord.py server management bot.
+
+Everything is reached through one slash-command group, ``/manage``:
+
+    /manage punish      temporarily swap a member's role
+    /manage pardon      end that early
+    /manage warn        record a warning without changing roles
+    /manage warnings    list or clear a member's warnings
+    /manage status      server config, active punishments, member history
+    /manage setup       configure roles, staff channel and DMs (admins)
+    /manage fixcommands clean up duplicated slash commands (admins)
+    /manage rules ...   publish rule sets and their acceptance role (admins)
+
+It also ships an authenticated server-side web dashboard for managing
+connected servers, moderation, warnings, the rules post, reaction-role menus,
+configuration and history.
 """
 
 from __future__ import annotations
@@ -24,9 +38,10 @@ from discord.ext import commands, tasks
 
 
 import paths
+import command_tree
 from dashboard import DashboardServer, ensure_dashboard_token
 from reaction_roles import ReactionRolesCog
-from rules import RulesCog
+from rules import RulesMixin
 
 
 # --------------------------------------------------------------------------- #
@@ -34,7 +49,7 @@ from rules import RulesCog
 # --------------------------------------------------------------------------- #
 # All writable locations are resolved by paths.py. Never write next to
 # `__file__`: in a packaged build that is the read-only app tree
-# (/opt/punishment-manager/_internal, C:\Program Files\...), and creating
+# (/opt/sentinel/_internal, C:\Program Files\...), and creating
 # `data/` there raises PermissionError before the bot can even log anything.
 BASE_DIR = paths.APP_DIR          # read-only in packaged builds
 DATA_DIR = paths.DATA_DIR         # writable: db + log
@@ -45,7 +60,7 @@ LOG_PATH = paths.LOG_PATH
 # --------------------------------------------------------------------------- #
 # Logging
 # --------------------------------------------------------------------------- #
-logger = logging.getLogger("punishment_manager")
+logger = logging.getLogger("sentinel")
 logger.setLevel(logging.INFO)
 formatter = logging.Formatter(
     "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -71,7 +86,7 @@ def _report_path_notes() -> None:
 
 def _log_path_notes() -> None:
     """Report where this run keeps its files, plus late-resolved fallbacks."""
-    logger.info("Punishment Manager %s", paths.app_version())
+    logger.info("Sentinel %s", paths.app_version())
     _report_path_notes()
     logger.info("Data directory: %s", DATA_DIR)
 
@@ -109,7 +124,7 @@ CREATE INDEX IF NOT EXISTS idx_punishments_user
     ON punishments (guild_id, user_id);
 
 -- Permanent record of every punishment that's ever ended. Used by
--- /punish status <user> to show a user's history.
+-- /manage status <member> to show a member's history.
 CREATE TABLE IF NOT EXISTS punishment_history (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     guild_id         INTEGER NOT NULL,
@@ -125,7 +140,7 @@ CREATE INDEX IF NOT EXISTS idx_punishment_history_user
     ON punishment_history (guild_id, user_id, started_at DESC);
 
 -- Warnings are lighter than punishments: nothing is timed and no role is
--- swapped. They are kept until a moderator clears them, so /punish warnings
+-- swapped. They are kept until a moderator clears them, so /manage warnings
 -- <user> can show the full record (with the escalating totals) later.
 CREATE TABLE IF NOT EXISTS warnings (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -338,7 +353,7 @@ def clear_warnings(guild_id: int, user_id: int) -> int:
 #   - NEW (single-server) shape: top-level bot_token, server_id, role ids,
 #     staff_channel_id, dm_user. Filled in by the interactive installer.
 #   - OLD (multi-server) shape: token + guilds{} map. Used by the in-Discord
-#     /setup command. Old setups keep working unchanged.
+#     /manage setup command. Old setups keep working unchanged.
 #
 # A config is considered "legacy" if it has the `token` key but no
 # `bot_token` key. The migration step rewrites it in place.
@@ -376,7 +391,7 @@ def load_config() -> dict:
     """Read config.json, creating a default one in the data dir if missing.
 
     In a packaged install the config may live in a read-only system location
-    (/etc/punishment-manager/config.json on Linux); the default/updated copy
+    (/etc/sentinel/config.json on Linux); the default/updated copy
     is written to the writable data dir instead. See paths.py.
 
     A missing, unreadable or corrupt config is reported and treated as "not
@@ -504,7 +519,7 @@ def is_protected_member(
     member: discord.Member, cfg: dict, *, guild: discord.Guild
 ) -> Optional[str]:
     """Return None if `member` can be punished, or a string reason if
-    they cannot. Used to refuse `/punish apply` for admins, mods, and
+    they cannot. Used to refuse `/manage punish` for admins, mods, and
     anyone holding the configured staff role.
     """
     if member.bot:
@@ -624,7 +639,7 @@ intents.guilds = True
 intents.reactions = True     # rules acceptance / reaction-role events
 
 
-class PunishmentBot(commands.Bot):
+class SentinelBot(commands.Bot):
     def __init__(self, config: dict) -> None:
         super().__init__(
             command_prefix="!",  # not used; we only expose slash commands
@@ -734,7 +749,7 @@ class PunishmentBot(commands.Bot):
 
         Discord keeps global commands and per-guild commands in two separate
         registries, and a command that lives in both is shown twice by the
-        Discord client - that is where doubled ``/punish`` and ``/setup`` entries
+        Discord client - that is where doubled ``/manage`` entries
         came from. This bot registers commands per guild, so anything still in
         the global registry is a duplicate.
 
@@ -814,7 +829,7 @@ class PunishmentBot(commands.Bot):
         command in both is allowed, and the Discord client then lists every
         command twice - once from each registry. That is what earlier releases
         did (a global sync *and* ``copy_global_to()`` for every connected
-        guild), so ``/punish`` and ``/setup`` showed up doubled.
+        guild), so every command showed up doubled.
 
         This bot registers commands in the guild scope only. It is the scope
         that appears instantly, it covers every server the bot is in (the
@@ -1060,7 +1075,7 @@ class PunishmentBot(commands.Bot):
             value=moderator_name,
             inline=False,
         )
-        e.set_footer(text="Punishment Manager")
+        e.set_footer(text="Sentinel")
         return e
 
     def _build_warn_staff_embed(
@@ -1121,7 +1136,7 @@ class PunishmentBot(commands.Bot):
             inline=True,
         )
         e.add_field(name="Issued by", value=moderator_name, inline=False)
-        e.set_footer(text="Punishment Manager")
+        e.set_footer(text="Sentinel")
         return e
 
     def _build_warn_clear_staff_embed(
@@ -1182,7 +1197,7 @@ class PunishmentBot(commands.Bot):
             timestamp=datetime.now(timezone.utc),
         )
         e.add_field(name="Issued by", value=moderator_name, inline=False)
-        e.set_footer(text="Punishment Manager")
+        e.set_footer(text="Sentinel")
         return e
 
     def _build_timer_staff_embed(
@@ -1340,51 +1355,66 @@ class PunishmentBot(commands.Bot):
 # the "app_commands breaks at sync time" footgun in discord.py 2.x.
 # --------------------------------------------------------------------------- #
 
-bot = PunishmentBot(load_config())
+bot = SentinelBot(load_config())
 
 
 # ---- A single shared Cog holds all slash commands. --------------------- #
-class PunishmentCog(commands.Cog):
-    """Slash commands for the Punishment Manager."""
+class SentinelCog(RulesMixin, commands.Cog):
+    """Every slash command, under the shared ``/manage`` group.
 
-    def __init__(self, bot_: PunishmentBot) -> None:
+    It also mixes in :class:`rules.RulesMixin`, because those commands are
+    children of the same group and a nested group is registered - and its
+    callbacks bound - by the cog that owns the top-level command.
+    """
+
+    def __init__(self, bot_: SentinelBot) -> None:
         self.bot = bot_
+        # RulesMixin's helpers expect these two attributes (it is normally
+        # constructed with them); this cog is the one that Discord sees.
+        self._save_config = save_config
 
     async def cog_load(self) -> None:
-        """Set default_permissions on each slash command after the
-        decorator machinery has run. ``app_commands.command()`` does not
-        accept this kwarg, so we assign it here.
+        """Set default_permissions on the command group.
+
+        ``app_commands.command()`` does not accept this kwarg, so we assign it
+        here, after the decorator machinery has run.
+
+        Discord applies ``default_member_permissions`` to the *top-level*
+        command only, so the whole group shares one setting: visible to
+        everyone with **Moderate Members**. The administrative commands
+        (``setup``, ``fixcommands`` and everything under ``rules``) re-check
+        for **Administrator** when they run, via
+        :func:`command_tree.is_administrator`.
         """
-        # The punish group itself: visible to everyone with Moderate Members.
-        self.punish_group.default_permissions = discord.Permissions(
+        # ``self.manage_group`` is the copy Cog.__new__ made for this cog
+        # (see ``manage_group`` below); assigning to the shared object from
+        # command_tree would miss the copy Discord actually receives.
+        self.manage_group.default_permissions = discord.Permissions(
             moderate_members=True
         )
-        # /setup and /fixcommands: only admins should see/use them, and only in
-        # a guild.
-        for cmd in self.__cog_app_commands__:
-            if cmd.qualified_name in ("setup", "fixcommands"):
-                cmd.default_permissions = discord.Permissions(administrator=True)
-                cmd.guild_only = True
+        self.manage_group.guild_only = True
 
-    # ---- Group of helpers (use a slash command group) ------------------ #
+    # ---- Every command hangs off the shared /manage group -------------- #
+    # The group lives in command_tree.py because rules.py attaches its
+    # /manage rules sub-group to it. Naming it here is what makes this cog
+    # the one that registers /manage with Discord - and therefore the cog
+    # every callback below binds to.
+    manage_group = command_tree.manage_group
+
     # NOTE: Discord rejects the *entire* command list (HTTP 400, code 50035)
     # if any command or option description is over 100 characters.
     # tests/test_commands.py checks every description against that limit.
-    punish_group = app_commands.Group(
-        name="punish",
-        description="Timed role punishments, pardons, and recorded warnings.",
-    )
 
-    @punish_group.command(
-        name="apply",
-        description="Add the punish role to a user for a duration.",
+    @manage_group.command(
+        name="punish",
+        description="Add the punish role to a member for a duration.",
     )
     @app_commands.describe(
-        user="The user to punish.",
+        user="The member to punish.",
         duration="How long. Examples: 30m, 2h, 1d, 1d12h. Bare numbers = minutes.",
         reason="Optional reason shown in logs and stored in the database.",
     )
-    async def punish_apply(
+    async def manage_punish(
         self,
         interaction: discord.Interaction,
         user: discord.Member,
@@ -1393,25 +1423,25 @@ class PunishmentCog(commands.Cog):
     ) -> None:
         await self._handle_punish(interaction, user, duration, reason)
 
-    @punish_group.command(
+    @manage_group.command(
         name="pardon",
-        description="End an active punishment early and restore the user.",
+        description="End an active punishment early and restore the member.",
     )
-    @app_commands.describe(user="The user to pardon.")
-    async def punish_pardon(
+    @app_commands.describe(user="The member to pardon.")
+    async def manage_pardon(
         self, interaction: discord.Interaction, user: discord.Member
     ) -> None:
         await self._handle_pardon(interaction, user)
 
-    @punish_group.command(
+    @manage_group.command(
         name="warn",
-        description="Record a warning against a user without changing their roles.",
+        description="Record a warning against a member without changing their roles.",
     )
     @app_commands.describe(
-        user="The user to warn.",
-        reason="Why they are being warned. Shown in the staff log and the user's DM.",
+        user="The member to warn.",
+        reason="Why they are being warned. Shown in the staff log and the member's DM.",
     )
-    async def punish_warn(
+    async def manage_warn(
         self,
         interaction: discord.Interaction,
         user: discord.Member,
@@ -1419,15 +1449,15 @@ class PunishmentCog(commands.Cog):
     ) -> None:
         await self._handle_warn(interaction, user, reason)
 
-    @punish_group.command(
+    @manage_group.command(
         name="warnings",
-        description="List a user's recorded warnings, or clear them with clear:true.",
+        description="List a member's warnings, or clear them with clear:true.",
     )
     @app_commands.describe(
-        user="The user whose warnings to show.",
-        clear="Set to true to delete all of this user's warnings.",
+        user="The member whose warnings to show.",
+        clear="Set to true to delete all of this member's warnings.",
     )
-    async def punish_warnings(
+    async def manage_warnings(
         self,
         interaction: discord.Interaction,
         user: discord.Member,
@@ -1435,33 +1465,33 @@ class PunishmentCog(commands.Cog):
     ) -> None:
         await self._handle_warnings(interaction, user, bool(clear))
 
-    @punish_group.command(
+    @manage_group.command(
         name="status",
         description="Show this server's config and active punishments. "
-                    "Pass a user to see their punishment history.",
+                    "Pass a member for their history.",
     )
     @app_commands.describe(
-        user="Optional: show this user's punishment history instead of all active punishments.",
+        user="Optional: show this member's history instead of all active punishments.",
     )
-    async def punish_status(
+    async def manage_status(
         self,
         interaction: discord.Interaction,
         user: Optional[discord.Member] = None,
     ) -> None:
         await self._handle_status(interaction, user)
 
-    # ---- /setup lives at the top level, admin-only --------------------- #
-    @app_commands.command(
+    # ---- /manage setup: administrators only ---------------------------- #
+    @manage_group.command(
         name="setup",
         description="Configure this server's punish / post-punish / staff roles, "
-                    "staff channel, and DM behavior.",
+                    "staff channel, and DMs.",
     )
     @app_commands.describe(
         punish_role="The role given during punishment.",
         post_role="The role given after the timer expires.",
-        staff_role="Optional role that marks a user as staff (protected from punishment).",
+        staff_role="Optional role that marks a member as staff (protected from punishment).",
         staff_channel="Optional channel where staff get embed notifications.",
-        dm_user="Whether to DM the punished user an embed about their punishment.",
+        dm_user="Whether to DM the punished member an embed about their punishment.",
     )
     async def setup_cmd(
         self,
@@ -1481,8 +1511,8 @@ class PunishmentCog(commands.Cog):
             dm_user,
         )
 
-    # ---- /fixcommands: clean up duplicated slash commands -------------- #
-    @app_commands.command(
+    # ---- /manage fixcommands: clean up duplicated slash commands -------- #
+    @manage_group.command(
         name="fixcommands",
         description="Remove duplicated slash commands and re-sync this server.",
     )
@@ -1513,7 +1543,7 @@ class PunishmentCog(commands.Cog):
             await self._safe_followup(
                 interaction,
                 "This server is not configured yet. An admin should run "
-                "`/setup` or edit `config.json`.",
+                "`/manage setup` or edit `config.json`.",
             )
             return
 
@@ -1783,7 +1813,7 @@ class PunishmentCog(commands.Cog):
             await self._safe_followup(
                 interaction,
                 "This server is not configured yet. An admin should run "
-                "`/setup` or edit `config.json`.",
+                "`/manage setup` or edit `config.json`.",
             )
             return
 
@@ -1847,6 +1877,13 @@ class PunishmentCog(commands.Cog):
         staff_channel: Optional[discord.TextChannel],
         dm_user: Optional[bool],
     ) -> None:
+        if not command_tree.is_administrator(interaction):
+            await interaction.response.send_message(
+                "Only server administrators can change this server's "
+                "configuration.",
+                ephemeral=True,
+            )
+            return
         if staff_role is not None:
             role_ids = {punish_role.id, post_role.id, staff_role.id}
         else:
@@ -1922,6 +1959,11 @@ class PunishmentCog(commands.Cog):
         registry automatically; this command does the same on demand and
         re-uploads this server's copy so what remains is fresh.
         """
+        if not command_tree.is_administrator(interaction):
+            await self._safe_followup(
+                interaction, "Only server administrators can re-sync commands."
+            )
+            return
         try:
             if not interaction.response.is_done():
                 await interaction.response.defer(ephemeral=True)
@@ -1978,7 +2020,7 @@ class PunishmentCog(commands.Cog):
         if not cfg:
             await interaction.response.send_message(
                 "This server is not configured yet. An admin should run "
-                "`/setup` or edit `config.json`.",
+                "`/manage setup` or edit `config.json`.",
                 ephemeral=True,
             )
             return
@@ -2109,7 +2151,7 @@ class PunishmentCog(commands.Cog):
             if warning_total > len(recent_warnings):
                 lines.append(
                     f"... and {warning_total - len(recent_warnings)} more "
-                    "(use `/punish warnings`)."
+                    "(use `/manage warnings`)."
                 )
         else:
             lines.append("- (none recorded)")
@@ -2136,10 +2178,10 @@ class PunishmentCog(commands.Cog):
 # Add the cog to the bot. We do this BEFORE setup_hook runs (so the
 # tree has the commands by the time it syncs).
 async def _register_cog() -> None:
-    if bot.get_cog("PunishmentCog") is None:
-        await bot.add_cog(PunishmentCog(bot))
-    if bot.get_cog("RulesCog") is None:
-        await bot.add_cog(RulesCog(bot, save_config))
+    if bot.get_cog("SentinelCog") is None:
+        # One cog owns /manage, including the /manage rules sub-group from
+        # RulesMixin and its rules-acceptance reaction listeners.
+        await bot.add_cog(SentinelCog(bot))
     if bot.get_cog("ReactionRolesCog") is None:
         await bot.add_cog(ReactionRolesCog(bot))
 
@@ -2192,10 +2234,10 @@ async def on_app_command_error(
 # --------------------------------------------------------------------------- #
 # Override setup_hook to register the cog before syncing.
 # --------------------------------------------------------------------------- #
-_original_setup_hook = PunishmentBot.setup_hook
+_original_setup_hook = SentinelBot.setup_hook
 
 
-async def setup_hook(self: PunishmentBot) -> None:
+async def setup_hook(self: SentinelBot) -> None:
     await _register_cog()
     await _original_setup_hook(self)
     try:
@@ -2204,7 +2246,7 @@ async def setup_hook(self: PunishmentBot) -> None:
         logger.exception("Could not start the server dashboard; the Discord bot will keep running.")
 
 
-PunishmentBot.setup_hook = setup_hook  # type: ignore[assignment]
+SentinelBot.setup_hook = setup_hook  # type: ignore[assignment]
 
 
 # --------------------------------------------------------------------------- #
@@ -2230,7 +2272,7 @@ def main() -> int:
 
 def _print_help() -> None:
     sys.stdout.write(
-        "Usage: punishment-manager [options]\n"
+        "Usage: sentinel [options]\n"
         "\n"
         "Options:\n"
         "  (no args)         Start the bot. If no token is configured,\n"
@@ -2251,9 +2293,9 @@ def _print_help() -> None:
         "\n"
         "Files: the app directory is read-only in packaged installs, so\n"
         "state lives in a per-user/per-system location. Override with\n"
-        "  PUNISHMENT_MANAGER_HOME    (data + config base directory)\n"
-        "  PUNISHMENT_MANAGER_DATA    (db + log directory)\n"
-        "  PUNISHMENT_MANAGER_CONFIG  (config.json path)\n"
+        "  SENTINEL_HOME      (data + config base directory)\n"
+        "  SENTINEL_DATA      (db + log directory)\n"
+        "  SENTINEL_CONFIG    (config.json path)\n"
         "Run --paths to see the resolved locations.\n"
         "\n"
     )
@@ -2283,20 +2325,20 @@ def _service_uninstall() -> int:
     return 1
 
 
-# Fallback unit used when the shipped build/linux/punishment-manager.service
+# Fallback unit used when the shipped build/linux/sentinel.service
 # isn't reachable (e.g. running the PyInstaller binary, where the source tree
 # isn't installed). Paths are filled in from this process so the unit matches
 # wherever the executable actually lives.
 _LINUX_UNIT_TEMPLATE = """[Unit]
-Description=Punishment Manager Discord bot
-Documentation=https://github.com/mob5824m-wq/Punishment-Manager
+Description=Sentinel Discord bot
+Documentation=https://github.com/mob5824m-wq/Sentinel
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=punishment-manager
-Group=punishment-manager
+User=sentinel
+Group=sentinel
 WorkingDirectory={app_dir}
 ExecStart={exe}
 Restart=on-failure
@@ -2307,12 +2349,12 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/punishment-manager /etc/punishment-manager
+ReadWritePaths=/var/lib/sentinel /etc/sentinel
 
 # Logging.
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=punishment-manager
+SyslogIdentifier=sentinel
 
 [Install]
 WantedBy=multi-user.target
@@ -2337,7 +2379,7 @@ def _systemd_unit_text() -> str:
         exe = f"{Path(sys.executable)} {script}"
         work_dir = str(paths.APP_DIR)
 
-    shipped = paths.resource_path("build", "linux", "punishment-manager.service")
+    shipped = paths.resource_path("build", "linux", "sentinel.service")
     if shipped is not None:
         text = shipped.read_text(encoding="utf-8")
     else:
@@ -2360,31 +2402,31 @@ def _service_install_linux() -> int:
     if os.geteuid() != 0:
         sys.stderr.write("Re-run with sudo to install the service.\n")
         return 1
-    unit_dst = Path("/lib/systemd/system/punishment-manager.service")
+    unit_dst = Path("/lib/systemd/system/sentinel.service")
     unit_text = _systemd_unit_text()
     unit_dst.parent.mkdir(parents=True, exist_ok=True)
     unit_dst.write_text(unit_text, encoding="utf-8")
     # Idempotent user / group / state dirs.
-    subprocess.run(["groupadd", "-rf", "punishment-manager"],
+    subprocess.run(["groupadd", "-rf", "sentinel"],
                    check=False, capture_output=True)
     subprocess.run(
         [
-            "useradd", "-r", "-g", "punishment-manager",
-            "-d", "/var/lib/punishment-manager",
+            "useradd", "-r", "-g", "sentinel",
+            "-d", "/var/lib/sentinel",
             "-s", "/usr/sbin/nologin",
-            "-c", "Punishment Manager",
-            "punishment-manager",
+            "-c", "Sentinel",
+            "sentinel",
         ],
         check=False, capture_output=True,
     )
-    for d in ("/var/lib/punishment-manager", "/etc/punishment-manager"):
+    for d in ("/var/lib/sentinel", "/etc/sentinel"):
         Path(d).mkdir(parents=True, exist_ok=True)
     _chown_state_dirs()
     subprocess.run(["systemctl", "daemon-reload"], check=True)
-    subprocess.run(["systemctl", "enable", "punishment-manager.service"], check=True)
+    subprocess.run(["systemctl", "enable", "sentinel.service"], check=True)
     sys.stdout.write(
         "Installed systemd unit. Start with: "
-        "sudo systemctl start punishment-manager\n"
+        "sudo systemctl start sentinel\n"
     )
     return 0
 
@@ -2393,32 +2435,32 @@ def _chown_state_dirs() -> None:
     """Give the service user write access to its state + config dirs.
 
     Mirrors build/linux/postinst. Without this, a service running as
-    `punishment-manager` gets PermissionError writing its db/log because
+    `sentinel` gets PermissionError writing its db/log because
     `mkdir` above (run as root) leaves the dirs root-owned.
     """
     import pwd  # noqa: PLC0415 - posix-only, imported lazily
     import grp  # noqa: PLC0415
 
     try:
-        pw = pwd.getpwnam("punishment-manager")
+        pw = pwd.getpwnam("sentinel")
     except KeyError:
         return
     try:
         uid, gid = pw.pw_uid, pw.pw_gid
-        state = Path("/var/lib/punishment-manager")
+        state = Path("/var/lib/sentinel")
         os.chown(str(state), uid, gid)
         os.chmod(str(state), 0o750)
         # Anything already sitting there (e.g. a db or config written by a
-        # `sudo punishment-manager` run) has to belong to the service too.
+        # `sudo sentinel` run) has to belong to the service too.
         for path in sorted(state.rglob("*")):
             try:
                 os.chown(str(path), uid, gid)
             except OSError:
                 pass
         # Config dir: root-owned, group-readable by the service user.
-        os.chown("/etc/punishment-manager", 0, gid)
-        os.chmod("/etc/punishment-manager", 0o750)
-        cfg = Path("/etc/punishment-manager/config.json")
+        os.chown("/etc/sentinel", 0, gid)
+        os.chmod("/etc/sentinel", 0o750)
+        cfg = Path("/etc/sentinel/config.json")
         if cfg.exists():
             os.chown(str(cfg), 0, gid)
             os.chmod(str(cfg), 0o640)
@@ -2431,10 +2473,10 @@ def _service_uninstall_linux() -> int:
         sys.stderr.write("Re-run with sudo to uninstall the service.\n")
         return 1
     subprocess.run(["systemctl", "disable", "--quiet",
-                    "punishment-manager.service"], check=False)
+                    "sentinel.service"], check=False)
     subprocess.run(["systemctl", "stop",    "--quiet",
-                    "punishment-manager.service"], check=False)
-    unit = Path("/lib/systemd/system/punishment-manager.service")
+                    "sentinel.service"], check=False)
+    unit = Path("/lib/systemd/system/sentinel.service")
     if unit.exists():
         unit.unlink()
     subprocess.run(["systemctl", "daemon-reload"], check=False)
@@ -2449,7 +2491,7 @@ _MACOS_PLIST_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.arena.punishment-manager</string>
+    <string>com.arena.sentinel</string>
 
     <key>ProgramArguments</key>
     <array>
@@ -2484,8 +2526,8 @@ _MACOS_PLIST_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
 
 
 def _service_install_macos() -> int:
-    plist_dst = Path.home() / "Library" / "LaunchAgents" / "com.arena.punishment-manager.plist"
-    plist_src = paths.resource_path("build", "macos", "com.arena.punishment-manager.plist")
+    plist_dst = Path.home() / "Library" / "LaunchAgents" / "com.arena.sentinel.plist"
+    plist_src = paths.resource_path("build", "macos", "com.arena.sentinel.plist")
     if plist_src is not None:
         text = plist_src.read_text(encoding="utf-8")
     else:
@@ -2510,13 +2552,13 @@ def _service_install_macos() -> int:
     subprocess.run(["launchctl", "load", "-w", str(plist_dst)], check=False)
     sys.stdout.write(
         f"Installed launchd agent at {plist_dst}.\n"
-        "Start with: launchctl start com.arena.punishment-manager\n"
+        "Start with: launchctl start com.arena.sentinel\n"
     )
     return 0
 
 
 def _service_uninstall_macos() -> int:
-    plist_dst = Path.home() / "Library" / "LaunchAgents" / "com.arena.punishment-manager.plist"
+    plist_dst = Path.home() / "Library" / "LaunchAgents" / "com.arena.sentinel.plist"
     if plist_dst.exists():
         subprocess.run(["launchctl", "unload", str(plist_dst)], check=False)
         plist_dst.unlink()
@@ -2532,8 +2574,8 @@ def _service_install_windows() -> int:
         exe = sys.executable if paths.is_frozen() else str(paths.APP_DIR / "bot.py")
         # Working directory must be writable (the install dir under
         # Program Files is not), and stdout/stderr belong in the data dir.
-        subprocess.run([nssm, "install", "PunishmentManager", exe], check=True)
-        subprocess.run([nssm, "set", "PunishmentManager",
+        subprocess.run([nssm, "install", "Sentinel", exe], check=True)
+        subprocess.run([nssm, "set", "Sentinel",
                         "AppDirectory", str(paths.DATA_DIR)], check=True)
         for opt, value in (
             ("AppStdout", str(paths.LOG_PATH.with_name("service.out.log"))),
@@ -2541,25 +2583,26 @@ def _service_install_windows() -> int:
             ("AppRotateFiles", "1"),
             ("AppRotateOnline", "1"),
         ):
-            subprocess.run([nssm, "set", "PunishmentManager", opt, value],
+            subprocess.run([nssm, "set", "Sentinel", opt, value],
                            check=False, capture_output=True)
-        subprocess.run([nssm, "set", "PunishmentManager",
-                        "DisplayName", "Punishment Manager"], check=True)
-        subprocess.run([nssm, "set", "PunishmentManager",
+        subprocess.run([nssm, "set", "Sentinel",
+                        "DisplayName", "Sentinel"], check=True)
+        subprocess.run([nssm, "set", "Sentinel",
                         "Description",
-                        "Discord bot for temporary role-based punishments."],
+                        "Discord server management bot: moderation, rules, "
+                        "reaction roles and a web dashboard."],
                        check=True)
-        subprocess.run([nssm, "set", "PunishmentManager",
+        subprocess.run([nssm, "set", "Sentinel",
                         "Start", "SERVICE_AUTO_START"], check=True)
         sys.stdout.write(
             "Installed Windows service via NSSM. Start with:\n"
-            "  sc start PunishmentManager\n"
+            "  sc start Sentinel\n"
         )
         return 0
     # Fallback: use the Task Scheduler so the bot starts on user login.
     sys.stdout.write(
         "NSSM not found; falling back to a Task Scheduler entry.\n"
-        "Run once at logon: schtasks /create /tn PunishmentManager ...\n"
+        "Run once at logon: schtasks /create /tn Sentinel ...\n"
     )
     return 0
 
@@ -2567,12 +2610,12 @@ def _service_install_windows() -> int:
 def _service_uninstall_windows() -> int:
     nssm = shutil.which("nssm") or shutil.which("nssm.exe")
     if nssm:
-        subprocess.run([nssm, "stop", "PunishmentManager"],
+        subprocess.run([nssm, "stop", "Sentinel"],
                        check=False, capture_output=True)
-        subprocess.run([nssm, "remove", "PunishmentManager", "confirm"],
+        subprocess.run([nssm, "remove", "Sentinel", "confirm"],
                        check=False, capture_output=True)
     subprocess.run(
-        ["schtasks", "/delete", "/tn", "PunishmentManager", "/f"],
+        ["schtasks", "/delete", "/tn", "Sentinel", "/f"],
         check=False, capture_output=True,
     )
     sys.stdout.write("Removed Windows service / task.\n")
@@ -2587,11 +2630,11 @@ if __name__ == "__main__":
         sys.exit(0)
 
     if args and args[0] == "--version":
-        sys.stdout.write(f"Punishment Manager {paths.app_version()}\n")
+        sys.stdout.write(f"Sentinel {paths.app_version()}\n")
         sys.exit(0)
 
     if args and args[0] == "--paths":
-        sys.stdout.write(f"Punishment Manager {paths.app_version()}\n")
+        sys.stdout.write(f"Sentinel {paths.app_version()}\n")
         sys.stdout.write(paths.describe() + "\n")
         sys.exit(0)
 
@@ -2621,10 +2664,10 @@ if __name__ == "__main__":
         # Unusable config/state location: say so plainly instead of dying with
         # a traceback out of an import.
         sys.stderr.write(
-            f"ERROR: cannot use the Punishment Manager files ({exc})\n"
+            f"ERROR: cannot use the Sentinel files ({exc})\n"
             f"  config: {paths.config_path()}\n"
             f"  data:   {paths.DATA_DIR}\n"
-            "Set PUNISHMENT_MANAGER_CONFIG / PUNISHMENT_MANAGER_DATA to writable\n"
+            "Set SENTINEL_CONFIG / SENTINEL_DATA to writable\n"
             "paths, or run the installer with sudo (for a system service).\n"
         )
         sys.exit(1)

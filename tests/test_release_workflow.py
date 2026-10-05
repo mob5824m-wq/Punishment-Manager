@@ -106,7 +106,7 @@ class PublishScriptTestCase(unittest.TestCase):
 
         (self.tmp / ".github" / "scripts").mkdir(parents=True)
         shutil.copy2(SCRIPTS / self.SCRIPT, self.tmp / ".github" / "scripts" / self.SCRIPT)
-        (self.tmp / "VERSION").write_text("2.5.0\n", encoding="utf-8")
+        (self.tmp / "VERSION").write_text("3.0.0\n", encoding="utf-8")
         self.bin = self.tmp / "bin"
         self.bin.mkdir()
         self.log = self.tmp / "calls.log"
@@ -155,9 +155,9 @@ class MergePublishScriptTests(PublishScriptTestCase):
     def setUp(self) -> None:
         super().setUp()
         self.add_artifacts(
-            "PunishmentManager-Setup-2.5.0.exe",
-            "PunishmentManager-2.5.0.dmg",
-            "punishment-manager_2.5.0_amd64.deb",
+            "Sentinel-Setup-3.0.0.exe",
+            "Sentinel-3.0.0.dmg",
+            "sentinel_3.0.0_amd64.deb",
         )
 
     def test_it_publishes_a_rolling_and_a_per_merge_release(self) -> None:
@@ -178,11 +178,11 @@ class MergePublishScriptTests(PublishScriptTestCase):
 
         # Per-merge release: named from VERSION and the run number, target the
         # merge commit, and attached with the generated tag.
-        create = [call for call in calls if call.startswith("gh release create v2.5.0-build.42")]
+        create = [call for call in calls if call.startswith("gh release create v3.0.0-build.42")]
         self.assertEqual(len(create), 1, calls)
         self.assertIn(f"--target {'a' * 40}", create[0])
         self.assertIn("--prerelease", create[0])
-        self.assertIn("PunishmentManager-Setup-2.5.0.exe", create[0])
+        self.assertIn("Sentinel-Setup-3.0.0.exe", create[0])
 
     def test_both_releases_are_prereleases(self) -> None:
         # A build from main must never become /releases/latest.
@@ -206,18 +206,18 @@ class MergePublishScriptTests(PublishScriptTestCase):
         )
 
     def test_stale_assets_are_dropped_from_the_rolling_release(self) -> None:
-        # e.g. last merge's 2.4.0 installers after a version bump.
+        # e.g. last merge's 2.9.0 installers after a version bump.
         result = self.run_script(
             "artifacts",
             env={
                 "STUB_RELEASE_EXISTS": "1",
-                "STUB_ASSETS": "PunishmentManager-Setup-2.4.0.exe\nPunishmentManager-Setup-2.5.0.exe",
+                "STUB_ASSETS": "Sentinel-Setup-2.9.0.exe\nSentinel-Setup-3.0.0.exe",
             },
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         deleted = [call for call in self.calls() if call.startswith("gh release delete-asset")]
         self.assertEqual(
-            deleted, ["gh release delete-asset latest-build PunishmentManager-Setup-2.4.0.exe --yes"]
+            deleted, ["gh release delete-asset latest-build Sentinel-Setup-2.9.0.exe --yes"]
         )
 
     def test_a_blocked_tag_push_falls_back_to_recreating_the_release(self) -> None:
@@ -240,7 +240,7 @@ class MergePublishScriptTests(PublishScriptTestCase):
 
     def test_a_partial_build_still_publishes_what_exists(self) -> None:
         shutil.rmtree(self.tmp / "artifacts")
-        self.add_artifacts("punishment-manager_2.5.0_amd64.deb")
+        self.add_artifacts("sentinel_3.0.0_amd64.deb")
         result = self.run_script("artifacts")
         self.assertEqual(result.returncode, 0, result.stderr)
         upload = [call for call in self.calls() if call.startswith("gh release upload latest-build")]
@@ -257,13 +257,13 @@ class TagPublishScriptTests(PublishScriptTestCase):
     def setUp(self) -> None:
         super().setUp()
         self.add_artifacts(
-            "PunishmentManager-Setup-2.5.0.exe",
-            "PunishmentManager-2.5.0.dmg",
-            "punishment-manager_2.5.0_amd64.deb",
+            "Sentinel-Setup-3.0.0.exe",
+            "Sentinel-3.0.0.dmg",
+            "sentinel_3.0.0_amd64.deb",
         )
 
     def test_a_plain_version_tag_becomes_a_normal_release(self) -> None:
-        result = self.run_script("artifacts", env={"GITHUB_REF_NAME": "v2.5.0"})
+        result = self.run_script("artifacts", env={"GITHUB_REF_NAME": "v3.0.0"})
         self.assertEqual(result.returncode, 0, result.stderr)
         creates = [call for call in self.calls() if call.startswith("gh release create")]
         self.assertEqual(len(creates), 1, creates)
@@ -274,7 +274,7 @@ class TagPublishScriptTests(PublishScriptTestCase):
             self.assertIn(name, creates[0])
 
     def test_a_hyphenated_tag_is_a_prerelease(self) -> None:
-        result = self.run_script("artifacts", env={"GITHUB_REF_NAME": "v2.5.0-rc1"})
+        result = self.run_script("artifacts", env={"GITHUB_REF_NAME": "v3.0.0-rc1"})
         self.assertEqual(result.returncode, 0, result.stderr)
         creates = [call for call in self.calls() if call.startswith("gh release create")]
         self.assertIn("--prerelease", creates[0])
@@ -282,22 +282,22 @@ class TagPublishScriptTests(PublishScriptTestCase):
     def test_an_existing_release_gets_its_assets_replaced(self) -> None:
         result = self.run_script(
             "artifacts",
-            env={"GITHUB_REF_NAME": "v2.5.0", "STUB_RELEASE_EXISTS": "1"},
+            env={"GITHUB_REF_NAME": "v3.0.0", "STUB_RELEASE_EXISTS": "1"},
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = self.calls()
         self.assertFalse([call for call in calls if "release create" in call])
-        upload = [call for call in calls if call.startswith("gh release upload v2.5.0")]
+        upload = [call for call in calls if call.startswith("gh release upload v3.0.0")]
         self.assertEqual(len(upload), 1)
         self.assertIn("--clobber", upload[0])
 
     def test_a_tag_that_disagrees_with_version_is_flagged(self) -> None:
         result = self.run_script("artifacts", env={"GITHUB_REF_NAME": "v9.9.9"})
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("VERSION says 2.5.0", result.stderr)
+        self.assertIn("VERSION says 3.0.0", result.stderr)
 
     def test_a_release_prerelease_tag_matching_version_is_not_flagged(self) -> None:
-        result = self.run_script("artifacts", env={"GITHUB_REF_NAME": "v2.5.0-rc1"})
+        result = self.run_script("artifacts", env={"GITHUB_REF_NAME": "v3.0.0-rc1"})
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("VERSION says", result.stderr)
 
@@ -307,7 +307,7 @@ class TagPublishScriptTests(PublishScriptTestCase):
         self.assertIn("GITHUB_REF_NAME", result.stderr)
 
     def test_missing_installers_fail_before_anything_is_published(self) -> None:
-        result = self.run_script("empty", env={"GITHUB_REF_NAME": "v2.5.0"})
+        result = self.run_script("empty", env={"GITHUB_REF_NAME": "v3.0.0"})
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("no installers", result.stderr)
         self.assertEqual(self.calls(), [])
@@ -342,9 +342,9 @@ class WorkflowWiringTests(unittest.TestCase):
         reusable = self.files["build-installers.yml"]
         self.assertIn("workflow_call", triggers(reusable))
         for runner, artifact in (
-            ("ubuntu-24.04", "punishment-manager-linux"),
-            ("macos-latest", "punishment-manager-macos"),
-            ("windows-latest", "punishment-manager-windows"),
+            ("ubuntu-24.04", "sentinel-linux"),
+            ("macos-latest", "sentinel-macos"),
+            ("windows-latest", "sentinel-windows"),
         ):
             self.assertIn(runner, reusable)
             self.assertIn(artifact, reusable)
@@ -383,7 +383,7 @@ class WorkflowWiringTests(unittest.TestCase):
         self.assertIn("'v*'", block)
         self.assertIn("publish-tag-release.sh", release)
         self.assertIn("contents: write", release)
-        # The generated per-merge tags (`v2.5.0-build.42`) are already
+        # The generated per-merge tags (`v3.0.0-build.42`) are already
         # published by merge-release.yml; this workflow must skip them.
         self.assertIn("-build.", release)
 

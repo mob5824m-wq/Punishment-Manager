@@ -1,10 +1,10 @@
 [Desktop Entry]
 Type=Application
-Name=Punishment Manager
+Name=Sentinel
 GenericName=Discord Bot
-Comment=Discord bot for temporary role-based punishments
-Exec=/opt/punishment-manager/punishment-manager
-Icon=punishment-manager
+Comment=Discord server management bot: moderation, rules and roles
+Exec=/opt/sentinel/sentinel
+Icon=sentinel
 Terminal=true
 Categories=Network;InstantMessaging;Chat;
 Keywords=discord;bot;moderation;

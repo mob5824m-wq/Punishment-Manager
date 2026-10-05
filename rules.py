@@ -1,4 +1,4 @@
-"""Rules publication and reaction-role support for Punishment Manager.
+"""Rules publication and reaction-role support for Sentinel.
 
 An administrator can publish any number of *rule sets* per server — a "Server
 rules" post, an "Event rules" post, a "Contest rules" post and so on. Members
@@ -37,20 +37,23 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from command_tree import is_administrator, manage_group
 
-logger = logging.getLogger("punishment_manager.rules")
+
+logger = logging.getLogger("sentinel.rules")
 RULES_ACCEPT_EMOJI = "✅"
 MAX_RULES_LENGTH = 4096
 
 # Every set gets a name: it labels the post in the dashboard, titles the embed
-# and is how /rules publish and /rules disable address a set.
+# and is how /manage rules publish and /manage rules disable address a set.
 DEFAULT_RULESET_NAME = "Server rules"
 MAX_RULESET_NAME_LENGTH = 80
 MAX_RULESETS_PER_GUILD = 25
 
 # The text that accompanies the rules embed. It is a module constant so the
-# /rules publish command and the dashboard's publish endpoint cannot drift
-# apart, and so the dashboard preview can show the same wording members see.
+# /manage rules publish command and the dashboard's publish endpoint cannot
+# drift apart, and so the dashboard preview can show the same wording
+# members see.
 RULES_POST_CONTENT = (
     "By reacting to this you acknowledge the rules and will abide by them."
 )
@@ -302,8 +305,21 @@ def is_active_rules_reaction(
     return find_ruleset_by_message(config, guild_id, message_id) is not None
 
 
-class RulesCog(commands.Cog):
-    """Admin commands and event handlers for rules acceptance reactions."""
+class RulesMixin:
+    """The ``/manage rules`` commands and the reactions they depend on.
+
+    Not a cog on its own: these commands are children of the shared
+    :data:`command_tree.manage_group`, and Discord only registers a command
+    whose parent is ``None`` — that is the cog in :mod:`bot`, which mixes this
+    class in so the callbacks bind to the cog Discord actually sees.
+
+    The reactions half comes along for the ride because it reads the same
+    ``rules`` config the commands write; ``bot.py`` therefore registers the
+    reaction listeners through that one cog too.
+
+    Callbacks still take ``self``, so the class is usable on its own in tests:
+    ``RulesMixin(bot, save_config)``.
+    """
 
     def __init__(
         self,
@@ -313,17 +329,12 @@ class RulesCog(commands.Cog):
         self.bot = bot
         self._save_config = save_config
 
-    async def cog_load(self) -> None:
-        # The whole group is administrative. The same restriction is checked
-        # again in each handler, since application-command permissions can be
-        # changed by a server admin after the command is registered.
-        self.rules_group.default_permissions = discord.Permissions(
-            administrator=True
-        )
-        self.rules_group.guild_only = True
-
+    # A child of the shared /manage group, so this is never registered on its
+    # own. Discord applies `default_member_permissions` to the top-level
+    # command only, so every handler re-checks for Administrator itself.
     rules_group = app_commands.Group(
         name="rules",
+        parent=manage_group,
         description="Publish rules and configure the rules-acceptance role.",
     )
 
@@ -351,7 +362,7 @@ class RulesCog(commands.Cog):
         if guild is None:
             await self._respond(interaction, "This command can only be used in a server.")
             return
-        if not self._is_admin(interaction):
+        if not is_administrator(interaction):
             await self._respond(interaction, "Only server administrators can publish rules.")
             return
         if channel.guild.id != guild.id or role.guild.id != guild.id:
@@ -374,7 +385,7 @@ class RulesCog(commands.Cog):
             await self._respond(
                 interaction,
                 f"This server already has {MAX_RULESETS_PER_GUILD} rule sets. "
-                "Disable one with /rules disable before adding another.",
+                "Disable one with /manage rules disable before adding another.",
             )
             return
 
@@ -503,7 +514,7 @@ class RulesCog(commands.Cog):
         if guild is None:
             await self._respond(interaction, "This command can only be used in a server.")
             return
-        if not self._is_admin(interaction):
+        if not is_administrator(interaction):
             await self._respond(
                 interaction,
                 "Only server administrators can disable rules reactions.",
@@ -573,7 +584,7 @@ class RulesCog(commands.Cog):
         if guild is None:
             await self._respond(interaction, "This command can only be used in a server.")
             return
-        if not self._is_admin(interaction):
+        if not is_administrator(interaction):
             await self._respond(
                 interaction,
                 "Only server administrators can list rule sets.",
@@ -584,7 +595,7 @@ class RulesCog(commands.Cog):
         if not rulesets:
             await self._respond(
                 interaction,
-                "No rule sets are published yet. Use `/rules publish` to add one.",
+                "No rule sets are published yet. Use `/manage rules publish` to add one.",
             )
             return
 
@@ -701,12 +712,6 @@ class RulesCog(commands.Cog):
                 guild_id,
                 exc,
             )
-
-    @staticmethod
-    def _is_admin(interaction: discord.Interaction) -> bool:
-        user = interaction.user
-        permissions = getattr(user, "guild_permissions", None)
-        return bool(permissions and permissions.administrator)
 
     @staticmethod
     def _validate_role(

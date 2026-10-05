@@ -4,10 +4,10 @@
 
 | Job | Status | Output |
 |-----|--------|--------|
-| macOS `.dmg` | passing | `dist/PunishmentManager-X.Y.Z.dmg` |
-| Linux `.deb` | passing | `dist/punishment-manager_X.Y.Z_amd64.deb` |
-| Windows `.exe` | passing | `dist/PunishmentManager-Setup-X.Y.Z.exe` |
-| All artifacts | produced | Workflow artifacts on PRs (3-day retention); published as releases on merges to `main` (see "Fixes 16") |
+| macOS `.dmg` | passing | `dist/Sentinel-X.Y.Z.dmg` |
+| Linux `.deb` | passing | `dist/sentinel_X.Y.Z_amd64.deb` |
+| Windows `.exe` | passing | `dist/Sentinel-Setup-X.Y.Z.exe` |
+| All artifacts | produced | Workflow artifacts on PRs (3-day retention); published as releases on merges to `main` (see fix 16) |
 
 The `build.yml` CI build is fully working on all three platforms, and so is
 `release.yml`: the matrix bug described under ~~"The open bug"~~ below was
@@ -43,16 +43,16 @@ git push origin v1.0.0
 
 # 2. Create the GitHub Release with release notes.
 gh release create v1.0.0 \
-    --title "Punishment Manager 1.0.0" \
+    --title "Sentinel 1.0.0" \
     --notes-file /path/to/release-notes.md \
     --target <commit-sha>
 
 # 3. Drag-and-drop the build artifacts onto the release page
 #    in the web UI. The artifacts are on the Actions tab of
 #    the matching commit, named:
-#      punishment-manager-linux   (the .deb)
-#      punishment-manager-macos   (the .dmg)
-#      punishment-manager-windows (the .exe)
+#      sentinel-linux   (the .deb)
+#      sentinel-macos   (the .dmg)
+#      sentinel-windows (the .exe)
 #    The web-UI upload goes through github.com (reachable from
 #    anywhere), so this works in environments where
 #    uploads.github.com is firewalled.
@@ -177,12 +177,12 @@ the trade-off is worth not depending on a non-bundled plugin.
 
 ### 6. NSIS file path resolution
 
-**Problem:** The original `File /r "..\dist\punishment-manager\*"`
+**Problem:** The original `File /r "..\dist\sentinel\*"`
 in `installer.nsi` resolved relative to the script's directory
 (`build/windows/`), so it was looking for `build/dist/...`
 which doesn't exist.
 
-**Fix:** Changed to `File /r "..\..\dist\punishment-manager\*"`.
+**Fix:** Changed to `File /r "..\..\dist\sentinel\*"`.
 The two `..` are required because NSIS resolves the path
 relative to the directory containing the script.
 
@@ -255,7 +255,7 @@ maintainer needs to apply the change.
 ```
 File "bot.py", line 35, in <module>
 File "pathlib.py", line 1116, in mkdir
-PermissionError: [Errno 13] Permission denied: '/opt/punishment-manager/_internal/data'
+PermissionError: [Errno 13] Permission denied: '/opt/sentinel/_internal/data'
 [PYI-49989:ERROR] Failed to execute script 'bot' due to unhandled exception!
 ```
 
@@ -269,9 +269,9 @@ world-readable, with the bot token in it) and to the Windows `.exe` under
 *built*, never run.
 
 **Fix:** new `paths.py` resolves the data dir and config file once, at import:
-env overrides, then the platform state dir (`/var/lib/punishment-manager`,
-`~/.local/state/punishment-manager`, `~/Library/Application Support/...`,
-`%LOCALAPPDATA%\Punishment Manager`), then `<app dir>/data`, then a temp dir —
+env overrides, then the platform state dir (`/var/lib/sentinel`,
+`~/.local/state/sentinel`, `~/Library/Application Support/...`,
+`%LOCALAPPDATA%\Sentinel`), then `<app dir>/data`, then a temp dir —
 each candidate only used if it is actually creatable and writable. A config
 found in a read-only place is copied on write to the writable location. The
 systemd unit, launchd agent and NSSM service are now generated against the
@@ -293,7 +293,7 @@ or on Windows, where `chmod` can't emulate them.
 `build_macos.sh`, `build_windows.bat`, the `pyinstaller.spec` plist, the
 macOS `Info.plist`, `installer.nsi` and the generated `.deb` control file -
 and nothing tied them to the git tag. Cutting `v1.0.1` would have shipped
-`punishment-manager_1.0.0_amd64.deb` attached to a release named v1.0.1, with
+`sentinel_1.0.0_amd64.deb` attached to a release named v1.0.1, with
 a `.app` reporting a third version, and no way to ask a user which build they
 had installed.
 
@@ -301,7 +301,7 @@ had installed.
 `scripts/pm_version.sh` resolves it (`$PM_VERSION` override > `VERSION` file >
 matching git tag > `0.0.0+unknown`) for the shell scripts, the `.bat` reads the
 file directly, and the spec reads it for the plist *and* bundles a copy so
-`punishment-manager --version` / the startup log line report the *installed*
+`sentinel --version` / the startup log line report the *installed*
 build rather than a nearby checkout. `make_release.sh` refuses to tag when the
 tag and the file disagree. `tests/test_version.py` fails if any of those
 scripts hardcodes a version again.
@@ -311,10 +311,10 @@ scripts hardcodes a version again.
 **Problem:** before Python 3.13 (the builds use 3.11), `Path.exists()` /
 `is_file()` only swallow `ENOENT`/`ENOTDIR`/`EBADF`/`ELOOP` and raise
 everything else - notably `EACCES` for a path under a directory the user may
-not traverse. The `.deb`'s `postinst` makes `/etc/punishment-manager`
-`0750 root:punishment-manager`, so for anyone outside that group (typically a
+not traverse. The `.deb`'s `postinst` makes `/etc/sentinel`
+`0750 root:sentinel`, so for anyone outside that group (typically a
 portable/unzipped build run next to a `.deb` install) the
-`/etc/punishment-manager/config.json` candidate raised `PermissionError` out of
+`/etc/sentinel/config.json` candidate raised `PermissionError` out of
 `_pick_config_path()`'s loop. v2.1.0 was still safe to run - the import-time
 guard caught it - but every candidate *after* the inaccessible one was dropped
 (the portable install's own `<app dir>/config.json` was never tried and an
@@ -338,7 +338,7 @@ fixtures).
 
 ### 15. No slash commands were registered: a description over Discord's limit
 
-**Problem:** `/punish status` had a 101-character description. Discord allows
+**Problem:** `/manage status` had a 101-character description. Discord allows
 1-100 characters for every command and option description and validates the
 whole list at once, so the startup `tree.sync()` failed with HTTP 400 / error
 50035 (`In command 'punish status' ... description: Must be between 1 and 100
