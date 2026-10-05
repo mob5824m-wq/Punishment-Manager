@@ -1,32 +1,57 @@
 # Setting up the GitHub Actions workflows
 
 This repo includes GitHub Actions workflow files that build the
-native installers (as a sanity check on every push) and attach them
-to a GitHub Release (when you cut a tag).
+native installers (as a sanity check on every pull request), publish
+them on every merge to `main`, and attach them to a GitHub Release
+(when you cut a tag).
 
 ## What's included
 
 | File | Purpose |
 |------|---------|
-| `.github/workflows/build.yml` | Sanity-checks the build on every push and PR. Produces three platform artifacts (`.deb`, `.dmg`, `.exe`) for 3 days. |
-| `.github/workflows/release.yml` | Builds installers on every `v*` tag and attaches them to a GitHub Release. |
+| `.github/workflows/build-installers.yml` | Reusable workflow: builds the `.deb`, `.dmg` and `.exe` on the three runners and uploads each as a workflow artifact. Holds the only copy of the platform build steps. |
+| `.github/workflows/merge-release.yml` | Runs on every merge to `main`: calls the reusable build, then publishes the rolling `latest-build` prerelease and a `v<VERSION>-build.<run>` prerelease for that merge. |
+| `.github/workflows/build.yml` | Sanity-checks the same build on pull requests and `arena/*` pushes (artifacts kept for 3 days). Main is deliberately not listed — merge-release.yml already builds it. |
+| `.github/workflows/release.yml` | Builds installers on every `v*` tag and attaches them to a GitHub Release (skipping the generated `-build.` tags). |
+| `.github/scripts/publish-merge-release.sh` | Publishes the merge releases (rolling + per-merge) from the downloaded artifacts. |
+| `.github/scripts/publish-tag-release.sh` | Attaches the artifacts to the `v*` tag's release. |
 | `.github/scripts/install-linux-deps.sh` | Helper for the Linux runner: installs `libpython3.11`, `fakeroot`, `dpkg`, `lintian`. |
 | `.github/scripts/install-windows-deps.ps1` | Helper for the Windows runner: ensures a full Python with `python3.lib`. |
 | `.github/scripts/install-nsis.ps1` | Helper for the Windows runner: downloads and installs NSIS 3.10 portably and exports the path to subsequent steps via `$GITHUB_ENV`. |
 
-All five files are committed and on `main`.
+All of them are committed and on `main`.
 
 ## Workflow status
 
-Both workflows work:
+All four workflows work:
 
-- **build.yml** runs on every push / PR and passes on all three platforms.
+- **build.yml** runs on every pull request and `arena/*` push and passes on
+  all three platforms.
+- **merge-release.yml** runs on every merge to `main`. It builds the same
+  three installers and publishes them, so `main` always has a downloadable
+  build without a version bump.
 - **release.yml** runs on every `v*` tag, builds the `.deb` / `.dmg` / `.exe`
   and attaches them to the release. `v2.0.0` and `v2.1.0` were both produced
   this way; no manual drag-and-drop is needed.
 
 The earlier `matrix.shell` parse error in `release.yml` (three jobs replaced
 the matrix) is fixed on `main`; `docs/CI_FIXES.md` keeps the history.
+
+## What a merge to main publishes
+
+`merge-release.yml` keeps two prereleases up to date through
+`publish-merge-release.sh`:
+
+| Release | Tag | Behaviour |
+|---------|-----|-----------|
+| Rolling | `latest-build` | The tag is force-moved to the newest merge and its three assets are replaced (stale assets from an earlier version are removed), so one URL always has the newest installers. |
+| Per merge | `v<VERSION>-build.<run_number>` | Created once per merge from the `VERSION` file and the workflow run number, so an older build stays downloadable after the next merge lands. |
+
+Both are marked **prerelease**, so
+`https://github.com/mob5824m-wq/Sentinel/releases/latest` keeps
+pointing at the newest versioned release instead of at a build from `main`.
+Merges queue (`cancel-in-progress: false`), so a burst of merges publishes
+every build rather than cancelling all but the last one.
 
 ## Cutting a release
 
@@ -45,6 +70,11 @@ prerelease. `./scripts/make_release.sh` is idempotent-safe: it checks the tree
 is clean, that the tag doesn't exist, and that the tag matches `VERSION` before
 creating anything.
 
+This is only needed for a *versioned* release. Merges to `main` are published
+automatically (see "What a merge to main publishes" above), so a fix is
+downloadable as `latest-build` as soon as it lands — the tag is what marks it
+as the stable, version-named build.
+
 ## Releases
 
 Live releases:
@@ -58,7 +88,10 @@ Live releases:
 | `v1.0.0` | source archives only | Created by hand before `release.yml` worked. |
 
 <https://github.com/mob5824m-wq/Sentinel/releases/latest> points at
-the newest release, so users always get the fixed build.
+the newest release, so users always get the fixed build. Because the merge
+builds are prereleases, they are skipped by `/releases/latest` and by
+`gh release list --exclude-pre-releases`; the rolling one lives at
+<https://github.com/mob5824m-wq/Sentinel/releases/tag/latest-build>.
 
 ## A note about the agent's GitHub App token
 
@@ -71,15 +104,29 @@ malicious workflow that exfiltrates secrets.
 In practice this means:
 
 - Workflow edits may have to reach `main` through a PR (or the web
-  editor) rather than a direct push. Both `build.yml` and `release.yml`
-  are correct on `main` now, so nothing is pending.
+  editor) rather than a direct push. Every workflow file is correct on
+  `main`, so nothing is pending.
 
 ## Verifying the workflows work
 
-1. **Build workflow** runs on every push / PR. Watch it at
+1. **Build workflow** runs on every pull request and `arena/*` push.
+   Watch it at
    <https://github.com/mob5824m-wq/Sentinel/actions>.
 
-2. **Release workflow** runs on `v*` tags. To smoke-test it with a
+2. **Merge release** runs on every merge to `main`; the quickest smoke test is
+   to merge anything (even a docs change) and watch
+   `merge-release.yml`. Afterwards:
+
+   ```bash
+   gh release view latest-build                       # rolling assets
+   gh release list --limit 5                          # v2.5.0-build.NN entries
+   ```
+
+   `.github/scripts/publish-merge-release.sh` also runs offline against
+   stubbed `gh`/`git` binaries in `tests/test_release_workflow.py`, which is
+   the fastest way to check the tag/asset handling without pushing anything.
+
+3. **Release workflow** runs on `v*` tags. To smoke-test it with a
    throwaway tag:
    ```bash
    git tag v0.1.0-test

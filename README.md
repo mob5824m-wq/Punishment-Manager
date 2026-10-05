@@ -79,6 +79,19 @@ Releases are produced automatically by GitHub Actions whenever a
 `v*` tag is pushed. See `.github/workflows/release.yml` for the
 build pipeline, and the `VERSION` file for where the number comes from.
 
+Every merge to `main` is published too, without waiting for a version bump:
+
+| Release | What it is |
+|---------|------------|
+| [`latest-build`](https://github.com/mob5824m-wq/Sentinel/releases/tag/latest-build) | Rolling prerelease whose three installers are replaced on every merge — one URL always has the newest build from `main` |
+| `v<VERSION>-build.<run>` | One prerelease per merge (e.g. `v3.0.0-build.42`), so a specific build stays downloadable afterwards |
+
+Both are marked *prerelease*, so
+[`releases/latest`](https://github.com/mob5824m-wq/Sentinel/releases/latest)
+keeps pointing at the newest versioned release rather than at an unreleased
+build. `.github/workflows/merge-release.yml` runs this after each merge, and
+`build.yml` sanity-checks the same build on pull requests.
+
 > **Current release: v3.0.0** — the Sentinel rename. Read
 > [Upgrading from Punishment Manager (v2)](#upgrading-from-punishment-manager-v2)
 > before you update an install that already holds a config or database.
@@ -233,18 +246,23 @@ This writes `config.json` with everything the bot needs.
 
 #### Several rule sets on one server
 
-A server can run more than one rule set — a full "Server rules" post plus a
+A server can run more than one rule set — a full "Zone rules" post plus a
 short "Event rules" or "Contest rules" post, each with its own channel, role
 and text. Give each set a name and it stays independent:
 
 ```text
-/manage rules publish channel:#rules role:@Verified name:"Server rules" rules_text:"1. Be respectful. 2. No spam."
+/manage rules publish channel:#rules role:@Verified name:"Zone rules" rules_text:"1. Be respectful. 2. No spam."
 /manage rules publish channel:#events role:@Events name:"Event rules" rules_text:"1. Keep chat on topic. 2. No spoilers."
 ```
 
 * `/manage rules publish` with an existing name (case-insensitive) replaces only that
-  set's post; other sets are untouched. The default name is `Server rules`, so
-  existing single-post installs are unchanged.
+  set's post; other sets are untouched. The default name — used when you leave
+  the name out — is `Zone rules`, so an unnamed post is the default set.
+* **A name you type is kept exactly as written.** Nothing normalises it towards
+  the default: name a set `Server rules` (the default of older versions) and it
+  stays `Server rules`, stored, listed and titled as "Your Server — Server
+  rules". Only a name matching the current default, `Zone rules`, gets the
+  short "Your Server Rules" title.
 * `/manage rules disable name:"Event rules"` disables one set — its post is marked
   disabled and its ✅ is removed, but roles already granted are left alone.
   With only one set published, `name` can be omitted.
@@ -259,7 +277,7 @@ wording (edit it there to change it everywhere). Rules text can be up to
 4,096 characters. The bot stores every set per server in `config.json`; no
 manual config edit is needed, and a config written by an older version (a
 single object instead of a list, no names) keeps working as one set named
-`Server rules`.
+`Zone rules` — sets that do carry a name keep it untouched.
 
 The rules post is sent with mentions disabled, so no `@` in the rules can ping
 anyone, and the post is only edited or deleted by the bot itself.
@@ -326,13 +344,27 @@ posts; each one is a separate bot message with its own mapping.
 4. Add the **emoji → role pairs** (up to 20 per post). Type or paste any emoji,
    or a custom emoji as `name:id` / `<:name:id>`; the quick-add row and
    **Insert emoji list** button write the role key into the message for you.
-5. Press **Publish post**. The bot posts the message and adds every reaction.
+5. Pick what each pair **does** when someone reacts:
 
-Reacting grants the paired role; removing the reaction removes it again, unless
-**Remove the role when a member removes their reaction** is cleared for that
-post. Roles are validated exactly like the acceptance role: they must sit below
-the bot's role, must not be managed by an integration, and must not carry
-moderation or server-management permissions.
+   | Action | Reacting | Un-reacting |
+   |--------|----------|-------------|
+   | **Give role** (default) | hands the member the role | takes it back |
+   | **Remove role** | strips the role from the member | hands it back |
+
+   *Give* is the ping-picker case. *Remove* is the opt-out case: an
+   "🔕 react to stop being pinged for events" emoji, or a "clear my own
+   access" reaction. Give and remove pairs mix freely on one post, and a
+   member who never reacts is never touched — the bot only ever changes the
+   role of the person who reacted.
+
+6. Press **Publish post**. The bot posts the message and adds every reaction.
+
+Un-reacting reverses whatever the pair did, whether it gave or removed the
+role, unless **Undo the change when a member removes their reaction** is
+cleared for that post (then reactions are one-way: they apply once and
+un-reacting does nothing). Roles are validated exactly like the acceptance
+role: they must sit below the bot's role, must not be managed by an
+integration, and must not carry moderation or server-management permissions.
 
 Each post listed under **Published reaction role posts** has **Edit** (change
 the text, the pairs, or the style — the message is updated in place and the
@@ -356,11 +388,18 @@ to `rules`, so it survives restarts:
       "message": "React below to pick your pings.",
       "use_embed": true,
       "remove_on_unreact": true,
-      "entries": [{ "emoji": "🎮", "role_id": 333333333333333333 }]
+      "entries": [
+        { "emoji": "🎮", "role_id": 333333333333333333, "action": "add" },
+        { "emoji": "🔕", "role_id": 444444444444444444, "action": "remove" }
+      ]
     }
   ]
 }
 ```
+
+`action` is `add` (give the role on react) or `remove` (take it away on
+react); an entry without the key is treated as `add`, so menus written by
+older versions keep working unchanged.
 
 ### Option C — edit `config.json` directly
 
@@ -397,7 +436,7 @@ Publishing rule sets from Discord or the dashboard fills `rules` like this:
   "987654321098765432": [
     {
       "ruleset_id": "6f1c0b3a",
-      "name": "Server rules",
+      "name": "Zone rules",
       "channel_id": 111111111111111111,
       "message_id": 222222222222222222,
       "role_id": 333333333333333333,
@@ -647,6 +686,16 @@ tree, creates an annotated `v3.0.0` tag, and pushes it. Pushing the tag triggers
 which builds all three platforms in parallel and attaches the artifacts
 to a new GitHub Release.
 
+Main doesn't have to wait for that, though: every merge to `main` builds the
+same installers through `merge-release.yml` and publishes them as the rolling
+`latest-build` prerelease plus a `v<VERSION>-build.<run>` prerelease for that
+merge (see [Download](#download)). Those generated tags are skipped by
+`release.yml`, so only a tag you push can produce a versioned release.
+
+All three workflows call the same reusable build
+(`.github/workflows/build-installers.yml`), so the `.deb`/`.dmg`/`.exe` steps
+exist in exactly one file.
+
 You can also just run the same commands by hand:
 
 ```bash
@@ -827,11 +876,15 @@ Sentinel/
 │   └── windows/
 │       └── installer.nsi
 ├── tests/
-│   ├── test_commands.py     # slash-command descriptions and guild sync
-│   ├── test_dashboard.py    # dashboard login/session security
-│   ├── test_rules.py        # rules acceptance/reaction-role behavior
-│   ├── test_reaction_roles.py  # reaction-role menus (storage, emoji, handler)
-│   └── test_paths.py        # packaged-install path resolution (read-only app dir)
+│   ├── test_commands.py         # slash-command descriptions and guild sync
+│   ├── test_dashboard.py        # dashboard login/session security + endpoints
+│   ├── test_markdown.py         # Discord Markdown renderer/linter
+│   ├── test_paths.py            # packaged-install path resolution (read-only app dir)
+│   ├── test_reaction_roles.py   # reaction-role menus (storage, emoji, give/remove)
+│   ├── test_release_workflow.py # merge/tag release publishing (workflows + scripts)
+│   ├── test_rules.py            # rules acceptance/reaction-role behavior
+│   ├── test_version.py          # VERSION plumbing (build scripts, tag, --version)
+│   └── test_warnings.py         # warning escalation behavior
 └── data/                    # created at runtime, source checkouts only
     ├── punishments.db
     └── bot.log

@@ -158,8 +158,10 @@
     .rules-editor { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; align-items: start; }
     .reaction-subhead { margin-top: 28px; }
     .reaction-entries { display: grid; gap: 8px; }
-    .reaction-entry { display: grid; grid-template-columns: 82px minmax(0, 1fr) auto; gap: 8px; align-items: center; }
+    .reaction-entry { display: grid; grid-template-columns: 82px minmax(0, 1fr) 128px auto; gap: 8px; align-items: center; }
     .reaction-entry .reaction-emoji { padding: 8px; font-size: 18px; text-align: center; }
+    .reaction-entry .reaction-action { padding: 8px 10px; font-size: 11.5px; }
+    .reaction-action-note { color: var(--muted); font-size: 10px; }
     .reaction-entry-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
     .reaction-quick { display: inline-flex; flex-wrap: wrap; gap: 4px; }
     .reaction-quick button { min-width: 31px; min-height: 29px; padding: 3px 6px; border: 1px solid var(--line); border-radius: 8px; background: rgba(255,255,255,.03); font-size: 14px; line-height: 1; }
@@ -240,6 +242,8 @@
       .form-grid, .rules-top { grid-template-columns: 1fr; }
       .field.full { grid-column: auto; }
       .form-actions { flex-wrap: wrap; }
+      .reaction-entry { grid-template-columns: 66px minmax(0, 1fr) 104px auto; gap: 6px; }
+      .reaction-entry .reaction-action { padding: 8px 6px; font-size: 10.5px; }
     }
   </style>
 </head>
@@ -322,7 +326,7 @@
             <div class="card-head"><div><h2 class="card-title">Quick actions</h2><p class="card-desc">Jump into common server operations.</p></div></div>
             <div class="quick-actions">
               <button class="quick-action" data-jump="punishments"><span class="qicon">＋</span><span><strong>Apply a punishment</strong><small>Set a duration and reason</small></span></button>
-              <button class="quick-action" data-jump="rules"><span class="qicon">✓</span><span><strong>Publish server rules</strong><small>Enable the rules acceptance role</small></span></button>
+              <button class="quick-action" data-jump="rules"><span class="qicon">✓</span><span><strong>Publish zone rules</strong><small>Enable the rules acceptance role</small></span></button>
               <button class="quick-action" data-jump="settings"><span class="qicon">⚙</span><span><strong>Review server settings</strong><small>Roles, staff channel, and DMs</small></span></button>
             </div>
             <div style="height:14px"></div>
@@ -384,13 +388,13 @@
             <div id="rules-status" class="inline-status disabled"><div class="status-icon">!</div><div><strong>No published rule set</strong><span>Publish one below to configure its acceptance role.</span></div></div>
             <div id="ruleset-list" class="reaction-legend"><span class="legend-empty">Publish your first rule set to see it here.</span></div>
           </article>
-          <aside class="rules-tip"><strong>How the reaction gate works</strong>Members react with ✅ to receive that set's role. Removing the reaction removes the role. The role cannot have moderation or server-management permissions and must be below the bot's role. One server can run several rule sets — for example a "Server rules" post and a shorter "Event rules" post — each with its own channel, role and text.</aside>
+          <aside class="rules-tip"><strong>How the reaction gate works</strong>Members react with ✅ to receive that set's role. Removing the reaction removes the role. The role cannot have moderation or server-management permissions and must be below the bot's role. One server can run several rule sets — for example a "Zone rules" post and a shorter "Event rules" post — each with its own channel, role and text. The name you type is kept exactly as written: name a set "Server rules" and it stays that, with its own title.</aside>
         </div>
         <article class="card" style="margin-top:16px">
           <div class="card-head"><div><h2 class="card-title">Publish or edit a rule set</h2><p class="card-desc">Discord Markdown is supported — the preview on the right shows the embed exactly as it will render. Publishing with a name that already exists replaces that set's post.</p></div><span id="rules-edit-state" class="tag muted">New rule set</span></div>
           <form id="rules-form">
             <div class="form-grid">
-              <div class="field"><label for="rules-name">Rule set name <span id="rules-name-hint" class="hint">Up to 80 characters</span></label><input id="rules-name" maxlength="80" placeholder="Server rules" required></div>
+              <div class="field"><label for="rules-name">Rule set name <span id="rules-name-hint" class="hint">Up to 80 characters · kept exactly as typed</span></label><input id="rules-name" maxlength="80" placeholder="Zone rules" required></div>
               <div class="field"><label for="rules-channel">Post channel</label><select id="rules-channel" required><option value="">Choose a text channel</option></select></div>
               <div class="field"><label for="rules-role">Acceptance role</label><select id="rules-role" required><option value="">Choose a role</option></select></div>
             </div>
@@ -433,12 +437,12 @@
         </article>
 
         <div class="toolbar reaction-subhead">
-          <div><h2>Reaction role posts</h2><p>Publish extra self-service role menus. Each post gets its own message and up to 20 emoji → role pairs.</p></div>
+          <div><h2>Reaction role posts</h2><p>Publish extra self-service role menus. Each post gets its own message and up to 20 emoji → role pairs, and every pair either gives or removes its role.</p></div>
           <button id="refresh-reaction-roles" class="btn secondary" type="button">↻ Refresh</button>
         </div>
         <div class="rules-editor">
           <article class="card">
-            <div class="card-head"><div><h2 class="card-title">Compose the post</h2><p class="card-desc">The bot posts this message and adds one reaction per pair. Members grant themselves the role by reacting.</p></div><span id="reaction-edit-state" class="tag muted">New post</span></div>
+            <div class="card-head"><div><h2 class="card-title">Compose the post</h2><p class="card-desc">The bot posts this message and adds one reaction per pair. Each pair gives its role or takes it away when a member reacts.</p></div><span id="reaction-edit-state" class="tag muted">New post</span></div>
             <form id="reaction-form">
               <div class="form-grid">
                 <div class="field"><label for="reaction-channel">Post channel</label><select id="reaction-channel" required><option value="">Choose a text channel</option></select></div>
@@ -484,10 +488,10 @@
                     <button type="button" data-emoji="✅" aria-label="Add check emoji pair">✅</button>
                   </span>
                 </div>
-                <div class="reaction-note">Paste any emoji, or a custom emoji as <code>name:id</code>. <strong>Insert emoji list</strong> writes the current pairs into the message so members know what each reaction grants. The role must sit below the bot's role and must not carry moderation permissions — the same rules as the acceptance role. Message text is posted with mentions disabled and the bot never pings anyone. Members keep a role they already picked if you later change or remove a pair.</div>
+                <div class="reaction-note">Paste any emoji, or a custom emoji as <code>name:id</code>. Each pair has an action: <strong>Give role</strong> hands the role out when a member reacts — the ping-picker case — while <strong>Remove role</strong> strips it, for an opt-out emoji (e.g. "react to stop being pinged"). <strong>Insert emoji list</strong> writes the current pairs into the message so members know what each reaction does. The role must sit below the bot's role and must not carry moderation permissions — the same rules as the acceptance role. Message text is posted with mentions disabled and the bot never pings anyone. Members keep the roles they already picked if you later change or remove a pair.</div>
               </div>
               <label style="display:flex;align-items:center;gap:9px;margin-top:14px;color:var(--soft);font-size:12px;font-weight:650">
-                <input id="reaction-remove-on-unreact" type="checkbox" checked style="width:auto;min-height:auto"> Remove the role when a member removes their reaction
+                <input id="reaction-remove-on-unreact" type="checkbox" checked style="width:auto;min-height:auto"> Undo the change when a member removes their reaction <span class="hint">(give pairs take the role back; remove pairs hand it back)</span>
               </label>
               <div class="form-actions"><button id="reaction-cancel-edit" class="btn secondary hidden" type="button">Cancel edit</button><button id="reaction-submit" class="btn" type="submit">Publish post</button></div>
             </form>
@@ -775,8 +779,12 @@
       // name, "Guild — <name>" for anything else (rules.rules_embed_title).
       function updateRulesPreviewTitle() {
         const guild = state.detail?.guild?.name || "Server";
-        const name = ($("rules-name").value || "").trim() || state.rulesConfig?.defaultName || "Server rules";
-        const isDefault = name.toLowerCase() === String(state.rulesConfig?.defaultName || "Server rules").toLowerCase();
+        // The typed name wins: only the current default ("Zone rules", any
+        // case) gets the short "Guild Rules" title, so a set deliberately
+        // named "Server rules" keeps its own title instead of being corrected.
+        const fallback = state.rulesConfig?.defaultName || "Zone rules";
+        const name = ($("rules-name").value || "").trim() || fallback;
+        const isDefault = name.toLowerCase() === String(fallback).toLowerCase();
         $("rules-preview-title").textContent = isDefault ? `${guild} Rules` : `${guild} — ${name}`;
       }
 
@@ -1205,7 +1213,12 @@
         return reactionEntryRows().map((row) => ({
           emoji: row.querySelector(".reaction-emoji").value.trim(),
           roleId: row.querySelector(".reaction-role").value,
+          action: row.querySelector(".reaction-action").value,
         }));
+      }
+
+      function reactionActionLabel(action) {
+        return action === "remove" ? "removed on react" : "given on react";
       }
 
       function roleName(roleId) {
@@ -1213,7 +1226,7 @@
         return role ? role.name : "";
       }
 
-      function addReactionEntry(emoji = "", roleId = "") {
+      function addReactionEntry(emoji = "", roleId = "", action = "add") {
         if (reactionEntryRows().length >= reactionMaxEntries()) {
           showToast(`A post can hold at most ${reactionMaxEntries()} emoji → role pairs.`, true);
           return;
@@ -1242,6 +1255,12 @@
           roleSelect.value = String(roleId);
         }
 
+        const actionSelect = document.createElement("select");
+        actionSelect.className = "reaction-action";
+        actionSelect.setAttribute("aria-label", "What reacting does");
+        actionSelect.innerHTML = `<option value="add">Give role</option><option value="remove">Remove role</option>`;
+        actionSelect.value = action === "remove" ? "remove" : "add";
+
         const remove = document.createElement("button");
         remove.type = "button";
         remove.className = "btn danger small";
@@ -1255,8 +1274,9 @@
 
         emojiInput.addEventListener("input", () => { updateReactionEntryCount(); scheduleReactionPreview(); });
         roleSelect.addEventListener("change", () => { updateReactionEntryCount(); refreshReactionPreview(); });
+        actionSelect.addEventListener("change", () => { refreshReactionPreview(); });
 
-        row.append(emojiInput, roleSelect, remove);
+        row.append(emojiInput, roleSelect, actionSelect, remove);
         $("reaction-entries").append(row);
         updateReactionEntryCount();
       }
@@ -1274,7 +1294,7 @@
         }
         box.innerHTML = entries.map((entry) => {
           const name = roleName(entry.roleId) || (entry.roleId ? "role not found" : "no role chosen");
-          return `<div class="reaction-legend-row"><span class="reaction-legend-emoji">${escapeHtml(entry.emoji)}</span><span>${escapeHtml(name)}</span></div>`;
+          return `<div class="reaction-legend-row"><span class="reaction-legend-emoji">${escapeHtml(entry.emoji)}</span><span>${escapeHtml(name)}</span><span class="reaction-action-note">${reactionActionLabel(entry.action)}</span></div>`;
         }).join("");
       }
 
@@ -1340,12 +1360,13 @@
           const channel = (state.detail?.channels || []).find((c) => String(c.id) === String(post.channelId));
           const chips = (post.entries || []).map((entry) => {
             const name = roleName(entry.roleId) || `Role ${entry.roleId || "?"}`;
-            return `<span class="post-chip"><span class="chip-emoji">${escapeHtml(entry.emoji)}</span>${escapeHtml(name)}</span>`;
+            const action = entry.action === "remove" ? `<span class="reaction-action-note">${reactionActionLabel(entry.action)}</span>` : "";
+            return `<span class="post-chip"><span class="chip-emoji">${escapeHtml(entry.emoji)}</span>${escapeHtml(name)}${action}</span>`;
           }).join("") || `<span class="post-chip">No pairs</span>`;
           const message = post.message.length > 170 ? `${post.message.slice(0, 170)}…` : post.message;
           return `<div class="post-row">
             <div class="post-main">
-              <div class="post-title">${escapeHtml(post.title || "Reaction roles")}<span class="tag muted">${post.useEmbed ? "Embed" : "Message"}</span>${post.removeOnUnreact ? "" : `<span class="tag muted">Keeps role on unreact</span>`}</div>
+              <div class="post-title">${escapeHtml(post.title || "Reaction roles")}<span class="tag muted">${post.useEmbed ? "Embed" : "Message"}</span>${post.removeOnUnreact ? "" : `<span class="tag muted">No undo on unreact</span>`}</div>
               <div class="post-snippet">${escapeHtml(message)}</div>
               <div class="post-chips">${chips}</div>
               <div class="subtle" style="margin-top:9px">#${escapeHtml(channel?.name || "unknown channel")} · message ${escapeHtml(post.messageId || "?")}</div>
@@ -1370,7 +1391,7 @@
         $("reaction-message").value = post.message || "";
         $("reaction-remove-on-unreact").checked = post.removeOnUnreact !== false;
         $("reaction-entries").innerHTML = "";
-        (post.entries || []).forEach((entry) => addReactionEntry(entry.emoji, entry.roleId));
+        (post.entries || []).forEach((entry) => addReactionEntry(entry.emoji, entry.roleId, entry.action));
         if (!(post.entries || []).length) addReactionEntry();
         $("reaction-edit-state").textContent = "Editing post";
         $("reaction-edit-state").className = "tag warn";
@@ -1405,7 +1426,9 @@
       function insertReactionLegend() {
         const lines = readReactionEntries().filter((entry) => entry.emoji).map((entry) => {
           const name = roleName(entry.roleId) || (entry.roleId ? "role not found" : "no role chosen");
-          return `- ${entry.emoji} → ${name}`;
+          // "🎮 → Gaming" for a give pair, "🔕 → removes Events" for a
+          // remove pair: the arrow reads as "this reaction does X".
+          return `- ${entry.emoji} → ${entry.action === "remove" ? "removes " : ""}${name}`;
         });
         if (!lines.length) { showToast("Add an emoji and role pair first.", true); return; }
         const area = $("reaction-message");
@@ -1434,7 +1457,7 @@
           const roleId = row.querySelector(".reaction-role").value;
           if (!emoji && !roleId) continue;
           if (!emoji || !roleId) { showToast("Every pair needs both an emoji and a role.", true); return; }
-          entries.push({ emoji, roleId });
+          entries.push({ emoji, roleId, action: row.querySelector(".reaction-action").value });
         }
         if (!entries.length) { showToast("Add at least one emoji and role pair.", true); return; }
 

@@ -174,10 +174,28 @@ class RulesConfigTests(unittest.TestCase):
         self.assertEqual(len(added["rules"]["123"]), 2)
 
     def test_ruleset_names_and_titles(self) -> None:
-        self.assertEqual(rules_embed_title("Guild", "Server rules"), "Guild Rules")
+        # Only the *current* default name gets the short embed title.
+        self.assertEqual(rules_embed_title("Guild", DEFAULT_RULESET_NAME), "Guild Rules")
+        self.assertEqual(rules_embed_title("Guild", "zone RULES"), "Guild Rules")
         self.assertEqual(rules_embed_title("Guild", "Event rules"), "Guild — Event rules")
         self.assertEqual(ruleset_name({"name": "  "}), DEFAULT_RULESET_NAME)
         self.assertEqual(len(new_ruleset_id()), 8)
+
+    def test_a_typed_name_is_never_auto_corrected(self) -> None:
+        """"Server rules" is a name, not an alias for the default.
+
+        It used to be the default; it is now an ordinary custom name, so it
+        must keep its exact text and its own embed title instead of being
+        auto-corrected to whatever the default is called today.
+        """
+        settings = {"name": "Server Rules"}
+        self.assertEqual(ruleset_name(settings), "Server Rules")
+        self.assertNotEqual(ruleset_name(settings), DEFAULT_RULESET_NAME)
+        self.assertEqual(
+            rules_embed_title("Guild", "Server Rules"), "Guild — Server Rules"
+        )
+        # Case is preserved too: this is the title the administrator typed.
+        self.assertEqual(ruleset_name({"name": "server rules"}), "server rules")
 
 
 class ReactionRoleTests(unittest.IsolatedAsyncioTestCase):
@@ -497,15 +515,47 @@ class RulesMultiSetTests(unittest.IsolatedAsyncioTestCase):
         await harness.publish("2. No spam.", name="Event rules", role=harness.second_role)
 
         self.assertEqual(len(harness.sent), 2, "the first set must not be replaced")
+        # "Server rules" is an ordinary custom name now (the old default), so
+        # it is titled as typed rather than folded into the default's title.
         self.assertEqual(
             [entry["embed"].title for entry in harness.sent],
-            ["Test Guild Rules", "Test Guild — Event rules"],
+            ["Test Guild — Server rules", "Test Guild — Event rules"],
         )
         stored = harness.bot.config["rules"]["123"]
         self.assertEqual([item["name"] for item in stored], ["Server rules", "Event rules"])
         self.assertEqual([item["message_id"] for item in stored], [67, 68])
         self.assertEqual([item["role_id"] for item in stored], [89, 90])
         self.assertEqual(len({item["ruleset_id"] for item in stored}), 2, "ids must differ")
+
+    async def test_the_default_name_is_only_a_default(self) -> None:
+        """An unnamed set gets the default; a typed name is never changed."""
+        harness = _RulesHarness({"rules": {}})
+        await harness.publish("1. Be kind.")  # no name given
+        await harness.publish(
+            "2. No spoilers.", name="Server Rules", role=harness.second_role
+        )
+
+        self.assertEqual(
+            [entry["embed"].title for entry in harness.sent],
+            ["Test Guild Rules", "Test Guild — Server Rules"],
+        )
+        stored = harness.bot.config["rules"]["123"]
+        self.assertEqual(
+            [item["name"] for item in stored], [DEFAULT_RULESET_NAME, "Server Rules"]
+        )
+        # Nothing migrated the second set to the default name.
+        self.assertNotIn(DEFAULT_RULESET_NAME, stored[1]["name"])
+
+    async def test_republishing_the_old_default_name_keeps_that_name(self) -> None:
+        """Republishing under "Server rules" replaces that set and stores it as typed."""
+        harness = _RulesHarness({"rules": {}})
+        await harness.publish("1. Be kind.", name="Server rules")
+        await harness.publish("1. Be extra kind.", name="Server rules")
+
+        stored = harness.bot.config["rules"]["123"]
+        self.assertEqual(len(stored), 1, "the same name replaces its own set")
+        self.assertEqual(stored[0]["name"], "Server rules")
+        self.assertEqual(stored[0]["rules_text"], "1. Be extra kind.")
 
     async def test_republishing_a_name_replaces_only_that_set(self) -> None:
         harness = _RulesHarness({"rules": {}})
@@ -620,8 +670,11 @@ class RulesMultiSetTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(stored, list)
         self.assertEqual(len(stored), 2)
         # The legacy entry keeps working (it has no stored name, so it is read
-        # as the default set) and the new set was added next to it.
-        self.assertEqual([ruleset_name(item) for item in stored], ["Server rules", "Event rules"])
+        # as the default set) and the new set was added next to it. The
+        # explicitly named "Event rules" set is stored exactly as typed.
+        self.assertEqual(
+            [ruleset_name(item) for item in stored], [DEFAULT_RULESET_NAME, "Event rules"]
+        )
 
 
 class RulesPostContentTests(unittest.TestCase):

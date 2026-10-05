@@ -4,8 +4,19 @@ The rules-acceptance gate in :mod:`rules` grants exactly one role for one ✅.
 This module covers *additional* self-service role menus: an administrator can
 publish any number of bot posts from the dashboard, each with its own message
 (or embed) and up to :const:`MAX_REACTION_ENTRIES` emoji → role pairs. Reacting
-grants the paired role; removing the reaction takes it back, unless the post
-was saved with ``remove_on_unreact`` turned off.
+runs the pair's action; removing the reaction reverses it, unless the post was
+saved with ``remove_on_unreact`` turned off.
+
+Every pair carries an ``action``:
+
+``add`` (the default)
+    Reacting gives the member that role — a ping-picker, colour menu, etc.
+    Un-reacting takes it back.
+
+``remove``
+    Reacting strips the role instead, for an opt-out emoji ("react to stop
+    being pinged for events"). Un-reacting gives the role back, so a member
+    who un-reacts returns to the state they were in before.
 
 Configuration is stored per guild in the bot's config under the
 ``reaction_roles`` key, alongside ``rules``::
@@ -21,11 +32,18 @@ Configuration is stored per guild in the bot's config under the
                 "use_embed": true,
                 "remove_on_unreact": true,
                 "entries": [
-                    {"emoji": "🎮", "role_id": 333, "label": "Gaming"},
+                    {"emoji": "🎮", "role_id": 333, "action": "add",
+                     "label": "Gaming"},
+                    {"emoji": "🔕", "role_id": 444, "action": "remove",
+                     "label": "No event pings"},
                 ],
             }
         ]
     }
+
+A stored entry with no ``action`` (or the older ``"remove": true`` boolean from
+a hand-edited config) reads as ``add``, so existing menus keep working
+unchanged.
 
 ``post_id`` is a short random id: it is what the dashboard uses to address a
 post, so re-publishing never has to guess message ids, and message ids stay
@@ -60,6 +78,20 @@ MAX_EMBED_MESSAGE_LENGTH = 4096
 # Posted when the administrator leaves the message box empty. It is a module
 # constant so the dashboard's preview and the published post cannot drift.
 DEFAULT_POST_MESSAGE = "React with an emoji below to add or remove a role."
+
+#: What a pair does when its reaction is added. ``ACTION_ADD`` grants the role
+#: (and ``ACTION_REMOVE`` takes it away); un-reacting reverses whichever it is.
+ACTION_ADD = "add"
+ACTION_REMOVE = "remove"
+
+_ACTION_ALIASES = {
+    ACTION_ADD: ACTION_ADD,
+    "give": ACTION_ADD,
+    "grant": ACTION_ADD,
+    ACTION_REMOVE: ACTION_REMOVE,
+    "revoke": ACTION_REMOVE,
+    "take": ACTION_REMOVE,
+}
 
 _POST_ID_BYTES = 4
 
@@ -169,6 +201,35 @@ def entry_for_emoji(post: dict, emoji: object) -> Optional[dict]:
     return None
 
 
+def normalize_action(raw: object) -> Optional[str]:
+    """Read an action from a stored/typed value, or ``None`` if it is neither.
+
+    Accepts the canonical ``add``/``remove``, the friendly words the dashboard
+    offers as aliases, and booleans so a hand-edited ``"remove": true`` still
+    means what it looks like it means.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, bool):
+        return ACTION_REMOVE if raw else ACTION_ADD
+    return _ACTION_ALIASES.get(str(raw).strip().lower())
+
+
+def entry_action(entry: object) -> str:
+    """Return ``ACTION_ADD`` or ``ACTION_REMOVE`` for one stored entry.
+
+    Anything unreadable falls back to ``ACTION_ADD``: that is what every entry
+    written before this option existed meant, so a menu can never start
+    stripping roles because its entry is malformed.
+    """
+    if not isinstance(entry, dict):
+        return ACTION_ADD
+    action = normalize_action(entry.get("action"))
+    if action is None and "remove" in entry:
+        action = normalize_action(entry.get("remove"))
+    return action or ACTION_ADD
+
+
 def parse_entries(raw: object) -> list[dict]:
     """Validate the emoji → role pairs sent by the dashboard.
 
@@ -202,7 +263,18 @@ def parse_entries(raw: object) -> list[dict]:
         if role_id is None:
             raise ValueError(f"Pair {index}: choose a role.")
 
-        entry = {"emoji": emoji, "role_id": role_id}
+        action = ACTION_ADD
+        if "action" in item or "remove" in item:
+            raw_action = item.get("action", item.get("remove"))
+            if raw_action is not None:
+                action = normalize_action(raw_action)
+                if action is None:
+                    raise ValueError(
+                        f"Pair {index}: {raw_action!r} is not a valid action — "
+                        'choose "add" (give the role) or "remove" (take it away).'
+                    )
+
+        entry = {"emoji": emoji, "role_id": role_id, "action": action}
         label = str(item.get("label") or "").strip()
         if label:
             entry["label"] = label[:100]
@@ -223,7 +295,13 @@ def _positive_int(value: object) -> Optional[int]:
 def validate_post_entries(
     guild: discord.Guild, entries: list[dict]
 ) -> Optional[str]:
-    """Check every role can be self-assigned, returning the first problem."""
+    """Check every role can be self-assigned, returning the first problem.
+
+    A ``remove`` pair is held to the same standard as an ``add`` one: the bot
+    must be able to manage the role (below its own, not integration-managed)
+    for either direction, and a post that can only ever take roles away is not
+    a reason to relax the moderation-role check.
+    """
     for entry in entries:
         role = guild.get_role(int(entry["role_id"]))
         if role is None:
@@ -299,10 +377,12 @@ def remove_reaction_post(config: dict, guild_id: int, post_id: object) -> dict:
 # Reaction handling
 # --------------------------------------------------------------------------- #
 class ReactionRolesCog(commands.Cog):
-    """Grants and removes roles for every configured reaction-role post.
+    """Runs every configured reaction-role post's pairs on reaction events.
 
-    The dashboard owns configuration writes (``dashboard.py``), so this cog
-    only reads the stored mappings and answers reaction events.
+    Each pair gives its role on react or takes it away, according to its
+    ``action``; un-reacting reverses that. The dashboard owns configuration
+    writes (``dashboard.py``), so this cog only reads the stored mappings and
+    answers reaction events.
     """
 
     def __init__(self, bot: commands.Bot) -> None:
@@ -375,32 +455,23 @@ class ReactionRolesCog(commands.Cog):
         if member.bot:
             return
 
+        # What the member should end up with. A "give" pair hands the role out
+        # when the reaction is added (and takes it back on un-react); a
+        # "remove" pair is the exact opposite, so one reaction can strip a role
+        # the member opted out of instead of granting one.
+        action = entry_action(entry)
+        should_have_role = add_role if action == ACTION_ADD else not add_role
+
         has_role = role in member.roles
-        if add_role == has_role:
+        if has_role == should_have_role:
             return
 
         emoji = str(entry.get("emoji", ""))
         try:
-            if add_role:
+            if should_have_role:
                 await member.add_roles(role, reason=f"Reaction role {emoji}")
-                logger.info(
-                    "Granted reaction role %s (%s) to user %s in guild %s",
-                    role_id,
-                    emoji,
-                    member.id,
-                    guild_id,
-                )
             else:
-                await member.remove_roles(
-                    role, reason=f"Removed reaction role {emoji}"
-                )
-                logger.info(
-                    "Removed reaction role %s (%s) from user %s in guild %s",
-                    role_id,
-                    emoji,
-                    member.id,
-                    guild_id,
-                )
+                await member.remove_roles(role, reason=f"Reaction role {emoji}")
         except discord.Forbidden:
             logger.warning(
                 "Cannot manage reaction role %s in guild %s; check bot role order "
@@ -415,4 +486,14 @@ class ReactionRolesCog(commands.Cog):
                 member.id,
                 guild_id,
                 exc,
+            )
+        else:
+            logger.info(
+                "%s reaction role %s (%s, %s) for user %s in guild %s",
+                "Granted" if should_have_role else "Removed",
+                role_id,
+                emoji,
+                action,
+                member.id,
+                guild_id,
             )

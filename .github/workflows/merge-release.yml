@@ -1,0 +1,57 @@
+name: merge-release
+
+# Every merge to main builds all three installers and publishes them, so the
+# newest main build is always downloadable without waiting for a versioned
+# release. Two prereleases are kept in step by
+# .github/scripts/publish-merge-release.sh:
+#
+#   latest-build               rolling: its tag is moved to the merge commit
+#                              and its three assets are replaced on every run,
+#                              so one URL always has the newest installers:
+#                              https://github.com/mob5824m-wq/Sentinel/releases/tag/latest-build
+#   v<VERSION>-build.<run>     one per merge, so a build stays downloadable
+#                              after the next merge lands
+#
+# Both are marked prerelease, so /releases/latest still points at the newest
+# versioned release (release.yml) rather than at an unreleased build. Curated
+# releases remain `./scripts/make_release.sh X.Y.Z`.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write   # required to create the releases + upload assets
+
+# One merge release at a time, oldest first. Cancelling in progress would drop
+# the per-merge release of whichever run got cancelled.
+concurrency:
+  group: merge-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    uses: ./.github/workflows/build-installers.yml
+
+  publish:
+    name: publish the merge builds
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # Needed for the publish script (and its VERSION file); the installers
+      # themselves arrive as artifacts below.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # so the rolling tag can be created and pushed
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Show what was built
+        run: ls -lh artifacts/
+      - name: Publish the rolling and per-merge releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/publish-merge-release.sh artifacts

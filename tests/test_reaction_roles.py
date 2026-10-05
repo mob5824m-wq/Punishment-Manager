@@ -2,8 +2,8 @@
 
 The rules-acceptance gate is covered by tests/test_rules.py; this file covers
 the extra dashboard-published menus: the stored shape, the emoji parsing that
-keeps a role name from being stored as a "reaction", and the reaction handler
-that grants and removes roles.
+keeps a role name from being stored as a "reaction", the per-pair Give/Remove
+action, and the reaction handler that grants and removes roles.
 """
 
 from __future__ import annotations
@@ -18,10 +18,13 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from reaction_roles import (  # noqa: E402
+    ACTION_ADD,
+    ACTION_REMOVE,
     DEFAULT_POST_MESSAGE,
     MAX_REACTION_ENTRIES,
     ReactionRolesCog,
     build_post_content,
+    entry_action,
     entry_for_emoji,
     emoji_key,
     find_reaction_post,
@@ -29,6 +32,7 @@ from reaction_roles import (  # noqa: E402
     get_guild_reaction_posts,
     message_limit,
     new_post_id,
+    normalize_action,
     normalize_emoji,
     parse_entries,
     remove_reaction_post,
@@ -50,7 +54,7 @@ def make_post(**overrides):
         "message": "React below.",
         "use_embed": True,
         "remove_on_unreact": True,
-        "entries": [{"emoji": "🎮", "role_id": 89}],
+        "entries": [{"emoji": "🎮", "role_id": 89, "action": ACTION_ADD}],
     }
     post.update(overrides)
     return post
@@ -127,6 +131,29 @@ class EmojiParsingTests(unittest.TestCase):
         self.assertIsNone(entry_for_emoji({"entries": "nope"}, "🎮"))
 
 
+class ActionTests(unittest.TestCase):
+    """The per-pair Give/Remove action and the tolerance around it."""
+
+    def test_missing_actions_read_as_give(self) -> None:
+        # Every entry stored before the option existed meant "give", so an
+        # unreadable action must never turn into a role stripped on react.
+        for entry in ({}, {"emoji": "🎮"}, {"action": None}, "nonsense", None):
+            with self.subTest(entry=entry):
+                self.assertEqual(entry_action(entry), ACTION_ADD)
+
+    def test_actions_are_read_leniently(self) -> None:
+        self.assertEqual(normalize_action("Remove"), ACTION_REMOVE)
+        self.assertEqual(normalize_action(" give "), ACTION_ADD)
+        self.assertEqual(normalize_action("revoke"), ACTION_REMOVE)
+        self.assertIsNone(normalize_action("sideways"))
+        # A hand-edited config may carry the older boolean instead.
+        self.assertEqual(entry_action({"remove": True}), ACTION_REMOVE)
+        self.assertEqual(entry_action({"remove": False}), ACTION_ADD)
+        self.assertEqual(entry_action({"action": "remove"}), ACTION_REMOVE)
+        # An explicit action wins over a stale boolean next to it.
+        self.assertEqual(entry_action({"action": "add", "remove": True}), ACTION_ADD)
+
+
 class EntryValidationTests(unittest.TestCase):
     def test_valid_pairs_are_normalised(self) -> None:
         entries = parse_entries(
@@ -136,9 +163,34 @@ class EntryValidationTests(unittest.TestCase):
             ]
         )
         self.assertEqual(entries, [
-            {"emoji": "🎮", "role_id": 89, "label": "Gaming"},
-            {"emoji": "<:gaming:123456789>", "role_id": 90},
+            {"emoji": "🎮", "role_id": 89, "action": ACTION_ADD, "label": "Gaming"},
+            {"emoji": "<:gaming:123456789>", "role_id": 90, "action": ACTION_ADD},
         ])
+
+    def test_pairs_choose_whether_they_give_or_remove(self) -> None:
+        entries = parse_entries(
+            [
+                {"emoji": "🎮", "roleId": 89, "action": "add"},
+                {"emoji": "🔕", "roleId": 90, "action": "remove"},
+                {"emoji": "🎬", "roleId": 91, "action": "Give"},
+                {"emoji": "🎨", "roleId": 92, "remove": True},
+            ]
+        )
+        self.assertEqual(
+            [entry["action"] for entry in entries],
+            [ACTION_ADD, ACTION_REMOVE, ACTION_ADD, ACTION_REMOVE],
+        )
+
+    def test_an_unknown_action_is_rejected(self) -> None:
+        with self.assertRaises(ValueError) as caught:
+            parse_entries(
+                [
+                    {"emoji": "🎮", "roleId": 89, "action": "add"},
+                    {"emoji": "🔕", "roleId": 90, "action": "strip"},
+                ]
+            )
+        self.assertIn("Pair 2", str(caught.exception))
+        self.assertIn("remove", str(caught.exception))
 
     def test_duplicate_emoji_are_rejected(self) -> None:
         with self.assertRaises(ValueError) as caught:
@@ -324,6 +376,57 @@ class ReactionHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.member.roles.append(self.role)
         await self.cog.on_raw_reaction_remove(self.payload(member=self.member))
         self.assertEqual(self.member.removed, [])
+
+    async def test_reacting_can_strip_a_role_instead_of_granting_it(self) -> None:
+        self.post["entries"] = [
+            {"emoji": "🔕", "role_id": 89, "action": ACTION_REMOVE}
+        ]
+        self.member.roles.append(self.role)
+        payload = self.payload(emoji="🔕", member=self.member)
+        await self.cog.on_raw_reaction_add(payload)
+        self.assertEqual(self.member.removed, [self.role])
+        self.assertEqual(self.member.added, [])
+        # Reacting again must not remove it twice.
+        await self.cog.on_raw_reaction_add(payload)
+        self.assertEqual(self.member.removed, [self.role])
+
+    async def test_unreacting_a_remove_pair_hands_the_role_back(self) -> None:
+        self.post["entries"] = [
+            {"emoji": "🔕", "role_id": 89, "action": ACTION_REMOVE}
+        ]
+        payload = self.payload(emoji="🔕", member=self.member)
+        await self.cog.on_raw_reaction_remove(payload)
+        self.assertEqual(self.member.added, [self.role])
+        # Un-reacting again is a no-op: the member has the role back.
+        await self.cog.on_raw_reaction_remove(payload)
+        self.assertEqual(self.member.added, [self.role])
+
+    async def test_a_remove_pair_without_undo_only_ever_strips(self) -> None:
+        self.post["remove_on_unreact"] = False
+        self.post["entries"] = [
+            {"emoji": "🔕", "role_id": 89, "action": ACTION_REMOVE}
+        ]
+        self.member.roles.append(self.role)
+        payload = self.payload(emoji="🔕", member=self.member)
+        await self.cog.on_raw_reaction_add(payload)
+        await self.cog.on_raw_reaction_remove(payload)
+        self.assertEqual(self.member.removed, [self.role])
+        self.assertEqual(self.member.added, [])
+
+    async def test_a_remove_pair_ignores_members_who_lacked_the_role(self) -> None:
+        self.post["entries"] = [
+            {"emoji": "🔕", "role_id": 89, "action": ACTION_REMOVE}
+        ]
+        await self.cog.on_raw_reaction_add(
+            self.payload(emoji="🔕", member=self.member)
+        )
+        self.assertEqual(self.member.removed, [])
+
+    async def test_entries_stored_before_the_action_existed_still_give(self) -> None:
+        # A config written by an older version has no "action" key at all.
+        self.post["entries"] = [{"emoji": "🎮", "role_id": 89}]
+        await self.cog.on_raw_reaction_add(self.payload(member=self.member))
+        self.assertEqual(self.member.added, [self.role])
 
     async def test_other_messages_emojis_bots_and_dms_are_ignored(self) -> None:
         await self.cog.on_raw_reaction_add(self.payload(message_id=68, member=self.member))

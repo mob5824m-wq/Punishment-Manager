@@ -30,6 +30,7 @@ from reaction_roles import (
     MAX_TITLE_LENGTH,
     build_post_content,
     emoji_key,
+    entry_action,
     find_reaction_post,
     get_guild_reaction_posts,
     message_limit,
@@ -1186,7 +1187,13 @@ class DashboardServer:
 
     @staticmethod
     def _ruleset_name(data: dict, others: list[dict]) -> tuple[Optional[str], Optional[str]]:
-        """Validate a rule set name, which doubles as its dashboard handle."""
+        """Validate a rule set name, which doubles as its dashboard handle.
+
+        The name is stored exactly as typed. It is never normalised towards
+        :const:`DEFAULT_RULESET_NAME`, so a set the administrator titles
+        "Server rules" keeps that name instead of being auto-corrected to the
+        default; the default only applies when the field is left empty.
+        """
         name = str(data.get("name") or "").strip() or DEFAULT_RULESET_NAME
         if len(name) > MAX_RULESET_NAME_LENGTH:
             return None, (
@@ -1720,6 +1727,10 @@ def _reaction_post_payload(post: dict) -> dict:
                 {
                     "emoji": str(entry.get("emoji") or ""),
                     "roleId": _snowflake(entry.get("role_id")),
+                    # Always sent, defaulted for entries stored before the
+                    # Give/Remove option existed, so the editor always has a
+                    # value to show in its action dropdown.
+                    "action": entry_action(entry),
                     "label": str(entry.get("label") or ""),
                 }
             )
