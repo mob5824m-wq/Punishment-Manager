@@ -78,6 +78,12 @@ jobs:
           python -m pytest tests -q --tb=short
       - name: Build .deb
         run: build/build_linux.sh
+      - name: Report the glibc floor
+        # The bundled CPython runtime comes from this runner, so the artifact
+        # can never run on a distribution older than the runner's glibc - see
+        # scripts/check_glibc.py. Reported here so a compatibility change is
+        # visible in the log rather than discovered by a user on Raspberry Pi OS.
+        run: python scripts/check_glibc.py dir dist/sentinel
       - name: Verify .deb
         run: |
           ls -lh dist/
