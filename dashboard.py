@@ -36,6 +36,21 @@ LOGIN_WINDOW_SECONDS = 5 * 60
 MAX_REASON_LENGTH = 900
 
 
+def _snowflake(value: Any) -> Optional[str]:
+    """Serialise a Discord id as a string for JSON transport.
+
+    Snowflakes are 64-bit values that exceed JavaScript's
+    ``Number.MAX_SAFE_INTEGER`` (2**53 - 1), so sending one as a JSON number
+    makes the browser silently round it — ``...789`` comes back as ``...800``.
+    The rounded id is then sent back on the next request and matches no guild,
+    member, role, or channel, which surfaced as "The bot is not connected to
+    that server." even though it is. Strings survive the round trip intact.
+    """
+    if value is None or value == "":
+        return None
+    return str(value)
+
+
 def ensure_dashboard_token(
     config: dict,
     save_config: Callable[[dict], None],
@@ -152,9 +167,14 @@ class DashboardServer:
         self._runner = runner
         self._site = site
         logger.info(
-            "Admin dashboard listening at http://%s:%d/ (use --dashboard-token to retrieve its login key).",
+            "Admin dashboard listening at http://%s:%d/.",
             self._host,
             self._port,
+        )
+        logger.info(
+            "Dashboard login key: run 'punishment-manager --dashboard-token' on the bot host "
+            "(from source: 'python3 bot.py --dashboard-token'); it is also saved as "
+            "'dashboard_token' in the bot's config.json."
         )
         return True
 
@@ -370,7 +390,7 @@ class DashboardServer:
         }
         payload = [
             {
-                "id": guild.id,
+                "id": _snowflake(guild.id),
                 "name": guild.name,
                 "icon": guild.icon.url if guild.icon else None,
                 "memberCount": guild.member_count,
@@ -398,7 +418,7 @@ class DashboardServer:
         rules = get_guild_rules(self.bot.config, guild.id) or {}
         roles = [
             {
-                "id": role.id,
+                "id": _snowflake(role.id),
                 "name": role.name,
                 "position": role.position,
                 "color": role.color.value,
@@ -409,7 +429,7 @@ class DashboardServer:
         ]
         channels = [
             {
-                "id": channel.id,
+                "id": _snowflake(channel.id),
                 "name": channel.name,
                 "category": channel.category.name if channel.category else None,
             }
@@ -422,24 +442,26 @@ class DashboardServer:
         return web.json_response(
             {
                 "guild": {
-                    "id": guild.id,
+                    "id": _snowflake(guild.id),
                     "name": guild.name,
                     "icon": guild.icon.url if guild.icon else None,
-                    "ownerId": guild.owner_id,
+                    "ownerId": _snowflake(guild.owner_id),
                     "memberCount": guild.member_count,
                 },
                 "settings": {
-                    "punishRoleId": config.get("punish_role_id"),
-                    "postRoleId": config.get("post_role_id"),
-                    "staffRoleId": config.get("staff_role_id"),
-                    "staffChannelId": self._get_staff_channel_id(self.bot.config, guild.id),
+                    "punishRoleId": _snowflake(config.get("punish_role_id")),
+                    "postRoleId": _snowflake(config.get("post_role_id")),
+                    "staffRoleId": _snowflake(config.get("staff_role_id")),
+                    "staffChannelId": _snowflake(
+                        self._get_staff_channel_id(self.bot.config, guild.id)
+                    ),
                     "dmUser": self._should_dm_user(self.bot.config, guild.id),
                 },
                 "rules": {
                     "enabled": bool(rules),
-                    "channelId": rules.get("channel_id"),
-                    "messageId": rules.get("message_id"),
-                    "roleId": rules.get("role_id"),
+                    "channelId": _snowflake(rules.get("channel_id")),
+                    "messageId": _snowflake(rules.get("message_id")),
+                    "roleId": _snowflake(rules.get("role_id")),
                     "text": rules.get("rules_text", ""),
                 },
                 "roles": roles,
@@ -471,7 +493,7 @@ class DashboardServer:
             {
                 "members": [
                     {
-                        "id": member.id,
+                        "id": _snowflake(member.id),
                         "name": member.display_name,
                         "username": str(member),
                         "avatar": member.display_avatar.url,
@@ -489,7 +511,12 @@ class DashboardServer:
             (guild.id,),
         )
         return web.json_response(
-            {"punishments": [self._punishment_payload(guild, dict(row)) for row in rows]}
+            {
+                "punishments": [
+                    _json_safe_ids(self._punishment_payload(guild, dict(row)))
+                    for row in rows
+                ]
+            }
         )
 
     async def history(self, request: web.Request) -> web.Response:
@@ -506,7 +533,7 @@ class DashboardServer:
             member = guild.get_member(item["user_id"])
             item["memberName"] = member.display_name if member else f"User {item['user_id']}"
             item["durationLabel"] = self._format_duration(item["duration_seconds"])
-            history.append(item)
+            history.append(_json_safe_ids(item))
         return web.json_response({"history": history})
 
     async def save_guild_settings(self, request: web.Request) -> web.Response:
@@ -655,7 +682,7 @@ class DashboardServer:
         return web.json_response(
             {
                 "applied": True,
-                "userId": member.id,
+                "userId": _snowflake(member.id),
                 "expiresAt": expires_at.isoformat(),
             },
             status=201,
@@ -710,7 +737,7 @@ class DashboardServer:
             member.id,
             request.remote or "unknown",
         )
-        return web.json_response({"pardoned": True, "userId": member.id})
+        return web.json_response({"pardoned": True, "userId": _snowflake(member.id)})
 
     async def rules_status(self, request: web.Request) -> web.Response:
         guild = self._guild_from_request(request)
@@ -718,9 +745,9 @@ class DashboardServer:
         return web.json_response(
             {
                 "enabled": bool(settings),
-                "channelId": settings.get("channel_id"),
-                "messageId": settings.get("message_id"),
-                "roleId": settings.get("role_id"),
+                "channelId": _snowflake(settings.get("channel_id")),
+                "messageId": _snowflake(settings.get("message_id")),
+                "roleId": _snowflake(settings.get("role_id")),
                 "text": settings.get("rules_text", ""),
             }
         )
@@ -798,7 +825,9 @@ class DashboardServer:
         if old_settings:
             await rules_cog._retire_previous_post(guild, old_settings, message.id)
         logger.info("Dashboard published rules for guild %s", guild.id)
-        return web.json_response({"published": True, "messageId": message.id}, status=201)
+        return web.json_response(
+            {"published": True, "messageId": _snowflake(message.id)}, status=201
+        )
 
     async def disable_rules(self, request: web.Request) -> web.Response:
         guild = self._guild_from_request(request)
@@ -935,6 +964,31 @@ class DashboardServer:
             "remainingSeconds": remaining,
             "remainingLabel": _human_duration(remaining),
         }
+
+
+_ID_FIELD_SUFFIXES = ("_id", "Id")
+_ID_FIELD_EXCEPTIONS = {"id"}  # database row keys
+
+
+def _json_safe_ids(payload: dict) -> dict:
+    """Stringify every snowflake-looking field of a database row.
+
+    Rows are echoed to the browser as-is, so ids such as ``user_id`` and
+    ``moderator_id`` must be strings too — otherwise JavaScript rounds them
+    and any id shown to a moderator (or sent back to the server) is wrong.
+    """
+    safe = {}
+    for key, value in payload.items():
+        if (
+            key not in _ID_FIELD_EXCEPTIONS
+            and key.endswith(_ID_FIELD_SUFFIXES)
+            and isinstance(value, int)
+            and not isinstance(value, bool)
+        ):
+            safe[key] = str(value)
+        else:
+            safe[key] = value
+    return safe
 
 
 def _human_duration(seconds: int) -> str:

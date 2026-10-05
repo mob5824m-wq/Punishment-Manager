@@ -40,7 +40,15 @@
     .login-card label { display: block; margin-bottom: 8px; color: var(--soft); font-size: 13px; font-weight: 650; }
     .login-card input { width: 100%; }
     .login-card .btn { width: 100%; margin-top: 14px; }
-    .login-foot { margin-top: 22px; padding-top: 17px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; line-height: 1.5; }
+    .login-card .login-error { margin: 12px 0 0; padding: 10px 12px; border: 1px solid rgba(251,113,133,.38); border-radius: 10px; background: rgba(251,113,133,.1); color: #ffb4c0; font-size: 12px; font-weight: 620; line-height: 1.5; }
+    .key-help { margin-top: 22px; padding-top: 17px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; line-height: 1.5; }
+    .key-help-title { margin-bottom: 10px; color: var(--soft); font-size: 12px; font-weight: 720; }
+    .key-help ol { margin: 0; padding-left: 19px; display: grid; gap: 10px; }
+    .key-help li { padding-left: 2px; }
+    .key-cmd { display: block; margin-top: 7px; }
+    .key-cmd code { display: block; padding: 8px 10px; border: 1px solid var(--line); border-radius: 9px; background: rgba(255,255,255,.04); color: #ccd7ea; font-size: 11.5px; white-space: nowrap; overflow-x: auto; }
+    .key-cmd span { display: block; margin-top: 4px; color: #65738a; font-size: 10.5px; }
+    .login-card .key-help-note { margin: 14px 0 0; color: var(--muted); font-size: 11px; line-height: 1.55; }
     .shell { min-height: 100vh; display: grid; grid-template-columns: 248px minmax(0, 1fr); }
     .sidebar { position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; padding: 23px 16px 16px; border-right: 1px solid var(--line); background: rgba(12,16,26,.88); backdrop-filter: blur(16px); }
     .brand { display: flex; align-items: center; gap: 12px; padding: 0 8px 24px; }
@@ -191,8 +199,20 @@
       <p>Sign in with the local dashboard key to manage your bot's servers, punishments, rules, and settings.</p>
       <label for="dashboard-key">Dashboard key</label>
       <input id="dashboard-key" type="password" autocomplete="current-password" placeholder="Paste your dashboard key" required>
+      <p id="login-error" class="login-error hidden" role="alert"></p>
       <button class="btn" type="submit">Unlock console <span aria-hidden="true">→</span></button>
-      <div id="login-error" class="login-foot">Your key is stored locally by the bot. Retrieve it with <code>python bot.py --dashboard-token</code> on the bot host.</div>
+      <div class="key-help">
+        <div class="key-help-title">🔑 Where do I find the dashboard key?</div>
+        <ol>
+          <li>Open a terminal <strong>on the machine that runs the bot</strong> (this page only listens there).</li>
+          <li>Run the command for your install:
+            <span class="key-cmd"><code>punishment-manager --dashboard-token</code><span>Installed app (.dmg, .deb, Windows Setup)</span></span>
+            <span class="key-cmd"><code>python3 bot.py --dashboard-token</code><span>Running from source</span></span>
+          </li>
+          <li>Copy the key that is printed (the first run creates it if needed) and paste it above.</li>
+        </ol>
+        <p class="key-help-note">The key is also saved as <code>dashboard_token</code> in the bot's <code>config.json</code> — run <code>punishment-manager --paths</code> (or <code>python3 bot.py --paths</code>) to see where that file lives. This is <strong>not</strong> your Discord bot token.</p>
+      </div>
     </form>
   </section>
 
@@ -353,20 +373,68 @@
       const $ = (id) => document.getElementById(id);
       const escapeHtml = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 
+      // Discord snowflakes are larger than Number.MAX_SAFE_INTEGER, so the
+      // browser rounds them if a server ever sends one as a JSON number:
+      // "…111111" silently becomes "…111104" and no longer matches anything
+      // on the bot. Server responses stringify ids already; this scanner is a
+      // belt-and-braces pass over the raw response text that quotes any bare
+      // 16+ digit integer before JSON.parse can lose precision. It tracks
+      // string state, so ids inside text (a rules body, a reason) are never
+      // rewritten.
+      function parseJsonExact(text) {
+        let out = "";
+        let inString = false;
+        let escaped = false;
+        for (let i = 0; i < text.length; i += 1) {
+          const ch = text[i];
+          if (inString) {
+            out += ch;
+            if (escaped) escaped = false;
+            else if (ch === "\\") escaped = true;
+            else if (ch === '"') inString = false;
+            continue;
+          }
+          if (ch === '"') { inString = true; out += ch; continue; }
+          if (ch >= "0" && ch <= "9") {
+            let end = i;
+            while (end < text.length && text[end] >= "0" && text[end] <= "9") end += 1;
+            const digits = text.slice(i, end);
+            const prev = out.replace(/\s+$/, "").slice(-1);
+            const next = text.slice(end, end + 1);
+            const isBareInteger = digits.length >= 16
+              && (next === "" || /[,\s}\]]/.test(next))
+              && !/[0-9.eE-]/.test(prev);
+            out += isBareInteger ? `"${digits}"` : digits;
+            i = end - 1;
+            continue;
+          }
+          out += ch;
+        }
+        return JSON.parse(out);
+      }
+
       async function api(url, options = {}) {
         const method = (options.method || "GET").toUpperCase();
         const headers = { ...(options.headers || {}) };
         if (options.body !== undefined) headers["Content-Type"] = "application/json";
         if (!["GET", "HEAD"].includes(method) && state.csrf) headers["X-CSRF-Token"] = state.csrf;
         const response = await fetch(url, { credentials: "same-origin", ...options, method, headers });
+        const raw = await response.text();
         let result = {};
-        try { result = await response.json(); } catch (_) { result = {}; }
+        try { result = parseJsonExact(raw); } catch (_) { result = {}; }
         if (response.status === 401 && url !== "/api/login") {
           lockConsole();
           throw new Error(result.error || "Session expired. Sign in again.");
         }
         if (!response.ok) throw new Error(result.error || `Request failed (${response.status}).`);
         return result;
+      }
+
+      // Rounding a snowflake through a JS number turns "…111111" into
+      // "…111104", which the server reports as an unknown id.
+      function friendlyError(message) {
+        if (!/not connected to that server|not in this server|valid .* from this server|must be positive/i.test(message)) return message;
+        return `${message} Long Discord IDs can round when the browser reads them as numbers — reload the page (Ctrl+R / Cmd+R) and try again.`;
       }
 
       function showToast(message, error = false) {
@@ -378,15 +446,22 @@
         state.toastTimer = setTimeout(() => toast.classList.remove("show"), 3600);
       }
 
+      function setLoginError(message) {
+        const box = $("login-error");
+        box.textContent = message || "";
+        box.classList.toggle("hidden", !message);
+      }
+
       function lockConsole() {
         state.csrf = "";
+        setLoginError("");
         $("app-view").classList.add("hidden");
         $("login-view").classList.remove("hidden");
       }
 
       async function unlockConsole(csrf) {
         state.csrf = csrf;
-        $("login-error").textContent = "Authenticated session. The browser session expires after a period of inactivity.";
+        setLoginError("");
         $("login-view").classList.add("hidden");
         $("app-view").classList.remove("hidden");
         await loadOverview();
@@ -401,7 +476,7 @@
           $("dashboard-key").value = "";
           await unlockConsole(result.csrfToken);
         } catch (error) {
-          $("login-error").textContent = error.message || "Could not sign in.";
+          setLoginError(error.message || "Could not sign in. Check that the key matches the one printed by --dashboard-token.");
         } finally { button.disabled = false; }
       });
 
@@ -422,7 +497,7 @@
         $("page-eyebrow").textContent = titles[page][0];
         $("page-title").textContent = titles[page][1];
         $("page-subtitle").textContent = titles[page][2];
-        if (state.guildId) loadPageData(page).catch((error) => showToast(error.message, true));
+        if (state.guildId) loadPageData(page).catch((error) => showToast(friendlyError(error.message), true));
       }
 
       $("server-select").addEventListener("change", async (event) => {
@@ -466,7 +541,7 @@
             $("stat-members").textContent = "—";
             $("stat-rules").textContent = "—";
           }
-        } catch (error) { showToast(error.message, true); }
+        } catch (error) { showToast(friendlyError(error.message), true); }
       }
 
       async function loadGuildDetail() {
@@ -569,7 +644,7 @@
           select.innerHTML = result.members?.length ? result.members.map((m) => `<option value="${m.id}">${escapeHtml(m.name)} · ${escapeHtml(m.username)} · ${m.id}</option>`).join("") : `<option value="">No members found</option>`;
           if (result.members?.length) showToast(`Found ${result.members.length} member${result.members.length === 1 ? "" : "s"}.`);
           else showToast("No members found for that search.", true);
-        } catch (error) { showToast(error.message, true); }
+        } catch (error) { showToast(friendlyError(error.message), true); }
         finally { button.disabled = false; }
       }
 
@@ -585,7 +660,7 @@
           });
           $("punish-duration").value = ""; $("punish-reason").value = "";
           showToast("Punishment applied."); await loadPunishments(); await loadOverview();
-        } catch (error) { showToast(error.message, true); }
+        } catch (error) { showToast(friendlyError(error.message), true); }
         finally { button.disabled = false; }
       });
 
@@ -594,7 +669,7 @@
         try {
           await api(`/api/guilds/${encodeURIComponent(state.guildId)}/punishments/${encodeURIComponent(userId)}/pardon`, { method: "POST", body: "{}" });
           showToast("Member pardoned."); await loadPunishments(); await loadHistory(); await loadOverview();
-        } catch (error) { showToast(error.message, true); }
+        } catch (error) { showToast(friendlyError(error.message), true); }
       }
 
       $("rules-text").addEventListener("input", () => { $("rules-count").textContent = `${$("rules-text").value.length} / 4096`; });
@@ -606,14 +681,14 @@
             body: JSON.stringify({ channelId: $("rules-channel").value, roleId: $("rules-role").value, text: $("rules-text").value }),
           });
           showToast("Rules published and reaction role activated."); await loadGuildDetail(); await loadOverview();
-        } catch (error) { showToast(error.message, true); }
+        } catch (error) { showToast(friendlyError(error.message), true); }
         finally { button.disabled = false; }
       });
 
       $("disable-rules-button").addEventListener("click", async () => {
         if (!confirm("Disable rules reactions? Existing role assignments will stay as they are.")) return;
         try { await api(`/api/guilds/${encodeURIComponent(state.guildId)}/rules`, { method: "DELETE" }); showToast("Rules reaction role disabled."); await loadGuildDetail(); await loadOverview(); }
-        catch (error) { showToast(error.message, true); }
+        catch (error) { showToast(friendlyError(error.message), true); }
       });
 
       $("settings-form").addEventListener("submit", async (event) => {
@@ -630,18 +705,18 @@
             }),
           });
           showToast("Server settings saved."); await loadGuildDetail();
-        } catch (error) { showToast(error.message, true); }
+        } catch (error) { showToast(friendlyError(error.message), true); }
         finally { button.disabled = false; }
       });
 
       $("sync-commands").addEventListener("click", async (event) => {
         const button = event.currentTarget; button.disabled = true;
         try { const result = await api(`/api/guilds/${encodeURIComponent(state.guildId)}/sync`, { method: "POST", body: "{}" }); showToast(result.synced ? "Commands refreshed for this server." : "Command sync will retry on reconnect.", !result.synced); }
-        catch (error) { showToast(error.message, true); }
+        catch (error) { showToast(friendlyError(error.message), true); }
         finally { button.disabled = false; }
       });
-      $("refresh-punishments").addEventListener("click", () => loadPunishments().catch((e) => showToast(e.message, true)));
-      $("refresh-history").addEventListener("click", () => loadHistory().catch((e) => showToast(e.message, true)));
+      $("refresh-punishments").addEventListener("click", () => loadPunishments().catch((e) => showToast(friendlyError(e.message), true)));
+      $("refresh-history").addEventListener("click", () => loadHistory().catch((e) => showToast(friendlyError(e.message), true)));
 
       async function initialize() {
         try {
