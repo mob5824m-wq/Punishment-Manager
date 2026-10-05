@@ -3,7 +3,7 @@ Tests for the release version plumbing.
 
 Motivation: the version was hardcoded in seven places (three build scripts,
 the PyInstaller spec, the macOS plist, the NSIS installer, the .deb control
-file), so cutting a `v1.0.1` tag produced `punishment-manager_1.0.0_amd64.deb`
+file), so cutting a `v1.0.1` tag produced `sentinel_1.0.0_amd64.deb`
 - an installer whose filename, plist and package metadata disagreed with the
 release it was attached to. The VERSION file is now the single source of
 truth; these tests keep it that way.
@@ -85,11 +85,11 @@ class NoDriftTests(unittest.TestCase):
 
 
 class ResolutionTests(unittest.TestCase):
-    def test_pm_version_script_reads_the_file(self) -> None:
+    def test_version_script_reads_the_file(self) -> None:
         if os.name == "nt":
             self.skipTest("bash helper")
-        script = REPO_ROOT / "scripts" / "pm_version.sh"
-        cmd = f'. "{script}" && pm_version "{REPO_ROOT}"'
+        script = REPO_ROOT / "scripts" / "version.sh"
+        cmd = f'. "{script}" && app_version "{REPO_ROOT}"'
         out = subprocess.run(
             ["bash", "-lc", cmd], capture_output=True, text=True, cwd=str(REPO_ROOT), check=True
         )
@@ -98,10 +98,10 @@ class ResolutionTests(unittest.TestCase):
     def test_env_override_wins(self) -> None:
         if os.name == "nt":
             self.skipTest("bash helper")
-        script = REPO_ROOT / "scripts" / "pm_version.sh"
-        env = {**os.environ, "PM_VERSION": "9.9.9-rc1"}
+        script = REPO_ROOT / "scripts" / "version.sh"
+        env = {**os.environ, "SENTINEL_VERSION": "9.9.9-rc1"}
         out = subprocess.run(
-            ["bash", "-lc", f'. "{script}" && pm_version "{REPO_ROOT}"'],
+            ["bash", "-lc", f'. "{script}" && app_version "{REPO_ROOT}"'],
             capture_output=True, text=True, cwd=str(REPO_ROOT), env=env, check=True,
         )
         self.assertEqual(out.stdout.strip(), "9.9.9-rc1")
@@ -112,7 +112,7 @@ class ResolutionTests(unittest.TestCase):
             capture_output=True, text=True, cwd=str(REPO_ROOT),
         )
         self.assertEqual(out.returncode, 0, msg=out.stderr or out.stdout)
-        self.assertEqual(out.stdout.strip(), f"Punishment Manager {read_version_file()}")
+        self.assertEqual(out.stdout.strip(), f"Sentinel {read_version_file()}")
 
     def test_frozen_build_reads_the_bundled_version(self) -> None:
         # The packaged copy is what a user's installed build must report, even
@@ -125,7 +125,7 @@ class ResolutionTests(unittest.TestCase):
                 "import sys\n"
                 "sys.frozen = True\n"
                 f"sys._MEIPASS = {str(bundled)!r}\n"
-                f"sys.executable = {str(Path(tmp) / 'app' / 'punishment-manager')!r}\n"
+                f"sys.executable = {str(Path(tmp) / 'app' / 'sentinel')!r}\n"
                 f"sys.path.insert(0, {str(REPO_ROOT)!r})\n"
                 "import paths\n"
                 "print(paths.app_version())\n"

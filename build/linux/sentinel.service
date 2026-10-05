@@ -1,0 +1,29 @@
+[Unit]
+Description=Sentinel Discord bot
+Documentation=https://github.com/mob5824m-wq/Sentinel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sentinel
+Group=sentinel
+WorkingDirectory=/opt/sentinel
+ExecStart=/opt/sentinel/sentinel
+Restart=on-failure
+RestartSec=10
+
+# Sandboxing - tighten if your distro supports it.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/sentinel /etc/sentinel
+
+# Logging.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sentinel
+
+[Install]
+WantedBy=multi-user.target

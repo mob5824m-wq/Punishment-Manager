@@ -8,17 +8,17 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>Punishment Manager</string>
+    <string>Sentinel</string>
     <key>CFBundleDisplayName</key>
-    <string>Punishment Manager</string>
+    <string>Sentinel</string>
     <key>CFBundleIdentifier</key>
-    <string>com.arena.punishment-manager</string>
+    <string>com.arena.sentinel</string>
     <key>CFBundleVersion</key>
     <string>1.0.0</string>
     <key>CFBundleShortVersionString</key>
     <string>1.0.0</string>
     <key>CFBundleExecutable</key>
-    <string>punishment-manager</string>
+    <string>sentinel</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>LSMinimumSystemVersion</key>
@@ -28,7 +28,7 @@
     <key>NSHumanReadableCopyright</key>
     <string>MIT License</string>
     <key>NSAppleEventsUsageDescription</key>
-    <string>Punishment Manager needs to run a Discord bot in the background.</string>
+    <string>Sentinel needs to run a Discord bot in the background.</string>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.utilities</string>
 </dict>

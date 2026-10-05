@@ -45,7 +45,7 @@ jobs:
       - name: Upload .deb
         uses: actions/upload-artifact@v4
         with:
-          name: punishment-manager-linux
+          name: sentinel-linux
           path: dist/*.deb
           if-no-files-found: error
           retention-days: 3
@@ -79,7 +79,7 @@ jobs:
       - name: Upload .dmg
         uses: actions/upload-artifact@v4
         with:
-          name: punishment-manager-macos
+          name: sentinel-macos
           path: dist/*.dmg
           if-no-files-found: error
           retention-days: 3
@@ -112,7 +112,7 @@ jobs:
       - name: Upload .exe
         uses: actions/upload-artifact@v4
         with:
-          name: punishment-manager-windows
+          name: sentinel-windows
           path: dist/*.exe
           if-no-files-found: error
           retention-days: 3

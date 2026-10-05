@@ -1,5 +1,5 @@
 """
-Punishment Manager - interactive installer.
+Sentinel - interactive installer.
 
 Asks the user for:
   - bot_token          (the Discord bot token)
@@ -127,7 +127,7 @@ def _parse_snowflake(label: str, raw: str) -> Optional[int]:
 # Installer
 # --------------------------------------------------------------------------- #
 WELCOME = """
-Punishment Manager - first-time setup
+Sentinel - first-time setup
 =====================================
 
 I'll write a few values to config.json. Anything you skip will be left
@@ -165,15 +165,15 @@ def _save(cfg: dict) -> Optional[Path]:
         print(
             f"\n  ERROR: could not write config ({exc}).\n"
             f"  Tried: {paths.config_write_path()}\n"
-            "  Re-run with sudo, or set PUNISHMENT_MANAGER_CONFIG to a\n"
+            "  Re-run with sudo, or set SENTINEL_CONFIG to a\n"
             "  writable path, e.g.:\n"
-            "    PUNISHMENT_MANAGER_CONFIG=~/pm-config.json sudo -E punishment-manager --install\n"
+            "    SENTINEL_CONFIG=~/pm-config.json sudo -E sentinel --install\n"
         )
         return None
     print(f"  Wrote {written}")
     if _service_will_miss_it(written):
         print(
-            f"  NOTE: the punishment-manager service runs as its own user and reads\n"
+            f"  NOTE: the sentinel service runs as its own user and reads\n"
             f"  /var/lib/{paths.APP_NAME} or /etc/{paths.APP_NAME}, not this file.\n"
             "  To configure the service, re-run the installer with sudo:\n"
             f"    sudo {Path(sys.argv[0]).name} --install\n"
@@ -185,7 +185,7 @@ def _service_will_miss_it(written: Path) -> bool:
     """True when we saved somewhere the systemd service won't read.
 
     Only meaningful for the packaged Linux install, where the unit runs as
-    the `punishment-manager` user (macOS uses a per-user launchd agent and
+    the `sentinel` user (macOS uses a per-user launchd agent and
     Windows a per-service account, both of which read the user's own files).
     """
     if os.name == "nt" or sys.platform == "darwin" or not paths.is_frozen():
@@ -304,7 +304,7 @@ def run_installer() -> int:
         "  ./scripts/run_mac.sh    (macOS)\n"
         "  ./scripts/run_linux.sh  (Linux)\n"
         "  scripts\\run_windows.bat (Windows)\n"
-        "  punishment-manager      (installed build)\n"
+        "  sentinel                (installed build)\n"
         "\nConfig: "
         f"{paths.config_path()}\n"
         "Data:   "

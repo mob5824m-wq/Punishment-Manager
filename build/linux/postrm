@@ -1,18 +1,18 @@
 #!/bin/sh
-# Post-remove script for the Punishment Manager .deb.
+# Post-remove script for the Sentinel .deb.
 # Cleans up after the package has been removed.
 set -e
 
 if [ "$1" = "purge" ]; then
     # Remove the system user and state directories only on a full purge.
-    if getent passwd punishment-manager >/dev/null; then
-        deluser --quiet --system punishment-manager || true
+    if getent passwd sentinel >/dev/null; then
+        deluser --quiet --system sentinel || true
     fi
-    if getent group punishment-manager >/dev/null; then
-        delgroup --quiet --system punishment-manager || true
+    if getent group sentinel >/dev/null; then
+        delgroup --quiet --system sentinel || true
     fi
-    rm -rf /var/lib/punishment-manager
-    rm -rf /etc/punishment-manager
+    rm -rf /var/lib/sentinel
+    rm -rf /etc/sentinel
 fi
 
 if [ -d /run/systemd/system ]; then

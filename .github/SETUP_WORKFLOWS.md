@@ -51,12 +51,13 @@ Live releases:
 
 | Tag | Installers | Notes |
 |-----|-----------|-------|
-| `v2.1.1` | `.deb`, `.dmg`, `.exe` attached by CI | Current. Path resolution skips a candidate the user can't access instead of stopping there: portable installs next to a `.deb`'s `0750 /etc/punishment-manager` find their own `config.json` again, and the startup note names the skipped candidate instead of saying "resolution failed". |
-| `v2.1.0` | `.deb`, `.dmg`, `.exe` attached by CI | Fixes packaged installs crashing at startup (`PermissionError` on `/opt/punishment-manager/_internal/data`). Safe to run; superseded by v2.1.1. |
+| `v3.0.0` | `.deb`, `.dmg`, `.exe` attached by CI | Current. Sentinel: everything moves under the `/manage` command group, the app/data directories are renamed to `sentinel`, env vars become `SENTINEL_*`, and the dashboard is reskinned. Existing installs must move `config.json` + `punishments.db` and reinstall the service - see the README's upgrade table. |
+| `v2.1.1` | `.deb`, `.dmg`, `.exe` attached by CI | Superseded by v3.0.0. Path resolution skips a candidate the user can't access instead of stopping there: portable installs next to a `.deb`'s `0750 /etc/sentinel` find their own `config.json` again, and the startup note names the skipped candidate instead of saying "resolution failed". |
+| `v2.1.0` | `.deb`, `.dmg`, `.exe` attached by CI | Fixes packaged installs crashing at startup (`PermissionError` on `/opt/sentinel/_internal/data`). Safe to run; superseded by v2.1.1. |
 | `v2.0.0` | attached by CI | **Broken for installed builds** — crashes on first launch; superseded by v2.1.0. |
 | `v1.0.0` | source archives only | Created by hand before `release.yml` worked. |
 
-<https://github.com/mob5824m-wq/Punishment-Manager/releases/latest> points at
+<https://github.com/mob5824m-wq/Sentinel/releases/latest> points at
 the newest release, so users always get the fixed build.
 
 ## A note about the agent's GitHub App token
@@ -76,7 +77,7 @@ In practice this means:
 ## Verifying the workflows work
 
 1. **Build workflow** runs on every push / PR. Watch it at
-   <https://github.com/mob5824m-wq/Punishment-Manager/actions>.
+   <https://github.com/mob5824m-wq/Sentinel/actions>.
 
 2. **Release workflow** runs on `v*` tags. To smoke-test it with a
    throwaway tag:

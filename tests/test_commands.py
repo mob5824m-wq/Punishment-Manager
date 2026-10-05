@@ -1,9 +1,10 @@
 """
 Tests for the slash-command definitions (bot.py).
 
-Motivation: ``/punish status`` shipped with a 101-character description.
-Discord limits every command and option description to 1-100 characters, so at
-startup ``tree.sync()`` was rejected as a whole::
+Motivation: ``/punish status`` (now ``/manage status``) shipped with a
+101-character description. Discord limits every command and option description
+to 1-100 characters, so at startup ``tree.sync()`` was rejected as a whole
+(command names below are the ones from that incident)::
 
     discord.app_commands.errors.CommandSyncFailure: Failed to upload commands
     to Discord (HTTP status 400, error code 50035)
@@ -11,8 +12,17 @@ startup ``tree.sync()`` was rejected as a whole::
       In command 'punish status' defined in function 'PunishmentCog.punish_status'
         description: Must be between 1 and 100 in length.
 
+Everything now hangs off a single ``/manage`` group, so these tests also pin
+the consequences of that shape:
+
+* only the top-level command is uploaded (guild copies are taken from the
+  local tree, so the empty global upload cannot empty the bot);
+* Discord applies ``default_member_permissions`` to the top-level command
+  only, so the administrative sub-commands re-check for *Administrator* when
+  they run - see ``test_admin_commands_refuse_non_admins``.
+
 The bot logs that and keeps running (it has to: the scheduler that releases
-punished users lives in the same process), so it looked healthy while Discord
+punished members lives in the same process), so it looked healthy while Discord
 never received the command list. discord.py does not length-check a description
 that is passed explicitly and nothing exercised the tree before a release, so
 the only way to find out was to deploy. These tests check the real command tree
@@ -22,9 +32,9 @@ Motivation for the duplicate half of this file: the sync used to upload the
 whole tree twice - once to Discord's *global* registry (``tree.sync()``) and
 once per guild (``copy_global_to()`` + ``tree.sync(guild=...)``). Discord keeps
 those two registries separate and the client lists a command from each of them,
-so every server showed doubled ``/punish`` and ``/setup`` entries. The bot now
-syncs per guild only and empties the global registry; the tests below pin that
-down, including the empty global upload that removes existing duplicates.
+so every server showed doubled ``/manage`` entries. The bot now syncs per
+guild only and empties the global registry; the tests below pin that down,
+including the empty global upload that removes duplicates.
 
 Run with either:
     python -m pytest tests/test_commands.py
@@ -65,7 +75,7 @@ import bot
 
 
 async def main():
-    # Register the cog exactly like PunishmentBot.setup_hook() does.
+    # Register the cog exactly like SentinelBot.setup_hook() does.
     await bot._register_cog()
     tree = bot.bot.tree
     payload = []
@@ -94,8 +104,10 @@ asyncio.run(main())
 # one-time syncing, and the *empty* global upload that removes duplicates.
 _DUMP_GUILD_SYNC_EVENTS = r"""
 import asyncio, json, sys
+from types import SimpleNamespace
 
 sys.path.insert(0, sys.argv[2])
+import discord  # noqa: F401  (bot imports it too; needed for Permissions)
 import bot
 
 
@@ -138,12 +150,16 @@ def record_tree(tree, events, registry):
 class FakeResponse:
     def __init__(self):
         self.deferred = False
+        self.sent = []
 
     def is_done(self):
         return self.deferred
 
     async def defer(self, *, ephemeral=False):
         self.deferred = True
+
+    async def send_message(self, content, *, ephemeral=False):
+        self.sent.append(content)
 
 
 class FakeFollowup:
@@ -155,14 +171,17 @@ class FakeFollowup:
 
 
 class FakeInteraction:
-    def __init__(self, guild_id):
+    def __init__(self, guild_id, *, administrator=True):
         self.guild_id = guild_id
+        self.user = SimpleNamespace(
+            id=7, guild_permissions=discord.Permissions(administrator=administrator)
+        )
         self.response = FakeResponse()
         self.followup = FakeFollowup()
 
 
 async def main():
-    # Register the cog exactly like PunishmentBot.setup_hook() does.
+    # Register the cog exactly like SentinelBot.setup_hook() does.
     await bot._register_cog()
     client = bot.bot
     # Discord still holds the two global commands an older version registered.
@@ -190,12 +209,28 @@ async def main():
     await client.on_guild_join(FakeGuild(303))
     await client.on_guild_available(FakeGuild(303))
 
-    # /fixcommands: on-demand cleanup, after a fresh duplicate appeared.
+    # /manage fixcommands: on-demand cleanup, after a fresh duplicate appeared.
     registry["global"] = [{"id": 3}]
-    cog = client.get_cog("PunishmentCog")
+    cog = client.get_cog("SentinelCog")
     interaction = FakeInteraction(202)
     fix_start = len(events)
     await cog._handle_fixcommands(interaction)
+
+    # The group is offered to everyone with Moderate Members, so the admin-only
+    # commands have to refuse a caller who is not an administrator.
+    refusal_start = len(events)
+    non_admin = FakeInteraction(202, administrator=False)
+    await cog._handle_fixcommands(non_admin)
+    await cog._handle_setup(non_admin, None, None, None, None, None)
+    non_admin_replies = list(non_admin.followup.sent) + list(non_admin.response.sent)
+    # ... and an administrator gets past the check (setup then does its work:
+    # the point is that the reply is about the server, not about permissions).
+    admin = FakeInteraction(202)
+    await cog._handle_setup(
+        admin, SimpleNamespace(id=1, mention="@punish"),
+        SimpleNamespace(id=2, mention="@post"), None, None, None,
+    )
+    admin_replies = list(admin.followup.sent) + list(admin.response.sent)
 
     with open(sys.argv[1], "w", encoding="utf-8") as fh:
         json.dump({
@@ -207,6 +242,10 @@ async def main():
             ),
             "fix_events": events[fix_start:],
             "fix_reply": interaction.followup.sent,
+            "non_admin_replies": non_admin_replies,
+            "admin_replies": admin_replies,
+            # Nothing may reach Discord while refusing a non-administrator.
+            "refusal_events": events[refusal_start:],
         }, fh)
 
 
@@ -225,9 +264,9 @@ def _isolated_test_env(home: Path) -> dict[str, str]:
         "XDG_STATE_HOME": str(home / ".local" / "state"),
         "XDG_DATA_HOME": str(home / ".local" / "share"),
         "XDG_CONFIG_HOME": str(home / ".config"),
-        "PUNISHMENT_MANAGER_HOME": "",
-        "PUNISHMENT_MANAGER_DATA": str(home / "data"),
-        "PUNISHMENT_MANAGER_CONFIG": str(home / "config.json"),
+        "SENTINEL_HOME": "",
+        "SENTINEL_DATA": str(home / "data"),
+        "SENTINEL_CONFIG": str(home / "config.json"),
         "PYTHONIOENCODING": "utf-8",
     }
 
@@ -256,16 +295,29 @@ def dump_command_payload() -> dict:
         return json.loads(out.read_text(encoding="utf-8"))
 
 
+def _seed_config(home: Path) -> None:
+    """Create the config.json the child process is pointed at.
+
+    ``$SENTINEL_CONFIG`` alone is not enough isolation: for a file that does
+    not exist yet, paths.py falls back to ``<app dir>/config.json`` - the
+    checkout's own config - so a handler that saves (``/manage setup`` does)
+    would write to the developer's repository.
+    """
+    (home / "config.json").write_text("{}\n", encoding="utf-8")
+
+
 def dump_guild_sync_events() -> dict:
-    """Run the whole startup / READY / join / ``/fixcommands`` path offline.
+    """Run the whole startup / READY / join / ``/manage fixcommands`` path offline.
 
     Keys: ``events`` (everything that would reach Discord), ``local_commands``
     (the tree after the global cleanup), ``fix_events`` (requests made by
-    ``/fixcommands``) and ``fix_reply`` (what the admin sees).
+    ``/manage fixcommands``), ``fix_reply`` (what the admin sees),
+    ``non_admin_replies`` and ``admin_replies`` (the permission re-check).
     """
     with tempfile.TemporaryDirectory(prefix="pm-guild-sync-test-") as tmp:
         home = Path(tmp).resolve()
         out = home / "events.json"
+        _seed_config(home)
         res = subprocess.run(
             [sys.executable, "-c", _DUMP_GUILD_SYNC_EVENTS, str(out), str(REPO_ROOT)],
             capture_output=True, encoding="utf-8", errors="replace",
@@ -283,7 +335,8 @@ def walk(commands: list[dict]):
     """Yield ``(label, node, is_option)`` for everything in a sync payload.
 
     Covers each slash command, group, subcommand and option. ``label`` is how a
-    user would refer to it: ``/punish status`` or ``/punish status option 'user'``.
+    user would refer to it: ``/manage status`` or
+    ``/manage status option 'user'``.
     """
 
     def visit(node: dict, label: str, is_option: bool):
@@ -301,7 +354,7 @@ def walk(commands: list[dict]):
 
 
 def command_names(commands: list[dict]) -> set[str]:
-    """Qualified names of every command, group and subcommand: ``punish status``."""
+    """Qualified names of every command, group and subcommand: ``manage status``."""
     return {
         label.lstrip("/")
         for label, _node, is_option in walk(commands)
@@ -330,7 +383,7 @@ class CheckerTests(unittest.TestCase):
     @staticmethod
     def tree(*, group: str = "Group.", sub: str = "Sub.", option: str = "Option.") -> list[dict]:
         return [{
-            "name": "punish", "description": group, "type": CHAT_INPUT,
+            "name": "manage", "description": group, "type": CHAT_INPUT,
             "options": [{
                 "name": "status", "description": sub, "type": SUB_COMMAND,
                 "options": [{"name": "user", "description": option, "type": USER}],
@@ -360,7 +413,7 @@ class CheckerTests(unittest.TestCase):
         self.assertEqual(len(original), 101, "one character over Discord's limit")
         problems = find_description_problems(self.tree(sub=original))
         self.assertEqual(len(problems), 1, problems)
-        self.assertIn("/punish status", problems[0])
+        self.assertIn("/manage status", problems[0])
         self.assertIn("101 characters", problems[0])
 
     def test_context_menu_commands_are_not_held_to_the_rule(self) -> None:
@@ -387,11 +440,20 @@ class CommandTreeTests(unittest.TestCase):
         # stopped registering, or subcommands stopped being walked).
         names = command_names(self.payload)
         for expected in (
-            "punish", "punish apply", "punish pardon", "punish status",
-            "rules", "rules publish", "rules disable", "rules list",
-            "setup", "fixcommands",
+            "manage",
+            "manage punish", "manage pardon", "manage warn", "manage warnings",
+            "manage status", "manage setup", "manage fixcommands",
+            "manage rules", "manage rules publish", "manage rules disable",
+            "manage rules list",
         ):
             self.assertIn(expected, names, f"command tree has: {sorted(names)}")
+
+    def test_every_command_hangs_off_the_manage_group(self) -> None:
+        """Everything lives under /manage: one upload, one place to look."""
+        self.assertEqual(
+            sorted(cmd["name"] for cmd in self.payload), ["manage"],
+            "a stray top-level command would double the bot's Discord footprint",
+        )
 
     def test_every_description_fits_discords_limit(self) -> None:
         problems = find_description_problems(self.payload)
@@ -401,20 +463,31 @@ class CommandTreeTests(unittest.TestCase):
             "and register none of the commands:\n  " + "\n  ".join(problems),
         )
 
-    def test_admin_commands_are_guild_only_and_admin_only(self) -> None:
-        # Administrator = 1 << 3 = 8.
-        for name in ("setup", "fixcommands", "rules"):
-            with self.subTest(command=name):
-                self.assertTrue(self.meta[name]["guild_only"], f"/{name} is guild-only")
-                self.assertEqual(
-                    self.meta[name]["default_member_permissions"], str(1 << 3),
-                    f"/{name} must be administrator-only",
-                )
-        # /punish stays available to users with Moderate Members.
-        self.assertEqual(
-            self.meta["punish"]["default_member_permissions"], str(1 << 40)
-        )
-        self.assertFalse(self.meta["punish"]["guild_only"])
+    def test_manage_group_is_guild_only_and_moderator_visible(self) -> None:
+        # Discord applies `default_member_permissions` to the top-level command
+        # only, so the group is the one permission gate for every sub-command.
+        # Moderate Members = 1 << 40.
+        self.assertEqual(self.meta["manage"]["default_member_permissions"], str(1 << 40))
+        self.assertTrue(self.meta["manage"]["guild_only"], "/manage is server-only")
+
+    def test_admin_commands_refuse_non_admins(self) -> None:
+        """The admin-only commands re-check *Administrator* when they run.
+
+        They cannot rely on ``default_member_permissions`` any more: a
+        sub-command shares its group's setting, and the group is visible to
+        anyone with Moderate Members.
+        """
+        replies = self.sync["non_admin_replies"]
+        self.assertEqual(len(replies), 2, replies)
+        for reply in replies:
+            self.assertIn("administrator", reply.lower(), reply)
+        # An administrator is not refused: setup does its real work instead.
+        self.assertEqual(len(self.sync["admin_replies"]), 1, self.sync["admin_replies"])
+        self.assertIn("Saved configuration", self.sync["admin_replies"][0])
+        self.assertNotIn("administrator", self.sync["admin_replies"][0].lower())
+        # ... and the refusal really did skip the work: the non-administrator
+        # attempt must not touch Discord at all (no clear, no re-sync).
+        self.assertEqual(self.sync["refusal_events"], [], self.sync["refusal_events"])
 
     def test_commands_are_synced_per_guild_and_never_registered_globally(self) -> None:
         """No double commands: guild scope only, and the global registry emptied.
@@ -430,13 +503,13 @@ class CommandTreeTests(unittest.TestCase):
             [
                 ["get-global", None],
                 ["clear", None], ["sync", None, 0],   # duplicates deleted
-                ["copy", 101], ["sync", 101, 4],      # configured server_id
-                ["copy", 202], ["sync", 202, 4],      # other connected guild
-                ["copy", 303], ["sync", 303, 4],      # joined after startup
-                # /fixcommands: fresh duplicate found and removed ...
+                ["copy", 101], ["sync", 101, 1],      # configured server_id
+                ["copy", 202], ["sync", 202, 1],      # other connected guild
+                ["copy", 303], ["sync", 303, 1],      # joined after startup
+                # /manage fixcommands: fresh duplicate found and removed ...
                 ["get-global", None], ["clear", None], ["sync", None, 0],
                 # ... and this server's copy re-uploaded, then verified empty.
-                ["sync", 202, 4], ["get-global", None],
+                ["sync", 202, 1], ["get-global", None],
             ],
             "unexpected command registration traffic",
         )
@@ -449,9 +522,7 @@ class CommandTreeTests(unittest.TestCase):
     def test_duplicate_cleanup_keeps_the_local_tree_intact(self) -> None:
         # Guild copies are made from the local global tree, so emptying the
         # Discord-side registry must not remove the commands locally.
-        self.assertEqual(
-            self.sync["local_commands"], ["fixcommands", "punish", "rules", "setup"]
-        )
+        self.assertEqual(self.sync["local_commands"], ["manage"])
 
     def test_fixcommands_removes_duplicates_and_reports_it(self) -> None:
         reply = "\n".join(self.sync["fix_reply"])
