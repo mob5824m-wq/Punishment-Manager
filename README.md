@@ -103,7 +103,7 @@ It prompts for:
 | Field             | Where to find it                                      |
 |-------------------|-------------------------------------------------------|
 | `bot_token`       | Discord Developer Portal -> your app -> Bot -> Token  |
-| `server_id`       | Right-click the server icon -> Copy Server ID         |
+| `server_id`       | Optional for command sync. Enter it for the installer's single-server role settings; right-click the server icon -> Copy Server ID |
 | `punish_role_id`  | Right-click the role -> Copy Role ID                  |
 | `post_role_id`    | "                                                    |
 | `staff_role_id`   | Optional. Members with this role (and any user with admin/moderator permissions) cannot be punished. |
@@ -176,10 +176,11 @@ This writes `config.json` with everything the bot needs.
 }
 ```
 
-The `bot_token`, `server_id`, and the role ids go at the top level
-(single-server shape). The `guilds` / `token` / `log_channel_id` keys
-below them are a legacy multi-server shape and are still respected for
-backwards compatibility.
+The `bot_token`, `server_id`, and role ids go at the top level
+(single-server shape). `server_id` is optional for command syncing; if it is
+omitted, use `/setup` to associate role settings with each server. The
+`guilds` / `token` / `log_channel_id` keys below them are a legacy
+multi-server shape and are still respected for backwards compatibility.
 
 To find ids: enable Developer Mode in *Settings -> Advanced*, then
 right-click the server/role/channel and choose "Copy ... ID".
@@ -200,15 +201,16 @@ You should see:
 
 ```
 [INFO] punishment_manager: Database initialised at data/punishments.db
-[INFO] punishment_manager: Synced N global command(s).
+[INFO] punishment_manager: Synced N global command(s) (up to 1h to propagate).
 [INFO] punishment_manager: Logged in as YourBot (id=...)
+[INFO] punishment_manager: Synced N command(s) to guild X (instant).
 ```
 
-Slash commands may take up to a few minutes to appear globally the first
-time. The bot already syncs both globally and to the configured
-`server_id` on every startup, so the first time you point it at your
-server, commands appear in seconds. Remove `server_id` from `config.json`
-to fall back to global-only sync (useful for multi-server bots).
+On startup, the bot syncs commands globally and also copies them to every
+server it is connected to, so they appear there immediately without waiting
+for global propagation or setting `server_id`. Newly joined servers are
+synced as soon as they become available. Global commands can still take up
+to an hour to propagate to servers the bot is not currently connected to.
 
 ---
 
@@ -528,12 +530,12 @@ python3 -m pytest tests/test_paths.py -q   # or: python3 tests/test_paths.py
 * **The user never receives the DM** — they have DMs disabled or the
   bot is blocked. Set `dm_user: false` in `/setup` to suppress the DM
   attempt, or ask the user to enable DMs.
-* **Slash commands don't appear** — global commands can take up to an
-  hour to propagate. The bot also syncs to the configured `server_id`
-  on every startup (instant), so if you're testing a single server,
-  make sure `server_id` is set in `config.json`. Check `data/bot.log`
-  for the sync output: it should show "Synced N command(s) to guild X"
-  followed by "Synced N global command(s)".
+* **Slash commands don't appear** — the bot syncs instantly to every
+  connected server, so `server_id` is not required. Make sure the bot was
+  invited with the `applications.commands` scope and check `data/bot.log`
+  for a "Synced N command(s) to guild X" line for your server. Global
+  registration can take up to an hour to reach servers the bot is not
+  currently connected to.
 * **No token / Login failed** — make sure `DISCORD_TOKEN` is set or
   `config.json` has a non-empty `bot_token` (or the legacy `token`).
 * **`.deb` build complains about `dpkg-deb` or `fakeroot`** — install

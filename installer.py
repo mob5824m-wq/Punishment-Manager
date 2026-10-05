@@ -136,7 +136,8 @@ as it is, so this is safe to re-run.
 How to find the values:
   - bot_token:        Discord Developer Portal -> your app -> Bot -> Token
   - server_id:        right-click your server icon -> Copy Server ID
-                      (enable Developer Mode in Settings -> Advanced first)
+                      (optional for command sync; leave blank to use /setup
+                       for per-server role configuration)
   - role ids:         right-click the role -> Copy Role ID
   - staff_channel_id: right-click the channel -> Copy Channel ID
   - staff_role_id:    role given to staff; members with it cannot be
@@ -227,7 +228,7 @@ def run_installer() -> int:
     # 2. server_id -------------------------------------------------- #
     cur = cfg.get("server_id")
     val = _prompt(
-        "Server (guild) ID",
+        "Server (guild) ID (optional; commands sync to all bot servers)",
         default=_show_current("server_id", cur) if cur else None,
     )
     parsed = _parse_snowflake("server_id", val) if val else None

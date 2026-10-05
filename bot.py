@@ -478,6 +478,9 @@ class PunishmentBot(commands.Bot):
         )
         self.config = config
         self.scheduler_task: Optional[asyncio.Task] = None
+        self._guild_sync_lock = asyncio.Lock()
+        self._guild_commands_copied: set[int] = set()
+        self._guild_commands_synced: set[int] = set()
 
     async def _log_local_commands(self) -> None:
         """Log every slash command that's about to be registered. Useful
@@ -486,51 +489,86 @@ class PunishmentBot(commands.Bot):
         local = sorted(c.qualified_name for c in self.tree.walk_commands())
         logger.info("Local command tree (%d): %s", len(local), ", ".join(local) or "(none)")
 
+    async def _sync_guild_commands(self, guild_id: int) -> bool:
+        """Publish the global slash-command tree to one guild immediately.
+
+        ``CommandTree.sync(guild=...)`` only uploads commands scoped to that
+        guild. Copying the global tree first is what makes those commands
+        available instantly in the guild instead of waiting for global
+        propagation.
+        """
+        guild_id = int(guild_id)
+        async with self._guild_sync_lock:
+            if guild_id in self._guild_commands_synced:
+                return True
+
+            guild_obj = discord.Object(id=guild_id)
+            try:
+                if guild_id not in self._guild_commands_copied:
+                    self.tree.copy_global_to(guild=guild_obj)
+                    self._guild_commands_copied.add(guild_id)
+
+                synced = await self.tree.sync(guild=guild_obj)
+            except discord.HTTPException as exc:
+                logger.warning(
+                    "Guild command sync to %s failed (%s); will retry when "
+                    "the guild is available.",
+                    guild_id, exc,
+                )
+                return False
+            except Exception:
+                logger.exception(
+                    "Unexpected error syncing commands to guild %s.", guild_id
+                )
+                return False
+
+            self._guild_commands_synced.add(guild_id)
+
+        logger.info(
+            "Synced %d command(s) to guild %s (instant).",
+            len(synced), guild_id,
+        )
+        return True
+
+    async def _sync_connected_guilds(self) -> None:
+        """Immediately sync commands to every guild this bot is connected to."""
+        guilds = list(self.guilds)
+        if not guilds:
+            logger.info("No connected guilds found for immediate command sync.")
+            return
+
+        for guild in guilds:
+            await self._sync_guild_commands(guild.id)
+
     async def _sync_commands(self) -> None:
-        """Refresh the slash command list on every startup.
+        """Refresh commands globally and to every connected guild.
 
-        Two syncs happen here, in order:
+        Global registration is authoritative but may take up to an hour to
+        propagate. Guild copies are synced immediately: the configured
+        ``server_id`` is attempted during setup, then every connected guild is
+        synced once the gateway is ready (and newly joined guilds are synced
+        when they become available).
 
-        1. **Guild sync** (instant). If `config.server_id` is set, push
-           the command list to that specific guild. This takes effect
-           immediately on Discord - useful for testing a new command
-           without waiting for global propagation.
-
-        2. **Global sync** (slow, up to 1h to propagate). Pushes the
-           command list to every guild the bot is in. This is the
-           authoritative registration for production servers.
-
-        Discord's `PUT /commands` endpoint replaces the entire set on
-        each call, so any command that exists in code stays registered
-        and any command that was removed from code disappears. There is
-        no separate "delete" step.
+        Discord replaces the complete command set on each sync, so commands
+        removed from the local tree disappear without a separate delete step.
         """
         await self._log_local_commands()
 
-        # 1. Guild sync (instant, only if we have a configured server).
+        # Keep the configured server fast even before the gateway cache is
+        # ready. The connected-guild pass below also covers every other server.
         server_id = self.config.get("server_id")
         if server_id:
             try:
-                guild_obj = discord.Object(id=int(server_id))
-                synced = await self.tree.sync(guild=guild_obj)
-                logger.info(
-                    "Synced %d command(s) to guild %s (instant).",
-                    len(synced), server_id,
-                )
-            except discord.HTTPException as exc:
-                logger.warning(
-                    "Guild sync to %s failed (%s); continuing with global sync.",
-                    server_id, exc,
-                )
-            except Exception:
-                logger.exception("Unexpected error during guild sync.")
+                await self._sync_guild_commands(int(server_id))
+            except (TypeError, ValueError):
+                logger.warning("Ignoring invalid configured server_id: %r", server_id)
         else:
             logger.info(
-                "No server_id configured; skipping guild sync. "
-                "Commands propagate globally (up to 1h delay)."
+                "No server_id configured; commands will be synced instantly "
+                "to every connected guild after login."
             )
 
-        # 2. Global sync (propagates to all guilds, up to 1h delay).
+        # Global sync (propagates to all guilds, up to 1h to propagate).
         try:
             synced = await self.tree.sync()
             logger.info("Synced %d global command(s) (up to 1h to propagate).", len(synced))
@@ -547,7 +585,21 @@ class PunishmentBot(commands.Bot):
     async def on_ready(self) -> None:
         logger.info("Logged in as %s (id=%s)", self.user, self.user.id)
         logger.info("Connected to %d guild(s).", len(self.guilds))
+        await self._sync_connected_guilds()
         await self.process_due_punishments()
+
+    async def on_guild_join(self, guild: discord.Guild) -> None:
+        """Make commands available immediately when the bot joins a server."""
+        await self._sync_guild_commands(guild.id)
+
+    async def on_guild_available(self, guild: discord.Guild) -> None:
+        """Retry a guild sync when Discord makes a server available."""
+        await self._sync_guild_commands(guild.id)
+
+    async def on_guild_remove(self, guild: discord.Guild) -> None:
+        """Allow a later re-join to trigger another guild sync."""
+        async with self._guild_sync_lock:
+            self._guild_commands_synced.discard(guild.id)
 
     # ------------------------------------------------------------------ #
     # Scheduler
