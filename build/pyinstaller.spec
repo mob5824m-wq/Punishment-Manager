@@ -3,7 +3,7 @@
 PyInstaller spec for the Sentinel.
 
 Builds `bot.py` and its imported modules (`rules.py`, `reaction_roles.py`,
-`dashboard.py`), plus
+`dashboard.py`, `duckdns.py`), plus
 its companion `installer.py` and dashboard UI, into a self-contained binary:
 
   Linux:   dist/sentinel/sentinel
@@ -17,10 +17,20 @@ Run from the project root:
 
     pyinstaller --noconfirm --clean build/pyinstaller.spec
 
-The result is platform-specific; you cannot cross-compile. Build each
-artifact on its own OS (or in CI).
+The result is platform- *and* architecture-specific; you cannot
+cross-compile. Build each artifact on its own OS and CPU (or in CI), with
+`SENTINEL_TARGET_ARCH` naming the architecture you expect:
+
+    SENTINEL_TARGET_ARCH=arm64 pyinstaller --noconfirm --clean build/pyinstaller.spec
+
+When the variable is set it must match the host, because PyInstaller has no
+cross-compile mode: a mismatch fails the build here rather than producing a
+bundle labelled arm64 that is really x86_64. The build scripts set it, and
+verify the resulting binary's header as well (scripts/check_arch.py).
 """
 
+import os
+import platform
 import sys
 from pathlib import Path
 
@@ -49,6 +59,45 @@ def _read_version() -> str:
 
 
 VERSION = _read_version()
+
+
+def _canonical_arch(value: str) -> str:
+    """Normalize amd64/x86_64/x64 -> amd64 and arm64/aarch64 -> arm64."""
+    key = (value or "").strip().lower()
+    if key in ("amd64", "x86_64", "x64", "intel"):
+        return "amd64"
+    if key in ("arm64", "aarch64", "armv8", "armv8l"):
+        return "arm64"
+    return ""
+
+
+def _host_arch() -> str:
+    """The architecture of the interpreter doing the build.
+
+    Windows reports the OS architecture in `platform.machine()` even when the
+    interpreter is an emulated x86_64 one on an arm64 machine, so read
+    PROCESSOR_ARCHITECTURE first there - the same thing PyInstaller does when
+    it picks a bootloader.
+    """
+    if sys.platform.startswith("win"):
+        machine = os.environ.get("PROCESSOR_ARCHITECTURE") or platform.machine()
+    else:
+        machine = platform.machine()
+    return _canonical_arch(machine) or machine
+
+
+HOST_ARCH = _host_arch()
+TARGET_ARCH = _canonical_arch(os.environ.get("SENTINEL_TARGET_ARCH", "")) or HOST_ARCH
+
+if TARGET_ARCH != HOST_ARCH:
+    raise SystemExit(
+        "ERROR: cannot build a {target} bundle on a {host} host: PyInstaller "
+        "does not cross-compile. Build on a {target} machine (or unset "
+        "SENTINEL_TARGET_ARCH).".format(target=TARGET_ARCH, host=HOST_ARCH)
+    )
+
+print('==> PyInstaller: building the {target} bundle (host: {host})'.format(
+    target=TARGET_ARCH, host=HOST_ARCH))
 
 DATA_FILES = [
     # Bundle installer.py alongside the binary so the main entry point
@@ -108,6 +157,8 @@ a = Analysis(
         'command_tree',
         # Rules-Markdown renderer used by the dashboard's rules preview.
         'discord_markdown',
+        # DuckDNS record updater (keeps a dynamic-DNS name pointed here).
+        'duckdns',
         'rules',
         # Reaction-role menus (dashboard-published posts + the reaction cog).
         'reaction_roles',
@@ -137,7 +188,11 @@ exe = EXE(
     upx=False,  # UPX often trips antivirus; leave off
     console=True,  # CLI app on every platform
     disable_windowed_traceback=False,
-    target_arch=None,  # let PyInstaller pick the host arch
+    # macOS is the one platform where PyInstaller takes a target architecture
+    # (it lipo's the bootloader); the value must be Apple's spelling, and the
+    # host/target check above has already run. Windows and Linux build for
+    # their own CPU only - PyInstaller ignores the option there.
+    target_arch={'amd64': 'x86_64', 'arm64': 'arm64'}.get(TARGET_ARCH) if IS_MACOS else None,
     codesign_identity=None,
     entitlements_file=None,
     icon=icon_path,
@@ -168,7 +223,9 @@ if IS_MACOS:
             'CFBundleVersion': VERSION,
             'CFBundleExecutable': 'sentinel',
             'NSHighResolutionCapable': True,
-            'LSMinimumSystemVersion': '10.13',
+            # Apple Silicon starts at macOS 11; Intel builds still run on the
+            # older systems the project has always supported.
+            'LSMinimumSystemVersion': '11.0' if TARGET_ARCH == 'arm64' else '10.13',
             # Show in Dock (False would make it a faceless background app).
             'LSUIElement': False,
             'NSHumanReadableCopyright': 'MIT License',

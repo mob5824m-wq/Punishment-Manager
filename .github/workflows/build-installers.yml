@@ -1,8 +1,9 @@
 name: build-installers
 
-# Reusable workflow: builds the three native installers (.deb, .dmg, .exe) and
-# uploads each one as a workflow artifact. It holds no release logic of its
-# own, so the platform build steps exist in exactly one place.
+# Reusable workflow: builds the native installers (.deb, .dmg, .exe) for both
+# supported CPU architectures and uploads each one as a workflow artifact. It
+# holds no release logic of its own, so the platform build steps exist in
+# exactly one place.
 #
 # Called by:
 #   build.yml          - sanity check on pull requests and arena/* pushes
@@ -11,9 +12,25 @@ name: build-installers
 #                        rolling `latest-build` release and to a per-merge
 #                        prerelease
 #
-# The artifact names are fixed (sentinel-linux / -macos / -windows)
-# and the files keep the names the build scripts give them, so the callers can
-# find them with actions/download-artifact and glob the three extensions.
+# One artifact per platform and architecture, so a caller can find each with
+# actions/download-artifact and glob the extensions:
+#
+#   sentinel-linux-amd64     sentinel-linux-arm64      (.deb)
+#   sentinel-macos-arm64     sentinel-macos-x86_64     (.dmg)
+#   sentinel-windows-x64     sentinel-windows-arm64    (.exe)
+#
+# Why a matrix per platform: PyInstaller cannot cross-compile, so the arm64
+# installers have to be built on arm64 runners. Each platform keeps its steps
+# in a single job (a wrong-architecture build is caught by
+# SENTINEL_TARGET_ARCH + scripts/check_arch.py inside the build script, which
+# both legs of a platform share), and `fail-fast: false` means a broken arm64
+# leg does not hide the x64 one's result.
+#
+# Runners: ubuntu-24.04-arm and windows-11-arm are GitHub's arm64 runners,
+# free for public repositories. macOS is the mirror image - macos-latest (M1
+# and newer) is arm64, and macos-15-intel is the free Intel image that builds
+# the x86_64 .dmg. It is scheduled to be retired in August 2027 (see
+# actions/runner-images issue #13045).
 
 on:
   workflow_call:
@@ -23,42 +40,118 @@ permissions:
 
 jobs:
   linux:
-    name: linux (.deb)
-    runs-on: ubuntu-24.04
+    name: linux ${{ matrix.arch }} (.deb)
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Ubuntu 22.04, not 24.04: PyInstaller bundles this runner's CPython
+          # runtime, so the runner's glibc becomes the artifact's floor. Jammy
+          # (glibc 2.35) keeps the .deb runnable on Debian 12 - which is what
+          # Raspberry Pi OS 64-bit "Bookworm" is built on - while noble
+          # (glibc 2.39) would not. `glibc_max` is enforced below.
+          # Python 3.10 is the newest jammy packages a libpython for; the app
+          # supports 3.9+ and the macOS/Windows legs still cover 3.11.
+          - arch: amd64
+            runner: ubuntu-22.04
+            python: '3.10'
+            glibc_max: '2.36'
+            artifact: sentinel-linux-amd64
+          - arch: arm64
+            runner: ubuntu-22.04-arm
+            python: '3.10'
+            glibc_max: '2.36'
+            artifact: sentinel-linux-arm64
+    env:
+      # Named explicitly so the build fails in the build script (which
+      # verifies the ELF header and the control file) rather than publishing a
+      # mislabelled .deb.
+      SENTINEL_TARGET_ARCH: ${{ matrix.arch }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: ${{ matrix.python }}
           cache: 'pip'
       - name: Install build dependencies
         run: bash $GITHUB_WORKSPACE/.github/scripts/install-linux-deps.sh
       - name: Install Python dependencies
         run: bash -c "python -m pip install --upgrade pip && pip install -r requirements.txt && pip install pyinstaller"
+      - name: Check the interpreter matches the requested architecture
+        run: python scripts/check_arch.py host --expect ${{ matrix.arch }}
       - name: Smoke-test imports
         run: |
           python -c "import bot, installer, paths; print('imports OK')"
-      - name: Test runtime paths and version plumbing
+      - name: Run the test suite
         run: |
           python -m pip install -q pytest
-          python -m pytest tests -q --tb=short
+          python -m pytest tests -q --tb=short --junitxml=test-results.xml
+      - name: Annotate test failures
+        # Run logs live behind an authenticated blob store, which is not always
+        # reachable (a restricted network, `gh` in CI tooling). Annotations are
+        # plain API data, so a red leg can be diagnosed without them.
+        if: failure()
+        run: python .github/scripts/annotate-test-failures.py test-results.xml
       - name: Build .deb
         run: build/build_linux.sh
+      - name: Check the glibc floor
+        # The compatibility promise for the Linux artifacts: they must start on
+        # Raspberry Pi OS 64-bit "Bookworm" (Debian 12, glibc 2.36) and newer.
+        # scripts/check_glibc.py reads the requirement out of every ELF file in
+        # the bundle and fails when it is higher - a runner or Python upgrade
+        # that raises it (e.g. back to ubuntu-24.04) breaks the promise here
+        # rather than on a user's Pi.
+        run: |
+          set +e
+          output=$(python scripts/check_glibc.py dir dist/sentinel --max "${{ matrix.glibc_max }}")
+          status=$?
+          echo "$output"
+          floor=$(printf '%s\n' "$output" | sed -n 's/.*highest GLIBC requirement: //p')
+          echo "::notice title=glibc floor (${{ matrix.arch }})::needs GLIBC ${floor:-unknown}; cap is ${{ matrix.glibc_max }} (Debian 12 / Raspberry Pi OS 64-bit Bookworm)"
+          exit $status
+      - name: Smoke-test the bundle on Debian 12 (the Raspberry Pi OS 64-bit base)
+        # The glibc check proves the symbols resolve in theory; this runs the
+        # actual binary on an older distribution than the build runner. Docker
+        # is not guaranteed on every runner, so a missing daemon is a warning
+        # rather than a failure - the floor check above is the hard gate.
+        run: |
+          if ! command -v docker >/dev/null 2>&1; then
+            echo "::warning::docker is unavailable; skipping the Debian 12 smoke test"
+            exit 0
+          fi
+          for image in debian:bookworm-slim debian:trixie-slim; do
+            echo "==> $image"
+            docker run --rm -v "$PWD/dist/sentinel:/app:ro" "$image" /app/sentinel --version
+          done
       - name: Verify .deb
         run: |
           ls -lh dist/
           dpkg-deb -I dist/*.deb
+          test "$(dpkg-deb -f dist/*.deb Architecture)" = "${{ matrix.arch }}"
       - name: Upload .deb
         uses: actions/upload-artifact@v4
         with:
-          name: sentinel-linux
+          name: ${{ matrix.artifact }}
           path: dist/*.deb
           if-no-files-found: error
           retention-days: 3
 
   macos:
-    name: macos (.dmg)
-    runs-on: macos-latest
+    name: macos ${{ matrix.arch }} (.dmg)
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-latest      # Apple Silicon
+            artifact: sentinel-macos-arm64
+          - arch: x86_64
+            runner: macos-15-intel    # the free Intel image
+            artifact: sentinel-macos-x86_64
+    env:
+      SENTINEL_TARGET_ARCH: ${{ matrix.arch }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -72,10 +165,18 @@ jobs:
           pip install pyinstaller
       - name: Install create-dmg
         run: brew install create-dmg
-      - name: Test runtime paths and version plumbing
+      - name: Check the interpreter matches the requested architecture
+        run: python scripts/check_arch.py host --expect ${{ matrix.arch }}
+      - name: Run the test suite
         run: |
           python -m pip install -q pytest
-          python -m pytest tests -q --tb=short
+          python -m pytest tests -q --tb=short --junitxml=test-results.xml
+      - name: Annotate test failures
+        # Run logs live behind an authenticated blob store, which is not always
+        # reachable (a restricted network, `gh` in CI tooling). Annotations are
+        # plain API data, so a red leg can be diagnosed without them.
+        if: failure()
+        run: python .github/scripts/annotate-test-failures.py test-results.xml
       - name: Build .dmg
         run: build/build_macos.sh
       - name: Verify .dmg
@@ -85,40 +186,82 @@ jobs:
       - name: Upload .dmg
         uses: actions/upload-artifact@v4
         with:
-          name: sentinel-macos
+          name: ${{ matrix.artifact }}
           path: dist/*.dmg
           if-no-files-found: error
           retention-days: 3
 
   windows:
-    name: windows (.exe)
-    runs-on: windows-latest
+    name: windows ${{ matrix.arch }} (.exe)
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            py_arch: x64
+            runner: windows-latest
+            artifact: sentinel-windows-x64
+          - arch: arm64
+            py_arch: arm64
+            runner: windows-11-arm
+            artifact: sentinel-windows-arm64
+    env:
+      SENTINEL_TARGET_ARCH: ${{ matrix.arch }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      # On Windows on ARM this asks the tool cache for the native ARM64
+      # interpreter. If the cache does not have it, the next step installs it
+      # from python.org instead of quietly building with the emulated x64 one.
+      - name: Set up Python
+        id: python
+        uses: actions/setup-python@v5
+        continue-on-error: ${{ matrix.arch == 'arm64' }}
         with:
           python-version: '3.11'
+          architecture: ${{ matrix.py_arch }}
           cache: 'pip'
+      - name: Install a native ${{ matrix.arch }} Python (fallback)
+        if: steps.python.outcome == 'failure'
+        shell: pwsh
+        run: |
+          $dir = (pwsh -NoProfile -ExecutionPolicy Bypass -File .github/scripts/install-windows-deps.ps1 ${{ matrix.arch }} | Select-Object -Last 1)
+          Write-Host "Using Python at $dir"
+          $dir >> $env:GITHUB_PATH
+          "$dir\Scripts" >> $env:GITHUB_PATH
+      - name: Check the interpreter matches the requested architecture
+        shell: pwsh
+        run: |
+          python -c "import platform, sys; print(sys.version); print(platform.machine())"
+          python scripts\check_arch.py host --expect ${{ matrix.arch }}
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pyinstaller
-      - name: Test runtime paths and version plumbing
+      - name: Run the test suite
         run: |
           python -m pip install -q pytest
-          python -m pytest tests -q --tb=short
+          python -m pytest tests -q --tb=short --junitxml=test-results.xml
+      - name: Annotate test failures
+        # Run logs live behind an authenticated blob store, which is not always
+        # reachable (a restricted network, `gh` in CI tooling). Annotations are
+        # plain API data, so a red leg can be diagnosed without them.
+        if: failure()
+        run: python .github/scripts/annotate-test-failures.py test-results.xml
       - name: Install NSIS
         run: pwsh -File .github/scripts/install-nsis.ps1
       - name: Build .exe
         run: build\build_windows.bat
         shell: cmd
       - name: Verify .exe
-        run: dir dist\*.exe
+        run: |
+          dir dist\*.exe
+          python scripts\check_arch.py file dist\sentinel\sentinel.exe --expect ${{ matrix.arch }}
       - name: Upload .exe
         uses: actions/upload-artifact@v4
         with:
-          name: sentinel-windows
+          name: ${{ matrix.artifact }}
           path: dist/*.exe
           if-no-files-found: error
           retention-days: 3

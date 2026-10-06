@@ -68,12 +68,31 @@ Pre-built native installers are attached to every GitHub release:
 
 [**Latest release →**](https://github.com/mob5824m-wq/Sentinel/releases/latest)
 
-| Platform | File | Notes |
-|----------|------|-------|
-| **macOS**   | `Sentinel-X.Y.Z.dmg`             | Open the `.dmg`, drag the `.app` into `/Applications` |
-| **Linux**   | `sentinel_X.Y.Z_amd64.deb`      | `sudo dpkg -i ...` and you're done |
-| **Windows** | `Sentinel-Setup-X.Y.Z.exe`       | Run the installer; it adds the bot to your Start Menu |
-| **Source**  | `Source code (zip)` / `Source code (tar.gz)` | For everyone who'd rather run from source |
+| Platform | Architecture | File | Notes |
+|----------|--------------|------|-------|
+| **macOS**   | Apple Silicon (`arm64`) | `Sentinel-X.Y.Z-arm64.dmg`      | Open the `.dmg`, drag the `.app` into `/Applications` |
+| **macOS**   | Intel (`x86_64`)        | `Sentinel-X.Y.Z-x86_64.dmg`     | Same, on an Intel Mac |
+| **Linux**   | x86-64 (`amd64`)        | `sentinel_X.Y.Z_amd64.deb`      | `sudo dpkg -i ...` and you're done |
+| **Linux**   | ARM64 (`arm64`)         | `sentinel_X.Y.Z_arm64.deb`      | 64-bit Raspberry Pi OS (Bookworm or newer), Graviton, Ampere, … |
+| **Windows** | x64 (`amd64`)           | `Sentinel-Setup-X.Y.Z.exe`       | Run the installer; it adds the bot to your Start Menu |
+| **Windows** | ARM64 (`arm64`)         | `Sentinel-Setup-X.Y.Z-arm64.exe` | Windows on ARM (Snapdragon X, Surface Pro X, …) |
+| **Source**  | —                       | `Source code (zip)` / `Source code (tar.gz)` | For everyone who'd rather run from source |
+
+Each installer is built natively on a runner of its own architecture — an arm64
+installer cannot be produced by an amd64 machine, because PyInstaller does not
+cross-compile — so an arm64 machine downloads the file matching its CPU rather
+than an emulated build. Filenames always say which is which.
+
+**Raspberry Pi** — `sentinel_X.Y.Z_arm64.deb` is a native aarch64 package: it
+runs on **64-bit Raspberry Pi OS** (Bookworm or Trixie; Pi 3, 4, 5, Zero 2 W
+with the 64-bit image) and on other ARM64 Linux boards. It is built and tested
+against Debian 12, i.e. exactly what Raspberry Pi OS 64-bit "Bookworm" is
+based on, and the package's `Depends: libc6` states the glibc version it was
+measured against, so an older system refuses the install instead of failing at
+run time. The **32-bit** Raspberry Pi OS (`armhf`) is *not* covered by the
+pre-built `.deb` — that needs an entirely separate 32-bit ARM build — so run
+[from source](#2-setup-macos-linux-windows) there; the bot supports Python 3.9+
+and has no compiled dependencies beyond `aiohttp`.
 
 Releases are produced automatically by GitHub Actions whenever a
 `v*` tag is pushed. See `.github/workflows/release.yml` for the
@@ -83,7 +102,7 @@ Every merge to `main` is published too, without waiting for a version bump:
 
 | Release | What it is |
 |---------|------------|
-| [`latest-build`](https://github.com/mob5824m-wq/Sentinel/releases/tag/latest-build) | Rolling prerelease whose three installers are replaced on every merge — one URL always has the newest build from `main` |
+| [`latest-build`](https://github.com/mob5824m-wq/Sentinel/releases/tag/latest-build) | Rolling prerelease whose six installers (three platforms × two architectures) are replaced on every merge — one URL always has the newest build from `main` |
 | `v<VERSION>-build.<run>` | One prerelease per merge (e.g. `v3.0.0-build.42`), so a specific build stays downloadable afterwards |
 
 Both are marked *prerelease*, so
@@ -489,7 +508,9 @@ the command for your install:
 | Running from source | `python3 bot.py --dashboard-token` |
 
 The command prints the key on a single line (and creates it if it doesn't
-exist yet). Not sure where `config.json` lives? `sentinel --paths`
+exist yet). `sentinel --dashboard` then shows how the dashboard is reachable
+and what to fix if it isn't; `sentinel --duckdns` tests a DuckDNS update.
+Not sure where `config.json` lives? `sentinel --paths`
 (or `python3 bot.py --paths`) prints the resolved config, database, and log
 paths. The dashboard key is **not** the Discord bot token — pasting the bot
 token into the dashboard will not work.
@@ -502,13 +523,45 @@ server, prefer an SSH tunnel rather than opening a port:
 ssh -L 8765:127.0.0.1:8765 user@your-server
 ```
 
-Then open <http://127.0.0.1:8765> on your workstation. If you deliberately
-place it behind an HTTPS reverse proxy, set `dashboard_host` to `0.0.0.0`, set
-`dashboard_secure_cookie` to `true`, and set `dashboard_allowed_hosts` to the
-proxy's exact hostname. Restrict it with a firewall and **never expose the
-plain-HTTP dashboard directly to the internet**. Dashboard moderation entries
-are tagged `[Dashboard]`; since the dashboard uses a host key rather than
-Discord OAuth, its moderator ID is recorded as the server owner.
+Then open <http://127.0.0.1:8765> on your workstation. Restrict it with a
+firewall, and **never expose the plain-HTTP dashboard directly to the
+internet**. Dashboard moderation entries are tagged `[Dashboard]`; since the
+dashboard uses a host key rather than Discord OAuth, its moderator ID is
+recorded as the server owner.
+
+Two commands answer "where is it, and why can't I reach it?":
+
+| Command | What it prints |
+|---------|----------------|
+| `sentinel --dashboard` | The URLs, the TLS/proxy settings, and one line per thing to fix for remote access |
+| `sentinel --duckdns` | Sends one DuckDNS update now and reports the address it recorded |
+
+#### Reaching it from outside the house (e.g. DuckDNS)
+
+To check the dashboard from a phone or from work, put HTTPS in front of it and
+give it a name. Sentinel keeps a free [DuckDNS](https://www.duckdns.org) name
+pointed at your current home address by itself:
+
+```json
+{
+  "duckdns_domain": "myhome",
+  "duckdns_token": "the-account-token-from-duckdns.org",
+  "dashboard_allowed_hosts": ["myhome.duckdns.org"],
+  "dashboard_public_url": "https://myhome.duckdns.org",
+  "dashboard_secure_cookie": true,
+  "dashboard_trusted_proxies": ["127.0.0.1", "::1"]
+}
+```
+
+Keep `dashboard_host` on `127.0.0.1` and let a reverse proxy on the same
+machine (Caddy, nginx) terminate TLS and forward to it; then forward 80/443 at
+the router, never 8765. The `dashboard_allowed_hosts` entry is required - the
+dashboard answers only for names you list, to block DNS-rebinding attacks, and
+a name that is missing gets `400 Unrecognized Host header`.
+
+Full walkthrough, including serving TLS directly from Sentinel, SSH tunnels,
+`X-Forwarded-For` behind a proxy, and a symptom-to-fix table:
+**[docs/REMOTE_ACCESS.md](docs/REMOTE_ACCESS.md)**.
 
 Slash commands are registered **per server only** — that is the scope that
 appears immediately, so they show up without waiting and without setting
@@ -649,18 +702,43 @@ Warnings are DMed to the member and posted to the staff channel using the same
 ## 7. Building native installers
 
 The bot can be packaged as a `.dmg` (macOS), `.exe` installer (Windows),
-or `.deb` (Linux). Each platform must be built on its own host — there
-is no cross-compile.
+or `.deb` (Linux), for both **amd64/x86_64** and **arm64** machines. Each
+platform *and* architecture must be built on its own host — PyInstaller does
+not cross-compile — so every build script resolves the architecture from the
+machine it runs on (`uname -m`; `PROCESSOR_ARCHITECTURE` in the Windows batch
+file) and names its output after it:
 
-| Platform | Build script                | Output                                  |
-|----------|------------------------------|------------------------------------------|
-| macOS    | `build/build_macos.sh`       | `dist/Sentinel-1.0.0.dmg`       |
-| Linux    | `build/build_linux.sh`       | `dist/sentinel_1.0.0_amd64.deb`|
-| Windows  | `build\build_windows.bat`    | `dist\Sentinel-Setup-1.0.0.exe` |
+| Platform | Built on | Output |
+|----------|----------|--------|
+| macOS    | Apple Silicon | `dist/Sentinel-1.0.0-arm64.dmg` |
+| macOS    | Intel         | `dist/Sentinel-1.0.0-x86_64.dmg` |
+| Linux    | x86-64        | `dist/sentinel_1.0.0_amd64.deb` |
+| Linux    | ARM64         | `dist/sentinel_1.0.0_arm64.deb` |
+| Windows  | x64           | `dist\Sentinel-Setup-1.0.0.exe` |
+| Windows  | Windows on ARM | `dist\Sentinel-Setup-1.0.0-arm64.exe` |
 
-All three flow through `build/pyinstaller.spec`, which bundles `bot.py` and
-its imported modules, plus `installer.py` and `dashboard.html`, into a
-self-contained build before wrapping it in the OS-native installer format.
+Setting `SENTINEL_TARGET_ARCH=amd64` or `SENTINEL_TARGET_ARCH=arm64` overrides
+the detected architecture — that is what CI does on each runner. The value
+must match the machine: the spec refuses to build a target it cannot produce
+instead of emitting a mislabelled bundle. Every script then checks its own
+output too, by reading the ELF / Mach-O / PE header of the binary it just built
+(`scripts/check_arch.py`, plus the `.deb`'s `Architecture` field and the NSIS
+`/DARCH` metadata) and aborting if it is not the architecture that was asked
+for. A build that silently produced the wrong CPU is not a theoretical worry —
+an x64 Python on Windows on ARM, or an Intel Python in an arm64 CI job, both
+happily "succeed" until someone on an arm64 machine runs the installer.
+
+All three build scripts flow through `build/pyinstaller.spec`, which bundles
+`bot.py` and its imported modules, plus `installer.py` and `dashboard.html`,
+into a self-contained build before wrapping it in the OS-native installer
+format.
+
+CI builds all six combinations in parallel
+(`.github/workflows/build-installers.yml`, one matrix per platform): amd64 and
+arm64 Linux runners, an Apple Silicon and an Intel macOS runner, and x64 and
+ARM64 Windows runners. GitHub's arm64 runners are free for public repositories;
+`macos-15-intel` is the free Intel image and is scheduled to be retired in
+August 2027.
 
 ### Cutting a release
 
@@ -683,8 +761,8 @@ git push origin main
 
 The script checks that the tag matches `VERSION`, validates the working
 tree, creates an annotated `v3.0.0` tag, and pushes it. Pushing the tag triggers `.github/workflows/release.yml`,
-which builds all three platforms in parallel and attaches the artifacts
-to a new GitHub Release.
+which builds all three platforms - both architectures each - in parallel and
+attaches the six installers to a new GitHub Release.
 
 Main doesn't have to wait for that, though: every merge to `main` builds the
 same installers through `merge-release.yml` and publishes them as the rolling
@@ -712,11 +790,14 @@ download.
 
 Requirements: Python 3.9+, `pyinstaller`, optionally `create-dmg`
 (`brew install create-dmg`) for a styled `.dmg` window. Otherwise
-`hdiutil` is used as a fallback.
+`hdiutil` is used as a fallback. Build on the architecture you are shipping to:
+an Apple Silicon Mac produces the `arm64` `.dmg`, an Intel Mac the `x86_64`
+one.
 
 ```bash
-build/build_macos.sh
-open dist/Sentinel-1.0.0.dmg
+build/build_macos.sh                            # this Mac's architecture
+SENTINEL_TARGET_ARCH=arm64 build/build_macos.sh # only on an Apple Silicon Mac
+open dist/Sentinel-1.0.0-arm64.dmg
 ```
 
 The result is a real `.app` bundle (`Sentinel.app`) inside a
@@ -730,11 +811,24 @@ set `CODESIGN_IDENTITY` to your Developer ID.
 ### Linux (.deb)
 
 Requirements: Python 3.9+, `pyinstaller`, `dpkg`, `fakeroot`,
-`lintian` (optional).
+`lintian` (optional). The `.deb` is built for the machine's own architecture
+(`dpkg --print-architecture`), so run it on an amd64 host for `amd64` and on
+an arm64 host for `arm64`.
+
+How old a distribution the result runs on is decided by the *build* machine:
+PyInstaller bundles that machine's CPython runtime, so the runner's glibc
+becomes the package's floor. CI builds the `.deb` on Ubuntu 22.04 (glibc 2.35),
+which covers Debian 12 / Raspberry Pi OS 64-bit "Bookworm" and newer;
+`scripts/check_glibc.py` reads the requirement back out of the finished bundle
+and fails the build if it exceeds 2.36, and the same number is written into the
+package's `Depends: libc6 (>= …)` line. Building on a newer distribution
+raises the floor (Ubuntu 24.04 → glibc 2.39) and quietly drops support for
+older targets, which is why the runner is pinned and checked:
 
 ```bash
-build/build_linux.sh
-sudo dpkg -i dist/sentinel_1.0.0_amd64.deb
+build/build_linux.sh             # names the .deb after this host's architecture
+sudo dpkg -i dist/sentinel_1.0.0_amd64.deb    # on an amd64 host
+sudo dpkg -i dist/sentinel_1.0.0_arm64.deb    # on an arm64 host
 sudo systemctl start sentinel
 ```
 
@@ -746,11 +840,17 @@ bot once to configure it, then enables the service.
 
 ### Windows
 
-Requirements: Python 3.9+, `pyinstaller`, NSIS 3.x in PATH.
+Requirements: Python 3.9+, `pyinstaller`, NSIS 3.x in PATH. On Windows on ARM
+the build needs a **native ARM64 Python** — the script checks
+(`python scripts\check_arch.py host`), and installs one from python.org via
+`.github\scripts\install-windows-deps.ps1` if the interpreter on PATH is the
+emulated x64 one, which would otherwise produce an x64 installer under an
+`-arm64` name.
 
 ```
 build\build_windows.bat
-dist\Sentinel-Setup-1.0.0.exe
+dist\Sentinel-Setup-1.0.0.exe            :: x64
+dist\Sentinel-Setup-1.0.0-arm64.exe      :: Windows on ARM
 ```
 
 The NSIS installer copies the PyInstaller output to
@@ -940,7 +1040,27 @@ python3 tests/test_dashboard.py      # run dashboard auth tests alone
 * **Dashboard won't open** — it binds to `127.0.0.1:8765` by default, so open
   it on the bot host or use the documented SSH tunnel. Check `data/bot.log`
   for a port or config error; remote reverse-proxy hosts must be in
-  `dashboard_allowed_hosts`.
+  `dashboard_allowed_hosts`. `sentinel --dashboard` prints the effective
+  settings and what to change for remote access.
+* **Dashboard answers `400 Unrecognized Host header`** — the name you used is
+  not in `dashboard_allowed_hosts`. That check is the DNS-rebinding defence,
+  not a network failure: add the public name (or set `dashboard_public_url` to
+  that URL, whose host is allowed implicitly). See
+  [docs/REMOTE_ACCESS.md](docs/REMOTE_ACCESS.md).
+* **Login succeeds but bounces back to the login screen** — the browser
+  refused to store the session cookie. `dashboard_secure_cookie` is `true` but
+  the page is being served over plain HTTP. Terminate HTTPS in front of it (or
+  serve TLS with `dashboard_tls_cert`/`dashboard_tls_key`), or set
+  `dashboard_secure_cookie` to `false`.
+* **DuckDNS name resolves but the dashboard is unreachable** — the record is
+  current, but the dashboard is loopback-only: run a reverse proxy on the same
+  machine and point it at `127.0.0.1:8765`, or set `dashboard_host` to
+  `0.0.0.0` and forward the port. `sentinel --duckdns` reports the update
+  result; `sentinel --dashboard` reports the rest.
+* **Everyone gets `429 Too many attempts` on the login screen** — the
+  dashboard sees one client (the proxy). Add the proxy's address or CIDR to
+  `dashboard_trusted_proxies` so it may report visitors via
+  `X-Forwarded-For`.
 * **Dashboard login says "Invalid dashboard key"** — you are entering the
   wrong credential. The login key is printed by
   `sentinel --dashboard-token` (packaged build) or
@@ -968,6 +1088,29 @@ python3 tests/test_dashboard.py      # run dashboard auth tests alone
   `config.json` has a non-empty `bot_token` (or the legacy `token`).
 * **`.deb` build complains about `dpkg-deb` or `fakeroot`** — install
   them with `sudo apt install fakeroot dpkg`.
+* **A build fails with "cannot build a arm64 bundle on a amd64 host"** — the
+  architecture you asked for (`SENTINEL_TARGET_ARCH`) is not the machine's.
+  PyInstaller cannot cross-compile, so build on a host of that architecture
+  (or drop the variable and let the script use the host's).
+* **`version 'GLIBC_2.35' not found` when starting `sentinel`** — the system is
+  older than the distribution the `.deb` was built on. The arm64 and amd64
+  packages are built on Ubuntu 22.04 and run on Debian 12 / Raspberry Pi OS
+  64-bit "Bookworm" or newer; on something older (Debian 11, Raspberry Pi OS
+  64-bit "Bullseye") run
+  [from source](#2-setup-macos-linux-windows) instead, or rebuild the package
+  on that distribution with `build/build_linux.sh`.
+* **Raspberry Pi: `dpkg: package architecture (arm64) does not match system
+  (armhf)`** — the pre-built package is 64-bit only. Either flash the 64-bit
+  Raspberry Pi OS image (Pi 3/4/5, Zero 2 W) or run
+  [from source](#2-setup-macos-linux-windows) on 32-bit Raspberry Pi OS; there
+  is no 32-bit ARM installer, because PyInstaller ships no 32-bit ARM Linux
+  bootloader for it to build with.
+* **The installer won't run on an arm64 machine** ("bad CPU type", or an
+  ARM64 Windows error) — you have the other architecture's file. The names say
+  which is which: `...-arm64.dmg`, `..._arm64.deb` and
+  `Sentinel-Setup-...-arm64.exe` are for Apple Silicon, ARM64 Linux and
+  Windows on ARM; `...-x86_64.dmg`, `..._amd64.deb` and
+  `Sentinel-Setup-....exe` are for Intel/AMD machines.
 * **NSIS errors with `MUI2.nsh` not found** — install NSIS 3.x
   (https://nsis.sourceforge.io) and ensure `${NSISDIR}` is set.
 * **The `.dmg` says "this app is from an unidentified developer"** —

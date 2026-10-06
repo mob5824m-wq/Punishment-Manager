@@ -59,6 +59,8 @@ class _Sandbox:
             "installer.py",
             # The shared /manage group: bot.py and rules.py both import it.
             "command_tree.py",
+            # DuckDNS updater: imported by bot.py, so it ships in the bundle.
+            "duckdns.py",
         ):
             shutil.copy2(REPO_ROOT / name, self.bundle / name)
         if not app_writable:
@@ -183,7 +185,8 @@ class ReadOnlyAppDirTests(unittest.TestCase):
             if p.name not in {
                 "bot.py", "paths.py", "rules.py", "reaction_roles.py",
                 "discord_markdown.py", "dashboard.py", "dashboard.html",
-                "installer.py", "command_tree.py", "__pycache__",
+                "installer.py", "command_tree.py", "duckdns.py",
+                "__pycache__",
             }
         )
         self.assertEqual(leftovers, [])

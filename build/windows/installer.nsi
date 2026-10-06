@@ -1,10 +1,16 @@
 ; NSIS installer script for the Sentinel.
 ;
-; Build with build_windows.bat, which passes the version from the VERSION file:
-;   makensis /DVERSION=1.0.1 /DOUTFILE="dist\Sentinel-Setup-1.0.1.exe" build/windows/installer.nsi
+; Build with build_windows.bat, which passes the version from the VERSION file
+; and the architecture it was built for:
+;   makensis /DVERSION=1.0.1 /DARCH=amd64 /DOUTFILE="dist\Sentinel-Setup-1.0.1.exe" build/windows/installer.nsi
 ;
 ; The PyInstaller COLLECT output (dist\sentinel\) is wrapped
 ; into a single Setup.exe that installs to %ProgramFiles64%.
+;
+; ARCH is the architecture of the payload (amd64 or arm64), not of NSIS
+; itself: makensis is a 32-bit/x64 program and runs under Windows on ARM's
+; emulation, while the sentinel.exe it packages is native ARM64. It only
+; labels the install, so Add/Remove Programs can tell the two apart.
 
 Unicode True
 SetCompressor /SOLID lzma
@@ -24,8 +30,21 @@ ShowUninstDetails hide
 !ifndef OUTFILE
     !define OUTFILE "dist\Sentinel-Setup-${VERSION}.exe"
 !endif
+!ifndef ARCH
+    ; Only reached when makensis is run by hand: build_windows.bat always
+    ; passes /DARCH.
+    !define ARCH "amd64"
+!endif
 
-Name "${APPNAME} ${VERSION}"
+; The architecture suffix shown in Add/Remove Programs, so an arm64 install
+; is distinguishable from an x64 one.
+!if "${ARCH}" == "arm64"
+    !define ARCHLABEL " (ARM64)"
+!else
+    !define ARCHLABEL ""
+!endif
+
+Name "${APPNAME} ${VERSION}${ARCHLABEL}"
 OutFile "${OUTFILE}"
 InstallDir "$PROGRAMFILES64\${APPNAME}"
 InstallDirRegKey HKLM "Software\${COMPANYNAME}\${APPNAME}" "Install_Dir"
@@ -53,6 +72,7 @@ Section "Install"
     ; Write install dir to registry for the uninstaller.
     WriteRegStr HKLM "Software\${COMPANYNAME}\${APPNAME}" "Install_Dir" "$INSTDIR"
     WriteRegStr HKLM "Software\${COMPANYNAME}\${APPNAME}" "Version" "${VERSION}"
+    WriteRegStr HKLM "Software\${COMPANYNAME}\${APPNAME}" "Architecture" "${ARCH}"
 
     ; Copy the PyInstaller output.
     SetOutPath "$INSTDIR"
@@ -85,7 +105,7 @@ Section "Install"
 
     ; Register the uninstaller in Add/Remove Programs.
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${COMPANYNAME} ${APPNAME}" \
-        "DisplayName" "${APPNAME}"
+        "DisplayName" "${APPNAME}${ARCHLABEL}"
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${COMPANYNAME} ${APPNAME}" \
         "UninstallString" "$\"$INSTDIR\uninstall.exe$\""
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${COMPANYNAME} ${APPNAME}" \

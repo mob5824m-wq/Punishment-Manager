@@ -1,6 +1,7 @@
 name: merge-release
 
-# Every merge to main builds all three installers and publishes them, so the
+# Every merge to main builds all six installers (three platforms, amd64 and
+# arm64) and publishes them, so the
 # newest main build is always downloadable without waiting for a versioned
 # release. Two prereleases are kept in step by
 # .github/scripts/publish-merge-release.sh:

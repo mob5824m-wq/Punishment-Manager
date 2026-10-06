@@ -12,6 +12,10 @@ config.local.json
 *.db
 *.log
 
+# Build output (PyInstaller writes dist/ and its scratch tree under build/)
+dist/
+/build/sentinel/
+
 # Editor / OS
 .DS_Store
 .vscode/

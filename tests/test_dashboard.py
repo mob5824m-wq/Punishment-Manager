@@ -63,6 +63,32 @@ class GuildFakeBot(FakeBot):
         return FakeGuild() if int(guild_id) == GUILD_ID else None
 
 
+def _self_signed_certificate(case: unittest.TestCase) -> tuple[Path, Path]:
+    """Write a throwaway self-signed TLS certificate for a test.
+
+    Generated rather than committed: a checked-in private key is a bad habit
+    even for localhost, and openssl is present wherever this suite runs.
+    """
+    import shutil
+    import subprocess
+    import tempfile
+
+    if shutil.which("openssl") is None:  # pragma: no cover - CI images have it
+        case.skipTest("openssl is not available to generate a test certificate")
+    tmp = Path(tempfile.mkdtemp(prefix="sentinel-tls-"))
+    case.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+    cert, key = tmp / "cert.pem", tmp / "key.pem"
+    subprocess.run(
+        [
+            "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+            "-keyout", str(key), "-out", str(cert),
+            "-days", "1", "-subj", "/CN=myhome.duckdns.org",
+        ],
+        check=True, capture_output=True,
+    )
+    return cert, key
+
+
 class SnowflakeSerialisationTests(unittest.TestCase):
     """Discord ids must cross the JSON boundary as strings.
 
@@ -209,6 +235,214 @@ class DashboardSessionTests(unittest.IsolatedAsyncioTestCase):
             await self._login(client)
             response = await client.get(f"/api/guilds/{rounded}")
             self.assertEqual(response.status, 404)
+
+
+class RemoteAccessTests(unittest.IsolatedAsyncioTestCase):
+    """Reaching the dashboard under a public name such as a DuckDNS subdomain.
+
+    A remote visitor is allowed on purpose here, so the failure modes are
+    configuration ones, and every one of them looks like a different kind of
+    "the dashboard is broken" in the browser:
+
+    * a 400 ``Unrecognized Host header`` from the anti-DNS-rebinding check,
+    * a login that succeeds and immediately bounces (a cookie the browser
+      refuses to store because it was not marked secure, or one sent over
+      plain HTTP and dropped),
+    * a connection that never arrives (loopback-only listener, no proxy).
+
+    These tests pin the behaviour and the guidance that turns each symptom into
+    the setting to change.
+    """
+
+    def make_server(self, **config):
+        """A dashboard server over the given config; no socket is bound."""
+        bot = FakeBot()
+        bot.config = {"dashboard_enabled": True, "dashboard_port": 8765, **config}
+        return DashboardServer(
+            bot,
+            save_config=lambda _cfg: None,
+            db_fetchall=lambda *_args: [],
+            db_fetchone=lambda *_args: None,
+            db_execute=lambda *_args: None,
+            archive_punishment=lambda *_args, **_kwargs: None,
+            get_guild_config=lambda *_args: None,
+            get_staff_channel_id=lambda *_args: None,
+            should_dm_user=lambda *_args: True,
+            is_protected_member=lambda *_args, **_kwargs: None,
+            parse_duration=lambda _value: None,
+            format_duration=lambda value: str(value),
+        )
+
+    async def test_the_public_name_must_be_allowlisted_and_then_works(self) -> None:
+        server = self.make_server()
+        server._token = "T" * 48
+        async with TestClient(TestServer(server._build_app())) as client:
+            blocked = await client.get("/", headers={"Host": "myhome.duckdns.org"})
+            self.assertEqual(blocked.status, 400)
+
+        server = self.make_server(dashboard_allowed_hosts=["myhome.duckdns.org"])
+        server._token = "T" * 48
+        async with TestClient(TestServer(server._build_app())) as client:
+            allowed = await client.get("/", headers={"Host": "myhome.duckdns.org"})
+            self.assertEqual(allowed.status, 200)
+
+    async def test_the_public_url_is_allowlisted_implicitly(self) -> None:
+        # One setting instead of two: the host of dashboard_public_url is the
+        # host users actually type, so it is allowed without repeating it.
+        server = self.make_server(dashboard_public_url="https://myhome.duckdns.org")
+        server._token = "T" * 48
+        async with TestClient(TestServer(server._build_app())) as client:
+            response = await client.get("/", headers={"Host": "myhome.duckdns.org"})
+            self.assertEqual(response.status, 200)
+
+    async def test_a_configured_allowlist_replaces_rather_than_extends_localhost(self) -> None:
+        server = self.make_server(dashboard_allowed_hosts=["myhome.duckdns.org"])
+        server._token = "T" * 48
+        async with TestClient(TestServer(server._build_app())) as client:
+            # localhost still works: it cannot be forged by a hostile page.
+            self.assertEqual((await client.get("/")).status, 200)
+            self.assertEqual(
+                (await client.get("/", headers={"Host": "attacker.example"})).status, 400
+            )
+
+    async def test_urls_put_the_public_address_first(self) -> None:
+        server = self.make_server(dashboard_public_url="https://myhome.duckdns.org")
+        server._apply_settings(server.bot.config)
+        self.assertEqual(server.urls()[0], "https://myhome.duckdns.org/")
+        self.assertIn("http://127.0.0.1:8765/", server.urls())
+        self.assertEqual(server.scheme, "http")
+        self.assertEqual(server.browser_scheme, "https")
+
+    def test_tls_settings_are_validated_before_binding(self) -> None:
+        server = self.make_server(dashboard_tls_cert="/tmp/only-cert.pem")
+        with self.assertRaises(ValueError) as ctx:
+            server._apply_settings(server.bot.config)
+        self.assertIn("dashboard_tls_key", str(ctx.exception))
+
+        server = self.make_server(
+            dashboard_tls_cert="/tmp/only-cert.pem", dashboard_tls_key="/tmp/only-key.pem"
+        )
+        with self.assertRaises(ValueError) as ctx:
+            server._apply_settings(server.bot.config)
+        message = str(ctx.exception)
+        self.assertIn("dashboard_tls_cert", message)
+
+    def test_a_bad_certificate_fails_loudly(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cert = Path(tmp) / "cert.pem"
+            key = Path(tmp) / "key.pem"
+            cert.write_text("not a certificate", encoding="utf-8")
+            key.write_text("not a key", encoding="utf-8")
+            server = self.make_server(dashboard_tls_cert=str(cert), dashboard_tls_key=str(key))
+            # Fail at startup with the file name, rather than serving a
+            # certificate no browser will trust.
+            with self.assertRaises(ValueError) as ctx:
+                server._apply_settings(server.bot.config)
+            self.assertIn("cert", str(ctx.exception).lower())
+
+    async def test_a_tls_listener_serves_https_and_forces_a_secure_cookie(self) -> None:
+        cert, key = _self_signed_certificate(self)
+        server = self.make_server(dashboard_tls_cert=str(cert), dashboard_tls_key=str(key))
+        server._token = "T" * 48
+        async with TestClient(TestServer(server._build_app())) as client:
+            response = await client.post("/api/login", json={"token": server._token})
+            self.assertEqual(response.status, 200)
+            cookie = response.cookies.get("sentinel_dashboard_session")
+            self.assertTrue(cookie["secure"], "the session cookie must not travel over HTTP")
+        self.assertEqual(server.scheme, "https")
+        self.assertEqual(server.browser_scheme, "https")
+
+    async def test_forwarded_for_is_ignored_from_an_untrusted_peer(self) -> None:
+        server = self.make_server(dashboard_trusted_proxies=["10.0.0.1"])
+        server._apply_settings(server.bot.config)
+        request = SimpleNamespace(remote="127.0.0.1", headers={"X-Forwarded-For": "198.51.100.9"})
+        self.assertEqual(server._client_ip(request), "127.0.0.1")
+
+    async def test_forwarded_for_is_believed_from_a_trusted_proxy(self) -> None:
+        server = self.make_server(dashboard_trusted_proxies=["127.0.0.1"])
+        server._apply_settings(server.bot.config)
+        request = SimpleNamespace(remote="127.0.0.1", headers={"X-Forwarded-For": "198.51.100.9"})
+        self.assertEqual(server._client_ip(request), "198.51.100.9")
+
+        # Behind two trusted hops, walk past our own proxies to the client.
+        server = self.make_server(dashboard_trusted_proxies=["127.0.0.1", "10.0.0.0/8"])
+        server._apply_settings(server.bot.config)
+        request = SimpleNamespace(
+            remote="127.0.0.1", headers={"X-Forwarded-For": "198.51.100.9, 10.1.2.3"}
+        )
+        self.assertEqual(server._client_ip(request), "198.51.100.9")
+
+    async def test_the_login_throttle_sees_the_client_not_the_proxy(self) -> None:
+        # Without trusting the proxy every request looks like it came from the
+        # proxy's address, so five bad guesses by a stranger would lock the
+        # whole internet out of the dashboard.
+        server = self.make_server(dashboard_trusted_proxies=["127.0.0.1"])
+        server._token = "T" * 48
+        async with TestClient(TestServer(server._build_app())) as client:
+            for _ in range(6):
+                response = await client.post(
+                    "/api/login",
+                    json={"token": "wrong"},
+                    headers={"X-Forwarded-For": "198.51.100.9"},
+                )
+            self.assertEqual(response.status, 429, "the abusive client is throttled")
+
+            other = await client.post(
+                "/api/login",
+                json={"token": server._token},
+                headers={"X-Forwarded-For": "198.51.100.10"},
+            )
+            self.assertEqual(other.status, 200, "an innocent client must not be locked out")
+
+    async def test_an_attacker_cannot_invent_a_client_address(self) -> None:
+        # With no trusted proxy configured, X-Forwarded-For is just a header a
+        # stranger can write, so it must not let them dodge the throttle.
+        server = self.make_server()
+        server._token = "T" * 48
+        async with TestClient(TestServer(server._build_app())) as client:
+            for index in range(6):
+                response = await client.post(
+                    "/api/login",
+                    json={"token": "wrong"},
+                    headers={"X-Forwarded-For": f"203.0.113.{index}"},
+                )
+            self.assertEqual(response.status, 429)
+
+    def test_remote_access_warnings_name_the_fix(self) -> None:
+        # The dashboard knows the listener's shape; the DuckDNS module knows the
+        # public name. `bot.py --dashboard` prints both lists, and between them
+        # a user has to be told each of the three things that must change.
+        import duckdns
+
+        config = {"duckdns_domain": "myhome", "duckdns_token": "t"}
+        server = self.make_server(**config)
+        server._apply_settings(server.bot.config)
+        text = "\n".join(list(server.remote_access_warnings()) + duckdns.dashboard_warnings(server.bot.config))
+        self.assertIn("dashboard_allowed_hosts", text)
+        self.assertIn("loopback", text)
+        self.assertIn("dashboard_public_url", text)
+
+    def test_an_exposed_listener_without_an_allowlist_is_called_out(self) -> None:
+        server = self.make_server(dashboard_host="0.0.0.0")
+        server._apply_settings(server.bot.config)
+        text = "\n".join(server.remote_access_warnings())
+        self.assertIn("dashboard_allowed_hosts", text)
+        self.assertIn("clear text", text)
+
+
+    def test_no_warnings_once_the_remote_setup_is_complete(self) -> None:
+        # The proxy-terminated shape: plain HTTP on loopback (only the proxy can
+        # reach it), HTTPS in the URL users open, and a secure cookie.
+        server = self.make_server(
+            dashboard_public_url="https://myhome.duckdns.org",
+            dashboard_secure_cookie=True,
+        )
+        server._apply_settings(server.bot.config)
+        self.assertEqual(server.remote_access_warnings(), [])
+        self.assertEqual(server.browser_scheme, "https")
+        self.assertTrue(server._secure_cookie)
 
 
 class RulesPreviewTests(unittest.IsolatedAsyncioTestCase):

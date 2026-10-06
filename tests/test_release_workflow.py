@@ -42,6 +42,13 @@ def triggers(text: str) -> str:
     return text.split("\non:", 1)[1].split("\njobs:", 1)[0]
 
 
+def without_comments(text: str) -> str:
+    """The file with its comment lines dropped, for counting real YAML keys."""
+    return "\n".join(
+        line for line in text.splitlines() if not line.lstrip().startswith("#")
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Stubs for gh/git, so the publish scripts can run offline.
 # --------------------------------------------------------------------------- #
@@ -154,10 +161,16 @@ class MergePublishScriptTests(PublishScriptTestCase):
 
     def setUp(self) -> None:
         super().setUp()
+        # One installer per platform and architecture, as the reusable build
+        # uploads them (both .deb architectures, both .dmg architectures, both
+        # .exe architectures).
         self.add_artifacts(
             "Sentinel-Setup-3.0.0.exe",
-            "Sentinel-3.0.0.dmg",
+            "Sentinel-Setup-3.0.0-arm64.exe",
+            "Sentinel-3.0.0-x86_64.dmg",
+            "Sentinel-3.0.0-arm64.dmg",
             "sentinel_3.0.0_amd64.deb",
+            "sentinel_3.0.0_arm64.deb",
         )
 
     def test_it_publishes_a_rolling_and_a_per_merge_release(self) -> None:
@@ -238,6 +251,22 @@ class MergePublishScriptTests(PublishScriptTestCase):
         self.assertIn("no installers", result.stderr)
         self.assertEqual(self.calls(), [])
 
+    def test_both_architectures_are_published(self) -> None:
+        result = self.run_script("artifacts")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        upload = [call for call in self.calls() if call.startswith("gh release upload latest-build")]
+        self.assertEqual(len(upload), 1)
+        for name in (
+            "sentinel_3.0.0_amd64.deb",
+            "sentinel_3.0.0_arm64.deb",
+            "Sentinel-3.0.0-x86_64.dmg",
+            "Sentinel-3.0.0-arm64.dmg",
+            "Sentinel-Setup-3.0.0.exe",
+            "Sentinel-Setup-3.0.0-arm64.exe",
+        ):
+            with self.subTest(asset=name):
+                self.assertIn(name, upload[0])
+
     def test_a_partial_build_still_publishes_what_exists(self) -> None:
         shutil.rmtree(self.tmp / "artifacts")
         self.add_artifacts("sentinel_3.0.0_amd64.deb")
@@ -258,8 +287,11 @@ class TagPublishScriptTests(PublishScriptTestCase):
         super().setUp()
         self.add_artifacts(
             "Sentinel-Setup-3.0.0.exe",
-            "Sentinel-3.0.0.dmg",
+            "Sentinel-Setup-3.0.0-arm64.exe",
+            "Sentinel-3.0.0-x86_64.dmg",
+            "Sentinel-3.0.0-arm64.dmg",
             "sentinel_3.0.0_amd64.deb",
+            "sentinel_3.0.0_arm64.deb",
         )
 
     def test_a_plain_version_tag_becomes_a_normal_release(self) -> None:
@@ -341,16 +373,49 @@ class WorkflowWiringTests(unittest.TestCase):
     def test_the_reusable_workflow_builds_all_three_platforms(self) -> None:
         reusable = self.files["build-installers.yml"]
         self.assertIn("workflow_call", triggers(reusable))
+        # Both architectures of all three platforms: PyInstaller cannot
+        # cross-compile, so each one needs a runner of its own architecture.
         for runner, artifact in (
-            ("ubuntu-24.04", "sentinel-linux"),
-            ("macos-latest", "sentinel-macos"),
-            ("windows-latest", "sentinel-windows"),
+            ("ubuntu-24.04-arm", "sentinel-linux-arm64"),
+            ("ubuntu-24.04", "sentinel-linux-amd64"),
+            ("macos-latest", "sentinel-macos-arm64"),
+            ("macos-15-intel", "sentinel-macos-x86_64"),
+            ("windows-11-arm", "sentinel-windows-arm64"),
+            ("windows-latest", "sentinel-windows-x64"),
         ):
-            self.assertIn(runner, reusable)
-            self.assertIn(artifact, reusable)
+            with self.subTest(runner=runner):
+                self.assertIn(runner, reusable)
+                self.assertIn(artifact, reusable)
         # No release logic belongs in the reusable build.
         self.assertNotIn("softprops/action-gh-release", reusable)
         self.assertNotIn("gh release", reusable)
+
+    def test_every_architecture_leg_states_what_it_is_building(self) -> None:
+        """A leg must fail on the wrong architecture, not mislabel it."""
+        reusable = self.files["build-installers.yml"]
+        # The build scripts compare this against the runner's interpreter and
+        # against the binary they produce.
+        self.assertIn("SENTINEL_TARGET_ARCH: ${{ matrix.arch }}", reusable)
+        self.assertIn("check_arch.py host --expect ${{ matrix.arch }}", reusable)
+        # One matrix per platform, and a failure on one architecture must not
+        # cancel the other's result.
+        yaml_only = without_comments(reusable)
+        self.assertEqual(yaml_only.count("fail-fast: false"), 3)
+        self.assertEqual(yaml_only.count("strategy:"), 3)
+        self.assertEqual(yaml_only.count("- arch: "), 6)
+
+    def test_the_windows_arm_leg_asks_for_a_native_interpreter(self) -> None:
+        reusable = self.files["build-installers.yml"]
+        self.assertIn("architecture: ${{ matrix.py_arch }}", reusable)
+        # If the tool cache has no arm64 Python, the job installs one from
+        # python.org rather than building with an emulated x64 interpreter.
+        self.assertIn("install-windows-deps.ps1 ${{ matrix.arch }}", reusable)
+
+    def test_the_linux_legs_use_the_shared_dependency_helper(self) -> None:
+        reusable = self.files["build-installers.yml"]
+        self.assertIn("install-linux-deps.sh", reusable)
+        # The .deb's own metadata is checked against the leg's architecture.
+        self.assertIn('test "$(dpkg-deb -f dist/*.deb Architecture)"', reusable)
 
     def test_build_steps_live_in_exactly_one_workflow(self) -> None:
         holders = [
@@ -407,9 +472,60 @@ class WorkflowWiringTests(unittest.TestCase):
             ".github/workflows/merge-release.yml",
             ".github/scripts/publish-merge-release.sh",
             ".github/scripts/publish-tag-release.sh",
+            ".github/scripts/annotate-test-failures.py",
+            "../../scripts/arch.sh",
+            "../../scripts/check_arch.py",
+            "../../scripts/check_glibc.py",
         ):
             with self.subTest(file=name):
                 self.assertIn(name, helper)
+
+    def test_the_test_steps_report_failures_as_annotations(self) -> None:
+        reusable = without_comments(self.files["build-installers.yml"])
+        # One per platform: the report has to be written, and the annotator has
+        # to run when (and only when) the suite failed.
+        self.assertEqual(reusable.count("--junitxml=test-results.xml"), 3)
+        self.assertEqual(reusable.count("annotate-test-failures.py"), 3)
+        self.assertEqual(reusable.count("if: failure()"), 3)
+
+    def test_the_annotator_summarises_a_junit_report(self) -> None:
+        script = REPO_ROOT / ".github" / "scripts" / "annotate-test-failures.py"
+        self.assertTrue(script.is_file())
+        report = tempfile.NamedTemporaryFile("w", suffix=".xml", delete=False)
+        self.addCleanup(os.unlink, report.name)
+        report.write(
+            '<testsuites><testsuite name="pytest" tests="2" failures="1">'
+            '<testcase classname="test_x.SomeTests" name="test_a"'
+            ' file="tests/test_x.py" line="10">'
+            '<failure message="assert 1 == 2">Traceback (most recent call last):'
+            '\n  File &quot;tests/test_x.py&quot;, line 10\nAssertionError</failure>'
+            "</testcase>"
+            '<testcase classname="test_x.SomeTests" name="test_b" />'
+            "</testsuite></testsuites>"
+        )
+        report.close()
+        result = subprocess.run(
+            [sys.executable, str(script), report.name],
+            capture_output=True, text=True,
+        )
+        # Reporting must not change the job's result: pytest already failed it.
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("1 failing test(s)", result.stdout)
+        self.assertIn("tests/test_x.py", result.stdout)
+        self.assertIn("file=tests/test_x.py,line=10,", result.stdout)
+        # Module prefix dropped (the file= property carries it), class kept.
+        self.assertIn("title=SomeTests.test_a", result.stdout)
+        self.assertIn("assert 1 == 2", result.stdout)
+        self.assertNotIn("test_b", result.stdout.split("::error")[1].splitlines()[0])
+
+    def test_the_annotator_survives_a_missing_report(self) -> None:
+        result = subprocess.run(
+            [sys.executable, str(REPO_ROOT / ".github" / "scripts" / "annotate-test-failures.py"),
+             str(REPO_ROOT / "does-not-exist.xml")],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("nothing to annotate", result.stdout)
 
 
 def main() -> int:

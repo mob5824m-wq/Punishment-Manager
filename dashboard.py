@@ -3,17 +3,41 @@
 The dashboard is deliberately bound to loopback by default. Its token is a
 high-privilege, bot-wide credential; remote deployments should put it behind
 HTTPS and a firewall (or reach it through an SSH tunnel).
+
+Reaching it from outside the house - typically under a dynamic-DNS name such as
+`yourname.duckdns.org` - needs three things, and the config keys that provide
+them:
+
+  * ``dashboard_host`` / ``dashboard_port``  what to listen on. Keep the default
+    loopback binding and let a reverse proxy on the same machine reach it (see
+    docs/REMOTE_ACCESS.md), or bind 0.0.0.0 and forward the port.
+  * ``dashboard_allowed_hosts``              the public name(s) the dashboard
+    will answer for. The HTTP ``Host`` header is checked against this list to
+    block DNS-rebinding attacks, so a name that is not listed is rejected with
+    "400 Unrecognized Host header" - that is the allowlist doing its job, not a
+    network failure. ``dashboard_public_url``'s hostname is allowed implicitly.
+  * ``dashboard_tls_cert`` / ``dashboard_tls_key``  serve HTTPS directly, or
+    terminate TLS in a proxy and set ``dashboard_secure_cookie`` plus
+    ``dashboard_public_url``.
+
+``dashboard_trusted_proxies`` is the bridge to a reverse proxy: the addresses
+(IPs or CIDR ranges) whose ``X-Forwarded-For`` header may be believed. Without
+it, a proxied dashboard sees every visitor as the proxy's address, which turns
+the login throttle into one bucket per proxy instead of per attacker.
 """
 
 from __future__ import annotations
 
 import hmac
+import ipaddress
 import logging
 import os
 import secrets
 import sqlite3
+import ssl
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from urllib.parse import urlsplit
 from typing import Any, Callable, Optional
 
@@ -68,6 +92,19 @@ SESSION_TTL_SECONDS = 8 * 60 * 60
 MAX_LOGIN_FAILURES = 5
 LOGIN_WINDOW_SECONDS = 5 * 60
 MAX_REASON_LENGTH = 900
+
+
+def _is_loopback_host(host: str) -> bool:
+    """True for 127.0.0.1 / ::1 / localhost / another loopback address."""
+    name = str(host or "").strip().lower()
+    if name in {"", "localhost"}:
+        return True
+    if name.startswith("[") and name.endswith("]"):
+        name = name[1:-1]
+    try:
+        return ipaddress.ip_address(name).is_loopback
+    except ValueError:
+        return False
 
 
 def _snowflake(value: Any) -> Optional[str]:
@@ -158,20 +195,22 @@ class DashboardServer:
         self._host = "127.0.0.1"
         self._port = 8765
         self._secure_cookie = False
+        self._tls_context: Optional[ssl.SSLContext] = None
+        self._trusted_proxies: list[str] = []
+        self._public_url = ""
+        self._warnings: list[str] = []
+        self._settings_applied = False
 
     @property
     def running(self) -> bool:
         return self._runner is not None
 
-    async def start(self) -> bool:
-        """Start the web server if enabled. Returns True if it is listening."""
-        if self.running:
-            return True
-        config = self.bot.config
-        if not config.get("dashboard_enabled", True):
-            logger.info("Web dashboard disabled by config.")
-            return False
+    def _apply_settings(self, config: dict) -> None:
+        """Resolve the network settings from config + environment.
 
+        Split out of :meth:`start` so the configuration can be validated - and
+        tested - without binding a socket.
+        """
         self._host = os.environ.get(
             "SENTINEL_DASHBOARD_HOST",
             str(config.get("dashboard_host") or "127.0.0.1"),
@@ -186,13 +225,165 @@ class DashboardServer:
             raise ValueError("dashboard_port must be an integer") from exc
         if not 0 < self._port < 65536:
             raise ValueError("dashboard_port must be between 1 and 65535")
-        self._secure_cookie = bool(config.get("dashboard_secure_cookie", False))
+
+        self._public_url = str(
+            os.environ.get("SENTINEL_DASHBOARD_PUBLIC_URL")
+            or config.get("dashboard_public_url")
+            or ""
+        ).strip()
+
+        raw_proxies = config.get("dashboard_trusted_proxies", [])
+        if isinstance(raw_proxies, str):
+            raw_proxies = [raw_proxies]
+        self._trusted_proxies = [
+            str(item).strip() for item in raw_proxies if str(item).strip()
+        ] if isinstance(raw_proxies, list) else []
+
+        cert = str(
+            os.environ.get("SENTINEL_DASHBOARD_TLS_CERT")
+            or config.get("dashboard_tls_cert")
+            or ""
+        ).strip()
+        key = str(
+            os.environ.get("SENTINEL_DASHBOARD_TLS_KEY")
+            or config.get("dashboard_tls_key")
+            or ""
+        ).strip()
+        if bool(cert) != bool(key):
+            raise ValueError(
+                "dashboard_tls_cert and dashboard_tls_key must be set together "
+                "(both the certificate and its private key)."
+            )
+        self._tls_context = self._load_tls_context(cert, key) if cert else None
+        # A TLS listener always gets a secure session cookie; anything else
+        # would send the dashboard key back over plain HTTP.
+        self._secure_cookie = bool(self._tls_context) or bool(
+            config.get("dashboard_secure_cookie", False)
+        )
+        self._warnings = self.remote_access_warnings()
+        self._settings_applied = True
+
+    def _load_tls_context(self, cert_path: str, key_path: str) -> ssl.SSLContext:
+        """Load the HTTPS certificate, refusing to start on a bad one.
+
+        A TLS listener that silently fails to load, or that loads one half of a
+        key pair, is worse than no TLS: the dashboard would either not start or
+        serve a certificate no browser trusts.
+        """
+        for path in (cert_path, key_path):
+            if not Path(path).is_file():
+                raise ValueError(
+                    f"dashboard TLS file not found: {path} "
+                    "(set dashboard_tls_cert/dashboard_tls_key to the fullchain "
+                    "certificate and its private key)."
+                )
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        try:
+            context.load_cert_chain(certfile=cert_path, keyfile=key_path)
+        except (ssl.SSLError, OSError) as exc:
+            raise ValueError(f"could not load the dashboard TLS certificate: {exc}") from exc
+        try:
+            context.minimum_version = ssl.TLSVersion.TLSv1_2
+        except (AttributeError, ValueError):  # pragma: no cover - older OpenSSL
+            pass
+        return context
+
+    @property
+    def scheme(self) -> str:
+        """What *this* listener speaks."""
+        return "https" if self._tls_context is not None else "http"
+
+    @property
+    def browser_scheme(self) -> str:
+        """What the browser will use, which is what cookie rules apply to.
+
+        TLS may be terminated in a reverse proxy rather than here, in which
+        case `dashboard_public_url` is the only thing that says so - the
+        browser's connection (and therefore the session cookie) is HTTPS even
+        though this listener answers plain HTTP on the loopback interface.
+        """
+        if self._tls_context is not None:
+            return "https"
+        if self._public_url.lower().startswith("https://"):
+            return "https"
+        return "http"
+
+    def urls(self) -> list[str]:
+        """Every URL this dashboard can be opened at, the public one first."""
+        urls: list[str] = []
+        if self._public_url:
+            urls.append(self._public_url.rstrip("/") + "/")
+        urls.append(f"{self.scheme}://{self._host}:{self._port}/")
+        return urls
+
+    def remote_access_warnings(self) -> list[str]:
+        """The ways this listener would fail for a remote visitor.
+
+        Each entry is the *fix*, not just the symptom, because the symptom
+        (a connection that never arrives, a login that bounces, a 400 from the
+        allowlist) is what a user sees and none of them say what to change.
+        """
+        warnings: list[str] = []
+        exposed = not _is_loopback_host(self._host)
+        browser_is_secure = self.browser_scheme == "https"
+
+        if self._secure_cookie and not browser_is_secure:
+            warnings.append(
+                "dashboard_secure_cookie is on, but the browser reaches this "
+                "dashboard over plain HTTP, so it will refuse to store the "
+                "session cookie and every login will appear to succeed and then "
+                "bounce back to the login screen. Serve HTTPS - terminate it in a "
+                "reverse proxy and set dashboard_public_url to the https:// URL, "
+                "or serve it here with dashboard_tls_cert + dashboard_tls_key - "
+                "or set dashboard_secure_cookie to false."
+            )
+        if exposed and not browser_is_secure:
+            warnings.append(
+                f"The dashboard is listening on {self._host} and is reached over "
+                "plain HTTP: the login key crosses the network in clear text. "
+                "Put it behind HTTPS (a reverse proxy, or "
+                "dashboard_tls_cert/dashboard_tls_key) and firewall the port."
+            )
+        if exposed and not self._allowed_hosts_configured():
+            warnings.append(
+                f"dashboard_host is {self._host} (reachable off this machine) but "
+                "'dashboard_allowed_hosts' is empty, so any Host header that is "
+                "not a bare IP is answered with 400 Unrecognized Host header. "
+                "Add the public name, e.g. "
+                '"dashboard_allowed_hosts": ["yourname.duckdns.org"].'
+            )
+        if self._public_url and not self._public_url.lower().startswith(("http://", "https://")):
+            warnings.append(
+                f"dashboard_public_url should be a full URL including the scheme; "
+                f"got {self._public_url!r}."
+            )
+        return warnings
+
+    def _allowed_hosts_configured(self) -> bool:
+        configured = self.bot.config.get("dashboard_allowed_hosts", [])
+        return bool(configured) if isinstance(configured, list) else bool(configured)
+
+    async def start(self) -> bool:
+        """Start the web server if enabled. Returns True if it is listening."""
+        if self.running:
+            return True
+        config = self.bot.config
+        if not config.get("dashboard_enabled", True):
+            logger.info("Web dashboard disabled by config.")
+            return False
+
+        self._apply_settings(config)
         self._token = ensure_dashboard_token(config, self._save_config)
 
         app = self._build_app()
         runner = web.AppRunner(app, access_log=None, shutdown_timeout=5)
         await runner.setup()
-        site = web.TCPSite(runner, host=self._host, port=self._port)
+        site = web.TCPSite(
+            runner,
+            host=self._host,
+            port=self._port,
+            ssl_context=self._tls_context,
+        )
         try:
             await site.start()
         except Exception:
@@ -201,10 +392,21 @@ class DashboardServer:
         self._runner = runner
         self._site = site
         logger.info(
-            "Admin dashboard listening at http://%s:%d/.",
+            "Admin dashboard listening at %s://%s:%d/%s.",
+            self.scheme,
             self._host,
             self._port,
+            " (TLS)" if self._tls_context else "",
         )
+        if self._public_url:
+            logger.info("Dashboard public URL: %s", self._public_url)
+        if self._trusted_proxies:
+            logger.info(
+                "Trusting X-Forwarded-For from: %s",
+                ", ".join(self._trusted_proxies),
+            )
+        for warning in self._warnings:
+            logger.warning("Remote access: %s", warning)
         logger.info(
             "Dashboard login key: run 'sentinel --dashboard-token' on the bot host "
             "(from source: 'python3 bot.py --dashboard-token'); it is also saved as "
@@ -221,6 +423,11 @@ class DashboardServer:
 
     def _build_app(self) -> web.Application:
         server = self
+        if not self._settings_applied:
+            # Every path that serves requests goes through the same resolution,
+            # so an entry point that forgets _apply_settings cannot silently
+            # serve the defaults (plain HTTP, no allowlist) instead of config.
+            self._apply_settings(self.bot.config)
 
         @web.middleware
         async def auth_and_security(request: web.Request, handler):
@@ -347,17 +554,79 @@ class DashboardServer:
         return response
 
     def _allowed_host(self, raw_host: str) -> bool:
-        """Reject DNS-rebinding Host headers; remote names need an explicit allowlist."""
-        host = self._normalize_host(raw_host)
-        configured = self.bot.config.get("dashboard_allowed_hosts", [])
-        if isinstance(configured, list) and configured:
-            return host in {self._normalize_host(str(item)) for item in configured}
+        """Reject DNS-rebinding Host headers; remote names need an explicit allowlist.
 
-        loopback = {"localhost", "127.0.0.1", "::1"}
-        if host in loopback:
+        A DNS-rebinding attack works by pointing an attacker-controlled name at
+        this server's address, so the browser sends that name in the Host
+        header with the victim's cookies attached. Checking Host against a list
+        is what stops it - which is why a public name such as
+        `yourname.duckdns.org` has to be listed in `dashboard_allowed_hosts`
+        (or be the host of `dashboard_public_url`) before the dashboard will
+        answer for it.
+        """
+        host = self._normalize_host(raw_host)
+
+        # 'localhost' / 127.0.0.1 / ::1 are not reachable by an attacker's page
+        # (a page cannot forge the Host header), so they are always allowed.
+        if host in {"localhost", "127.0.0.1", "::1"}:
             return True
+
+        allowed = set()
+        configured = self.bot.config.get("dashboard_allowed_hosts", [])
+        if isinstance(configured, str):
+            configured = [configured]
+        if isinstance(configured, (list, tuple, set)):
+            allowed = {self._normalize_host(str(item)) for item in configured if str(item).strip()}
+        if self._public_url:
+            allowed.add(self._normalize_host(urlsplit(self._public_url).netloc))
+        if allowed:
+            return host in allowed
+
         if self._host not in {"0.0.0.0", "::", ""}:
             return host == self._normalize_host(self._host)
+        return False
+
+    def _client_ip(self, request: web.Request) -> str:
+        """The visitor's address, believing X-Forwarded-For only when trusted.
+
+        Behind a reverse proxy every request arrives from the proxy, so without
+        this the login throttle would treat the whole internet as one client
+        (and lock everyone out after five bad guesses), while the logs would
+        name the proxy instead of the culprit. The header is attacker-supplied
+        when the request does *not* come from a trusted proxy, so it is ignored
+        there.
+        """
+        peer = request.remote or "unknown"
+        if not self._trusted_proxies or not self._is_trusted_proxy(peer):
+            return peer
+        forwarded = request.headers.get("X-Forwarded-For", "")
+        hops = [hop.strip() for hop in forwarded.split(",") if hop.strip()]
+        # Walk from the nearest hop outwards, skipping our own proxies: the
+        # first address we did not add ourselves is the client.
+        for hop in reversed(hops):
+            if not self._is_trusted_proxy(hop):
+                return hop
+        return hops[0] if hops else peer
+
+    def _is_trusted_proxy(self, value: str) -> bool:
+        """Is this address allowed to tell us who the real client is?
+
+        Entries may be addresses (`127.0.0.1`) or CIDR ranges (`172.18.0.0/16`
+        for a Docker network), as ``ipaddress`` understands them.
+        """
+        candidate = self._normalize_host(value)
+        try:
+            address = ipaddress.ip_address(candidate)
+        except ValueError:
+            # Not an IP: fall back to an exact, case-insensitive name match.
+            return candidate in {entry.strip().lower() for entry in self._trusted_proxies}
+        for entry in self._trusted_proxies:
+            try:
+                network = ipaddress.ip_network(entry.strip(), strict=False)
+            except ValueError:
+                continue
+            if address.version == network.version and address in network:
+                return True
         return False
 
     @staticmethod
@@ -397,7 +666,7 @@ class DashboardServer:
         return web.Response(text=html, content_type="text/html", charset="utf-8")
 
     async def login(self, request: web.Request) -> web.Response:
-        peer = request.remote or "unknown"
+        peer = self._client_ip(request)
         now = time.monotonic()
         count, reset_at = self._login_failures.get(peer, (0, now + LOGIN_WINDOW_SECONDS))
         if reset_at <= now:

@@ -52,6 +52,12 @@ files=(
     ".github/scripts/install-nsis.ps1"
     ".github/scripts/install-linux-deps.sh"
     ".github/scripts/install-windows-deps.ps1"
+    ".github/scripts/annotate-test-failures.py"
+    # The build scripts resolve the target architecture from these, and the
+    # workflows call them to verify what was built.
+    "../../scripts/arch.sh"
+    "../../scripts/check_arch.py"
+    "../../scripts/check_glibc.py"
 )
 
 for rel in "${files[@]}"; do
