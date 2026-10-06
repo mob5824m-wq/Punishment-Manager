@@ -3,7 +3,8 @@
 PyInstaller spec for the Sentinel.
 
 Builds `bot.py` and its imported modules (`rules.py`, `reaction_roles.py`,
-`dashboard.py`, `duckdns.py`), plus
+`tickets.py`, `applications.py`, `settings.py`, `store.py`, `dashboard.py`,
+`duckdns.py`), plus
 its companion `installer.py` and dashboard UI, into a self-contained binary:
 
   Linux:   dist/sentinel/sentinel
@@ -162,6 +163,14 @@ a = Analysis(
         'rules',
         # Reaction-role menus (dashboard-published posts + the reaction cog).
         'reaction_roles',
+        # Shared SQLite helpers and per-guild config lookups (bot.py, tickets.py
+        # and applications.py all import them).
+        'store',
+        'settings',
+        # Ticket system: panel buttons, private threads/channels, claim/close.
+        'tickets',
+        # Application forms, panels and decisions.
+        'applications',
         # installer.py is bundled as a data file; import it via importlib.
     ],
     hookspath=[],

@@ -61,6 +61,11 @@ class _Sandbox:
             "command_tree.py",
             # DuckDNS updater: imported by bot.py, so it ships in the bundle.
             "duckdns.py",
+            # Shared SQLite helpers and per-guild config lookups: bot.py and
+            # the tickets/applications modules all import them.
+            "store.py", "settings.py",
+            # Ticket and application systems, imported by bot.py.
+            "tickets.py", "applications.py",
         ):
             shutil.copy2(REPO_ROOT / name, self.bundle / name)
         if not app_writable:
@@ -186,6 +191,7 @@ class ReadOnlyAppDirTests(unittest.TestCase):
                 "bot.py", "paths.py", "rules.py", "reaction_roles.py",
                 "discord_markdown.py", "dashboard.py", "dashboard.html",
                 "installer.py", "command_tree.py", "duckdns.py",
+                "store.py", "settings.py", "tickets.py", "applications.py",
                 "__pycache__",
             }
         )

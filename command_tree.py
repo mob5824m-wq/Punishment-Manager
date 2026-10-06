@@ -10,6 +10,9 @@ Everything the bot can do hangs off one top-level group, ``/manage``::
     /manage setup       configure this server (administrators)
     /manage fixcommands clean up duplicated slash commands (administrators)
     /manage rules …     publish rule sets and their acceptance role (admins)
+    /manage tickets …   ticket panel, categories, claim/close (staff)
+    /manage applications … application forms, panels and decisions (staff)
+    /apply              fill in an application form (every member)
 
 The group object lives in its own module because two places need it:
 
@@ -20,8 +23,16 @@ The group object lives in its own module because two places need it:
   ``parent=manage_group``, so the rules commands are defined next to the
   helpers they use instead of being moved into bot.py.
 
-Sub-command callbacks are bound to whichever cog owns the group, so the rules
-commands are mixed into that same cog (see :class:`rules.RulesMixin`).
+Sub-command callbacks are bound to whichever cog owns the group, so the rules,
+tickets and applications commands are mixed into that same cog (see
+:class:`rules.RulesMixin`, :class:`tickets.TicketMixin` and
+:class:`applications.ApplicationsMixin`).
+
+``/apply`` is deliberately *not* a child of this group: it is the one command a
+normal member must be able to see, and all it does is open the application
+modal. Reading or deciding an application always goes through the group (and
+through a permission re-check), which is what keeps "members can apply but not
+view or edit" true.
 
 Discord only honours ``default_member_permissions`` on the *top-level*
 command, so the group is the single permission gate: it is visible to members

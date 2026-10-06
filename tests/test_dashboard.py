@@ -54,6 +54,9 @@ class FakeGuild:
     owner_id = 222222222222222222
     roles = []
     text_channels = []
+    # Discord *category* channels: the tickets page offers them as the parent
+    # for channel-mode tickets, so the guild payload lists them separately.
+    categories = []
 
 
 class GuildFakeBot(FakeBot):
@@ -1526,6 +1529,54 @@ class DashboardMarkupTests(unittest.TestCase):
         used_ids = set(re.findall(r'\$\("([^"]+)"\)', self.script))
         self.assertTrue(used_ids, "no element lookups found - did the script move?")
         self.assertEqual(used_ids - markup_ids, set())
+
+    def test_ids_are_unique_across_the_page(self) -> None:
+        """One id must mean one element.
+
+        Regression: the applications publish form carried ``id="application-panel-form"``
+        on both the <form> and its <select>. ``document.getElementById`` returns
+        the first match, so ``fillSelect("application-panel-form", …)`` replaced
+        the *form's* innerHTML with <option> elements and destroyed the panel
+        editor — a break no server-side endpoint test could see.
+        """
+        ids = re.findall(r'id="([^"]+)"', self.html)
+        duplicates = sorted({value for value in ids if ids.count(value) > 1})
+        self.assertEqual(duplicates, [], f"duplicate element ids in dashboard.html: {duplicates}")
+
+    def test_every_select_filled_by_the_script_exists(self) -> None:
+        markup_ids = set(re.findall(r'id="([^"]+)"', self.html))
+        filled = set(re.findall(r'fillSelect\("([^"]+)"', self.script))
+        self.assertTrue(filled, "no fillSelect calls found - did the script move?")
+        self.assertEqual(filled - markup_ids, set())
+
+    def test_tickets_and_applications_pages_are_wired_up(self) -> None:
+        for element in (
+            'id="page-tickets"',
+            'id="page-applications"',
+            'data-page="tickets"',
+            'data-page="applications"',
+            'id="ticket-mode"',
+            'id="ticket-panel-form"',
+            'id="ticket-panel-channel"',
+            'id="ticket-category-list"',
+            'id="ticket-category-form"',
+            'id="ticket-table"',
+            'id="ticket-status-filter"',
+            'id="application-form"',
+            'id="application-questions"',
+            'id="application-panel-publish"',
+            'id="application-panel-form"',
+            'id="application-panel-channel"',
+            'id="application-status-filter"',
+            'id="application-table"',
+            'id="application-detail"',
+        ):
+            with self.subTest(element=element):
+                self.assertIn(element, self.html)
+        # The publish form and the <select> inside it must stay separate
+        # elements, and the script must submit the form, not the select.
+        self.assertIn('$("application-panel-publish").addEventListener("submit"', self.script)
+        self.assertIn('const formId = $("application-panel-form").value;', self.script)
 
     def test_rules_editor_exposes_a_preview_and_toolbar(self) -> None:
         for element in (

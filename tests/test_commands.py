@@ -445,14 +445,49 @@ class CommandTreeTests(unittest.TestCase):
             "manage status", "manage setup", "manage fixcommands",
             "manage rules", "manage rules publish", "manage rules disable",
             "manage rules list",
+            "manage tickets", "manage tickets panel", "manage tickets mode",
+            "manage tickets add-category", "manage tickets remove-category",
+            "manage tickets categories", "manage tickets list",
+            "manage tickets view", "manage tickets claim", "manage tickets close",
+            "manage tickets reopen",
+            "manage applications", "manage applications form-add",
+            "manage applications form-questions", "manage applications form-remove",
+            "manage applications forms", "manage applications panel",
+            "manage applications list", "manage applications view",
+            "manage applications decide",
+            "apply",
         ):
             self.assertIn(expected, names, f"command tree has: {sorted(names)}")
 
-    def test_every_command_hangs_off_the_manage_group(self) -> None:
-        """Everything lives under /manage: one upload, one place to look."""
+    def test_only_manage_and_apply_are_top_level(self) -> None:
+        """Two top-level commands, and both are deliberate.
+
+        ``/manage`` is the whole staff surface, hidden from members by its
+        ``default_member_permissions``; ``/apply`` is the single member-facing
+        command (it opens the application modal and can read nothing back).
+        Anything else landing at the top level would show up in every server's
+        command list, so this pins the pair.
+        """
         self.assertEqual(
-            sorted(cmd["name"] for cmd in self.payload), ["manage"],
+            sorted(cmd["name"] for cmd in self.payload), ["apply", "manage"],
             "a stray top-level command would double the bot's Discord footprint",
+        )
+
+    def test_members_can_apply_but_not_see_the_management_surface(self) -> None:
+        """The permission split the ticket/application features rely on.
+
+        ``/apply`` must be offered to everyone (no default permission), while
+        ``/manage`` stays behind Moderate Members. Neither command *decides*
+        anything on its own: the tickets and applications handlers re-check
+        permission when they run (tests/test_tickets.py, test_applications.py).
+        """
+        self.assertIsNone(
+            self.meta["apply"]["default_member_permissions"],
+            "/apply must be visible to every member",
+        )
+        self.assertTrue(self.meta["apply"]["guild_only"], "/apply is server-only")
+        self.assertEqual(
+            self.meta["manage"]["default_member_permissions"], str(1 << 40)
         )
 
     def test_every_description_fits_discords_limit(self) -> None:
@@ -503,13 +538,15 @@ class CommandTreeTests(unittest.TestCase):
             [
                 ["get-global", None],
                 ["clear", None], ["sync", None, 0],   # duplicates deleted
-                ["copy", 101], ["sync", 101, 1],      # configured server_id
-                ["copy", 202], ["sync", 202, 1],      # other connected guild
-                ["copy", 303], ["sync", 303, 1],      # joined after startup
+                # Two top-level commands per guild upload: /manage (staff) and
+                # /apply (every member).
+                ["copy", 101], ["sync", 101, 2],      # configured server_id
+                ["copy", 202], ["sync", 202, 2],      # other connected guild
+                ["copy", 303], ["sync", 303, 2],      # joined after startup
                 # /manage fixcommands: fresh duplicate found and removed ...
                 ["get-global", None], ["clear", None], ["sync", None, 0],
                 # ... and this server's copy re-uploaded, then verified empty.
-                ["sync", 202, 1], ["get-global", None],
+                ["sync", 202, 2], ["get-global", None],
             ],
             "unexpected command registration traffic",
         )
@@ -522,7 +559,7 @@ class CommandTreeTests(unittest.TestCase):
     def test_duplicate_cleanup_keeps_the_local_tree_intact(self) -> None:
         # Guild copies are made from the local global tree, so emptying the
         # Discord-side registry must not remove the commands locally.
-        self.assertEqual(self.sync["local_commands"], ["manage"])
+        self.assertEqual(self.sync["local_commands"], ["apply", "manage"])
 
     def test_fixcommands_removes_duplicates_and_reports_it(self) -> None:
         reply = "\n".join(self.sync["fix_reply"])

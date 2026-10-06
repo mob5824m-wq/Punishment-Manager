@@ -11,10 +11,15 @@ Everything is reached through one slash-command group, ``/manage``:
     /manage setup       configure roles, staff channel and DMs (admins)
     /manage fixcommands clean up duplicated slash commands (admins)
     /manage rules ...   publish rule sets and their acceptance role (admins)
+    /manage tickets ... ticket panel, categories, claim/close (staff)
+    /manage applications ... application forms, panels and decisions (staff)
+    /apply              fill in an application form (every member)
 
-It also ships an authenticated server-side web dashboard for managing
-connected servers, moderation, warnings, the rules post, reaction-role menus,
-configuration and history.
+Members open tickets and submit applications through the buttons on panels
+staff published; they can never list, view or edit anybody's ticket or
+application. Its authenticated server-side web dashboard manages connected
+servers, moderation, warnings, the rules post, reaction-role menus, tickets,
+applications, configuration and history.
 """
 
 from __future__ import annotations
@@ -39,10 +44,26 @@ from discord.ext import commands, tasks
 
 import paths
 import command_tree
+import store
 import duckdns
 from dashboard import DashboardServer, ensure_dashboard_token
 from reaction_roles import ReactionRolesCog
 from rules import RulesMixin
+from settings import (
+    config_path,
+    get_guild_config,
+    get_staff_channel_id,
+    get_staff_role_id,
+    is_protected_member,
+    save_config,
+    should_dm_user,
+)
+from applications import (
+    ApplicationsCog,
+    ApplicationsMixin,
+    route_application_interaction,
+)
+from tickets import TicketMixin, route_ticket_interaction
 
 
 # --------------------------------------------------------------------------- #
@@ -153,6 +174,67 @@ CREATE TABLE IF NOT EXISTS warnings (
 );
 CREATE INDEX IF NOT EXISTS idx_warnings_user
     ON warnings (guild_id, user_id, created_at DESC);
+
+-- Tickets (see tickets.py). One row per opened ticket, in either of the two
+-- shapes the module supports: a private thread under the panel channel
+-- (`mode = 'thread'`, thread_id set) or its own private channel
+-- (`mode = 'channel'`, channel_id + thread_id both point at that channel).
+--
+-- The row is the record of truth for state, not the Discord channel: a thread
+-- can be archived, renamed or deleted by hand, and the dashboard still has to
+-- list what was opened, who claimed it and how it ended.
+CREATE TABLE IF NOT EXISTS tickets (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id       INTEGER NOT NULL,
+    number         INTEGER NOT NULL,      -- per-guild ticket number (#1, #2, ...)
+    user_id        INTEGER NOT NULL,      -- the member who opened it
+    category_id    TEXT NOT NULL,         -- panel category id (tickets.py)
+    category_label TEXT NOT NULL,
+    mode           TEXT NOT NULL,         -- 'thread' or 'channel'
+    channel_id     INTEGER,               -- container: panel channel or category
+    thread_id      INTEGER,               -- thread / ticket channel itself
+    status         TEXT NOT NULL DEFAULT 'open',  -- open | claimed | closed
+    claimed_by     INTEGER,
+    claimed_at     TEXT,
+    subject        TEXT,
+    log_channel_id INTEGER,               -- where staff were notified
+    log_message_id INTEGER,               -- that notice, kept in sync by claim/close
+    control_message_id INTEGER,           -- in-ticket message with the buttons
+    created_at     TEXT NOT NULL,
+    closed_at      TEXT,
+    closed_by      INTEGER,
+    close_reason   TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_tickets_guild
+    ON tickets (guild_id, status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tickets_user
+    ON tickets (guild_id, user_id);
+CREATE INDEX IF NOT EXISTS idx_tickets_thread
+    ON tickets (thread_id);
+
+-- Applications (see applications.py). `answers` is a JSON list of
+-- {"question": str, "answer": str} in the order the questions were asked, so a
+-- submission stays readable after the form it answered has been edited or
+-- deleted.
+CREATE TABLE IF NOT EXISTS applications (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id          INTEGER NOT NULL,
+    form_id           TEXT NOT NULL,
+    form_name         TEXT NOT NULL,
+    user_id           INTEGER NOT NULL,
+    answers           TEXT NOT NULL,
+    status            TEXT NOT NULL DEFAULT 'pending', -- pending|approved|denied
+    review_channel_id INTEGER,
+    review_message_id INTEGER,
+    submitted_at      TEXT NOT NULL,
+    decided_at        TEXT,
+    decided_by        INTEGER,
+    decision_note     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_applications_guild
+    ON applications (guild_id, status, submitted_at DESC);
+CREATE INDEX IF NOT EXISTS idx_applications_user
+    ON applications (guild_id, user_id, form_id);
 """
 
 
@@ -205,22 +287,13 @@ def init_db() -> None:
     logger.info("Database initialised at %s", DB_PATH)
 
 
-def db_execute(query: str, params: tuple = ()) -> None:
-    with closing(sqlite3.connect(DB_PATH)) as conn:
-        conn.execute(query, params)
-        conn.commit()
-
-
-def db_fetchall(query: str, params: tuple = ()) -> list[sqlite3.Row]:
-    with closing(sqlite3.connect(DB_PATH)) as conn:
-        conn.row_factory = sqlite3.Row
-        return list(conn.execute(query, params).fetchall())
-
-
-def db_fetchone(query: str, params: tuple = ()) -> Optional[sqlite3.Row]:
-    with closing(sqlite3.connect(DB_PATH)) as conn:
-        conn.row_factory = sqlite3.Row
-        return conn.execute(query, params).fetchone()
+# The three helpers below now live in store.py so that tickets.py and
+# applications.py can use them without importing this module (they are
+# imported *by* it). They are re-exported here because the dashboard is built
+# with these callables and tests reach for bot.db_execute.
+db_execute = store.db_execute
+db_fetchall = store.db_fetchall
+db_fetchone = store.db_fetchone
 
 
 def archive_punishment(record: dict, ended_reason: str) -> None:
@@ -372,6 +445,8 @@ DEFAULT_CONFIG: dict = {
     "guilds": {},
     "rules": {},              # per-guild published rules + acceptance role
     "reaction_roles": {},     # per-guild reaction-role menus (dashboard-published)
+    "tickets": {},            # per-guild ticket panels, categories and settings
+    "applications": {},       # per-guild application forms and their panels
     "dashboard_enabled": True,
     "dashboard_host": "127.0.0.1",
     "dashboard_port": 8765,
@@ -393,9 +468,12 @@ DEFAULT_CONFIG: dict = {
 }
 
 
-def config_path() -> Path:
-    """Where config.json is read from (may be a read-only system location)."""
-    return paths.config_path()
+# config_path() and save_config() live in settings.py too, for the same reason
+# as the lookups above: the feature modules save the config they own (ticket
+# panels, application forms) and must not import bot.py to do it. They are
+# imported at the top of this file, so `bot.save_config` still resolves.
+# load_config stays here: it falls back to DEFAULT_CONFIG, which this module
+# owns.
 
 
 def load_config() -> dict:
@@ -440,127 +518,11 @@ def load_config() -> dict:
     return cfg
 
 
-def save_config(cfg: dict) -> None:
-    """Write config.json to the first writable location.
-
-    Never writes into the application directory: on an installed build that
-    is read-only (and world-readable, which would leak the token).
-    """
-    try:
-        paths.write_config(cfg)
-    except OSError as exc:
-        logger.error("Could not save config to %s: %s", paths.config_write_path(), exc)
-        raise
-
-
-def get_guild_config(cfg: dict, guild_id: int) -> Optional[dict]:
-    """Return effective settings for a guild, including legacy fallbacks.
-
-    Punishment roles live in the per-guild ``guilds`` map for multi-server
-    installs, or in the top-level fields for the configured primary guild.
-    Staff channel and DM preferences support per-guild overrides while keeping
-    older top-level values as defaults.
-    """
-    guild_id = int(guild_id)
-    guilds = cfg.get("guilds", {})
-    per_guild = guilds.get(str(guild_id)) if isinstance(guilds, dict) else None
-    if not isinstance(per_guild, dict):
-        per_guild = None
-
-    try:
-        is_primary = bool(cfg.get("server_id")) and int(cfg["server_id"]) == guild_id
-    except (TypeError, ValueError):
-        is_primary = False
-
-    if not is_primary and per_guild is None:
-        return None
-
-    if is_primary:
-        result = {
-            "punish_role_id": cfg.get("punish_role_id"),
-            "post_role_id": cfg.get("post_role_id"),
-            "staff_role_id": cfg.get("staff_role_id"),
-        }
-    else:
-        # Drop the legacy normal_role_id key from the in-memory view so
-        # callers don't trip over it.
-        result = {k: v for k, v in per_guild.items() if k != "normal_role_id"}
-
-    # A guild entry wins over top-level defaults when that key was explicitly
-    # saved (including an explicit null used to clear an optional setting).
-    if per_guild is not None:
-        for key in ("staff_role_id", "staff_channel_id", "dm_user"):
-            if key in per_guild:
-                result[key] = per_guild[key]
-
-    result.setdefault("staff_role_id", cfg.get("staff_role_id"))
-    result.setdefault(
-        "staff_channel_id",
-        cfg.get("staff_channel_id") or cfg.get("log_channel_id"),
-    )
-    result.setdefault("dm_user", cfg.get("dm_user", True))
-    return result
-
-
-def get_staff_role_id(
-    cfg: dict, guild_id: Optional[int] = None
-) -> Optional[int]:
-    """The staff role protected from punishment, optionally guild-specific."""
-    guild_cfg = get_guild_config(cfg, guild_id) if guild_id is not None else None
-    val = (
-        guild_cfg.get("staff_role_id")
-        if guild_cfg is not None
-        else cfg.get("staff_role_id")
-    )
-    return int(val) if val else None
-
-
-def get_staff_channel_id(cfg: dict, guild_id: Optional[int] = None) -> Optional[int]:
-    """Resolve the staff/log channel with per-guild and legacy fallbacks."""
-    guild_cfg = get_guild_config(cfg, guild_id) if guild_id is not None else None
-    val = (
-        guild_cfg.get("staff_channel_id")
-        if guild_cfg is not None
-        else cfg.get("staff_channel_id") or cfg.get("log_channel_id")
-    )
-    return int(val) if val else None
-
-
-def is_protected_member(
-    member: discord.Member, cfg: dict, *, guild: discord.Guild
-) -> Optional[str]:
-    """Return None if `member` can be punished, or a string reason if
-    they cannot. Used to refuse `/manage punish` for admins, mods, and
-    anyone holding the configured staff role.
-    """
-    if member.bot:
-        return "Bots cannot be punished."
-    if member.id == guild.me.id:
-        return "I can't punish myself."
-    # Administrator or any mod-like permission.
-    perms = member.guild_permissions
-    if perms.administrator:
-        return "That user is a server administrator."
-    if perms.moderate_members or perms.manage_guild or perms.kick_members or perms.ban_members:
-        return "That user has moderation permissions and is protected."
-    # Holding the configured staff role.
-    staff_role_id = get_staff_role_id(cfg, guild.id)
-    if staff_role_id is not None:
-        staff_role = guild.get_role(staff_role_id)
-        if staff_role and staff_role in member.roles:
-            return f"That user has the {staff_role.mention} role and is protected."
-    # Top-role hierarchy check.
-    if member.top_role >= guild.me.top_role:
-        return "That user has a role equal to or higher than mine."
-    return None
-
-
-def should_dm_user(cfg: dict, guild_id: Optional[int] = None) -> bool:
-    """Whether the bot should DM users, with an optional per-guild override."""
-    guild_cfg = get_guild_config(cfg, guild_id) if guild_id is not None else None
-    if guild_cfg is not None and "dm_user" in guild_cfg:
-        return bool(guild_cfg["dm_user"])
-    return bool(cfg.get("dm_user", True))
+# get_guild_config / get_staff_role_id / get_staff_channel_id / should_dm_user /
+# is_protected_member live in settings.py: the tickets and applications modules
+# need them too, and importing them from here would be circular. They are
+# imported at the top of this file, so `bot.get_guild_config(...)` and every
+# call site below are unchanged.
 
 
 def resolve_token(cfg: dict) -> Optional[str]:
@@ -1374,18 +1336,22 @@ bot = SentinelBot(load_config())
 
 
 # ---- A single shared Cog holds all slash commands. --------------------- #
-class SentinelCog(RulesMixin, commands.Cog):
+class SentinelCog(RulesMixin, TicketMixin, ApplicationsMixin, commands.Cog):
     """Every slash command, under the shared ``/manage`` group.
 
-    It also mixes in :class:`rules.RulesMixin`, because those commands are
-    children of the same group and a nested group is registered - and its
-    callbacks bound - by the cog that owns the top-level command.
+    It also mixes in :class:`rules.RulesMixin`, :class:`tickets.TicketMixin` and
+    :class:`applications.ApplicationsMixin`, because those commands are children
+    of the same group: a nested group is registered - and its callbacks bound -
+    by the cog that owns the top-level command, so they cannot be cogs of their
+    own. The mixins' helpers expect ``bot`` and ``_save_config`` (each is
+    normally constructed with them); this cog is the one Discord sees.
+
+    ``/apply`` is the exception: it is a *top-level* command, so it lives in
+    :class:`applications.ApplicationsCog`.
     """
 
     def __init__(self, bot_: SentinelBot) -> None:
         self.bot = bot_
-        # RulesMixin's helpers expect these two attributes (it is normally
-        # constructed with them); this cog is the one that Discord sees.
         self._save_config = save_config
 
     async def cog_load(self) -> None:
@@ -1408,6 +1374,25 @@ class SentinelCog(RulesMixin, commands.Cog):
             moderate_members=True
         )
         self.manage_group.guild_only = True
+
+    # ---- Buttons, selects and modals ----------------------------------- #
+    # Panels and review messages are published as components with
+    # self-describing custom ids ("sentinel:tk:..." / "sentinel:ap:...") and
+    # handled here instead of through registered views. That is what keeps a
+    # button working after a restart, or after the server changed its ticket
+    # categories: nothing has to be re-registered, and an old panel resolves
+    # against the current configuration (or explains that it is stale).
+    #
+    # discord.py dispatches "on_interaction" for every interaction after its
+    # own routing, so this listener is additive: slash commands still reach the
+    # tree. Each router answers only for its own prefixes.
+    @commands.Cog.listener("on_interaction")
+    async def on_component_interaction(
+        self, interaction: discord.Interaction
+    ) -> None:
+        if await route_ticket_interaction(self.bot, interaction):
+            return
+        await route_application_interaction(self.bot, interaction)
 
     # ---- Every command hangs off the shared /manage group -------------- #
     # The group lives in command_tree.py because rules.py attaches its
@@ -2194,11 +2179,17 @@ class SentinelCog(RulesMixin, commands.Cog):
 # tree has the commands by the time it syncs).
 async def _register_cog() -> None:
     if bot.get_cog("SentinelCog") is None:
-        # One cog owns /manage, including the /manage rules sub-group from
-        # RulesMixin and its rules-acceptance reaction listeners.
+        # One cog owns /manage: the rules sub-group from RulesMixin (with its
+        # rules-acceptance reaction listeners), the ticket sub-group from
+        # TicketMixin, the application sub-group from ApplicationsMixin, and
+        # the component routing they share.
         await bot.add_cog(SentinelCog(bot))
     if bot.get_cog("ReactionRolesCog") is None:
         await bot.add_cog(ReactionRolesCog(bot))
+    if bot.get_cog("ApplicationsCog") is None:
+        # /apply: the one member-facing command, published as its own
+        # top-level command.
+        await bot.add_cog(ApplicationsCog(bot))
 
 
 # --------------------------------------------------------------------------- #

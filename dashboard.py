@@ -44,7 +44,9 @@ from typing import Any, Callable, Optional
 import discord
 from aiohttp import web
 
+import applications
 import paths
+import tickets
 from discord_markdown import lint_markdown, render_markdown_html
 from reaction_roles import (
     DEFAULT_POST_MESSAGE,
@@ -92,6 +94,9 @@ SESSION_TTL_SECONDS = 8 * 60 * 60
 MAX_LOGIN_FAILURES = 5
 LOGIN_WINDOW_SECONDS = 5 * 60
 MAX_REASON_LENGTH = 900
+#: Rows a list endpoint returns at once. The dashboard shows the newest slice;
+#: anything older is still in SQLite and one filter away.
+MAX_DASHBOARD_ROWS = 100
 
 
 def _is_loopback_host(host: str) -> bool:
@@ -149,11 +154,19 @@ def ensure_dashboard_token(
 
 
 class _DashboardActor:
-    """Audit identity used by dashboard actions where no Discord user logs in."""
+    """Audit identity used by dashboard actions where no Discord user logs in.
 
-    def __init__(self, user_id: int) -> None:
+    The id is a real Discord user (the server owner, by convention), so audit
+    rows stay resolvable, while ``mention`` can carry a plain-English label for
+    the messages that render it — a ticket that says it was closed by
+    "the dashboard" is more useful than one that names the server owner.
+    """
+
+    def __init__(self, user_id: int, label: Optional[str] = None) -> None:
         self.id = int(user_id)
-        self.mention = f"<@{self.id}>"
+        self.label = label
+        self.mention = label or f"<@{self.id}>"
+        self.display_name = label or f"<@{self.id}>"
 
 
 class DashboardServer:
@@ -534,6 +547,52 @@ class DashboardServer:
                     "/api/guilds/{guild_id}/reaction-roles/{post_id}",
                     self.delete_reaction_roles,
                 ),
+                web.get("/api/guilds/{guild_id}/tickets", self.tickets_status),
+                web.put(
+                    "/api/guilds/{guild_id}/tickets/settings",
+                    self.save_ticket_settings,
+                ),
+                web.post(
+                    "/api/guilds/{guild_id}/tickets/categories",
+                    self.save_ticket_category,
+                ),
+                web.delete(
+                    "/api/guilds/{guild_id}/tickets/categories/{category_id}",
+                    self.delete_ticket_category,
+                ),
+                web.post(
+                    "/api/guilds/{guild_id}/tickets/panel", self.publish_ticket_panel
+                ),
+                web.post(
+                    "/api/guilds/{guild_id}/tickets/{ticket_id}/close",
+                    self.close_ticket,
+                ),
+                web.post(
+                    "/api/guilds/{guild_id}/tickets/{ticket_id}/reopen",
+                    self.reopen_ticket,
+                ),
+                web.delete(
+                    "/api/guilds/{guild_id}/tickets/{ticket_id}", self.delete_ticket
+                ),
+                web.get(
+                    "/api/guilds/{guild_id}/applications", self.applications_status
+                ),
+                web.post(
+                    "/api/guilds/{guild_id}/applications/forms",
+                    self.save_application_form,
+                ),
+                web.delete(
+                    "/api/guilds/{guild_id}/applications/forms/{form_id}",
+                    self.delete_application_form,
+                ),
+                web.post(
+                    "/api/guilds/{guild_id}/applications/forms/{form_id}/panel",
+                    self.publish_application_panel,
+                ),
+                web.post(
+                    "/api/guilds/{guild_id}/applications/{application_id}/decision",
+                    self.decide_application,
+                ),
                 web.post("/api/guilds/{guild_id}/sync", self.sync_commands),
             ]
         )
@@ -777,6 +836,13 @@ class DashboardServer:
             }
             for channel in guild.text_channels
         ]
+        # Discord's *category* channels, for features that create their own
+        # channels (channel-mode tickets). Kept separate from `channels`: a
+        # category is not a destination anything can be posted to.
+        categories = [
+            {"id": _snowflake(channel.id), "name": channel.name}
+            for channel in guild.categories
+        ]
         active_count = self._db_fetchone(
             "SELECT COUNT(*) AS count FROM punishments WHERE guild_id = ?",
             (guild.id,),
@@ -811,6 +877,7 @@ class DashboardServer:
                 },
                 "roles": roles,
                 "channels": channels,
+                "categories": categories,
                 "activePunishments": int(active_count["count"]) if active_count else 0,
                 "warningCount": int(warning_count["count"]) if warning_count else 0,
             }
@@ -1834,6 +1901,379 @@ class DashboardServer:
     ) -> Optional[discord.Message]:
         return await fetch_configured_message(guild, post)
 
+    # ---- Tickets ------------------------------------------------------- #
+    async def tickets_status(self, request: web.Request) -> web.Response:
+        """Settings, panel location and the ticket list for one server.
+
+        Reading tickets is a staff action even here: the whole dashboard is
+        behind the high-privilege dashboard token, so normal members have no
+        route to this data at all.
+        """
+        guild = self._guild_from_request(request)
+        settings = tickets.get_guild_tickets(self.bot.config, guild.id)
+        wanted = (request.query.get("status") or "all").strip().lower()
+        status = None if wanted not in set(tickets.STATUSES) | {"open"} else wanted
+        records = tickets.list_tickets(
+            guild.id,
+            status=status,
+            user_id=self._optional_int(request.query.get("userId"), "user ID"),
+            limit=MAX_DASHBOARD_ROWS,
+        )
+        return web.json_response(
+            {
+                "settings": _ticket_settings_payload(settings, guild),
+                "tickets": [_ticket_payload(record, guild) for record in records],
+                "counts": {
+                    "open": tickets.count_open_tickets(guild.id),
+                    "shown": len(records),
+                },
+            }
+        )
+
+    async def save_ticket_settings(self, request: web.Request) -> web.Response:
+        guild = self._guild_from_request(request)
+        data = await self._json_body(request)
+        settings = tickets.get_guild_tickets(self.bot.config, guild.id)
+
+        if "mode" in data:
+            mode = tickets.normalize_mode(data.get("mode"))
+            if mode is None:
+                raise web.HTTPBadRequest(
+                    text="Ticket mode must be 'thread' or 'channel'."
+                )
+            settings["mode"] = mode
+
+        if "logChannelId" in data:
+            log_channel_id = self._optional_int(data.get("logChannelId"), "log channel")
+            if log_channel_id is not None:
+                self._ticket_text_channel(guild, log_channel_id, "log channel")
+            settings["log_channel_id"] = log_channel_id
+
+        if "categoryId" in data:
+            category_id = self._optional_int(data.get("categoryId"), "category")
+            if category_id is not None:
+                channel = guild.get_channel(category_id)
+                if not isinstance(channel, discord.CategoryChannel):
+                    raise web.HTTPBadRequest(
+                        text="Choose a Discord category for channel-mode tickets."
+                    )
+            settings["category_id"] = category_id
+
+        tickets.write_guild_tickets(self.bot.config, guild.id, settings)
+        logger.info("Dashboard saved ticket settings for guild %s", guild.id)
+        return web.json_response(
+            {"saved": True, "settings": _ticket_settings_payload(settings, guild)}
+        )
+
+    async def save_ticket_category(self, request: web.Request) -> web.Response:
+        """Create or update one ticket panel category."""
+        guild = self._guild_from_request(request)
+        data = await self._json_body(request)
+        label = str(data.get("label") or "").strip()
+        if not label:
+            raise web.HTTPBadRequest(text="Give the category a name.")
+        if len(label) > tickets.MAX_LABEL_LENGTH:
+            raise web.HTTPBadRequest(
+                text=f"Category names are limited to {tickets.MAX_LABEL_LENGTH} characters."
+            )
+        mode = None
+        if data.get("mode"):
+            mode = tickets.normalize_mode(data.get("mode"))
+            if mode is None:
+                raise web.HTTPBadRequest(
+                    text="A category mode must be 'thread', 'channel', or empty to inherit."
+                )
+
+        existing_id = str(data.get("categoryId") or "").strip()
+        settings = tickets.get_guild_tickets(self.bot.config, guild.id)
+        existing = tickets.find_panel_category(settings, existing_id) if existing_id else None
+        if existing_id and existing is None:
+            raise web.HTTPNotFound(text="That category no longer exists.")
+
+        staff_role_id = self._optional_int(data.get("staffRoleId"), "staff role")
+        if staff_role_id is not None and guild.get_role(staff_role_id) is None:
+            raise web.HTTPBadRequest(text="Choose a role from this server.")
+
+        category = {
+            "category_id": existing["category_id"] if existing else tickets.new_category_id(),
+            "label": label,
+            "emoji": str(data.get("emoji") or "").strip() or None,
+            "staff_role_id": staff_role_id
+            if "staffRoleId" in data
+            else (existing or {}).get("staff_role_id"),
+            "description": str(data.get("description") or "").strip() or None,
+            "mode": mode if "mode" in data else (existing or {}).get("mode"),
+            "ask_subject": bool(data.get("askSubject", True)),
+            "ping_staff": bool(data.get("pingStaff", True)),
+        }
+        try:
+            stored = tickets.upsert_category(self.bot.config, guild.id, category)
+        except tickets.TicketError as exc:
+            raise web.HTTPBadRequest(text=str(exc))
+        logger.info("Dashboard saved ticket category %s for guild %s", label, guild.id)
+        return web.json_response(
+            {"saved": True, "category": _ticket_category_payload(stored, guild)},
+            status=201,
+        )
+
+    async def delete_ticket_category(self, request: web.Request) -> web.Response:
+        guild = self._guild_from_request(request)
+        category_id = request.match_info.get("category_id", "")
+        try:
+            removed = tickets.remove_category(self.bot.config, guild.id, category_id)
+        except tickets.TicketError as exc:
+            raise web.HTTPNotFound(text=str(exc))
+        logger.info("Dashboard removed ticket category %s for guild %s", category_id, guild.id)
+        return web.json_response(
+            {"removed": True, "category": _ticket_category_payload(removed, guild)}
+        )
+
+    async def publish_ticket_panel(self, request: web.Request) -> web.Response:
+        guild = self._guild_from_request(request)
+        data = await self._json_body(request)
+        channel = self._ticket_text_channel(
+            guild,
+            self._required_int(data.get("channelId"), "channel"),
+            "panel channel",
+        )
+        try:
+            panel = await tickets.publish_panel(
+                self.bot,
+                guild,
+                channel,
+                title=data.get("title"),
+                description=data.get("description"),
+            )
+        except tickets.TicketError as exc:
+            raise web.HTTPBadRequest(text=str(exc))
+        except discord.Forbidden as exc:
+            raise web.HTTPForbidden(
+                text="The bot needs View Channel, Send Messages and Embed Links there."
+            ) from exc
+        logger.info("Dashboard published the ticket panel for guild %s", guild.id)
+        return web.json_response({"published": True, "panel": panel}, status=201)
+
+    async def close_ticket(self, request: web.Request) -> web.Response:
+        guild = self._guild_from_request(request)
+        record = self._ticket_from_request(request, guild)
+        data = await self._json_body(request)
+        reason = str(data.get("reason") or "").strip()
+        if len(reason) > tickets.MAX_CLOSE_REASON_LENGTH:
+            raise web.HTTPBadRequest(
+                text=f"Keep the reason to {tickets.MAX_CLOSE_REASON_LENGTH} characters."
+            )
+        # Same audit convention as the punishment endpoints: a local dashboard
+        # credential is not a Discord identity, so the action is attributed to
+        # the server owner and marked as dashboard-originated.
+        actor = _DashboardActor(guild.owner_id)
+        try:
+            closed = await tickets.close_ticket(
+                self.bot,
+                guild,
+                record,
+                actor,
+                f"[Dashboard] {reason}" if reason else "[Dashboard] Closed from the dashboard",
+            )
+        except tickets.TicketError as exc:
+            raise web.HTTPBadRequest(text=str(exc))
+        logger.warning(
+            "Dashboard closed ticket guild=%s ticket=%s peer=%s",
+            guild.id,
+            record["id"],
+            request.remote or "unknown",
+        )
+        return web.json_response({"closed": True, "ticket": _ticket_payload(closed, guild)})
+
+    async def reopen_ticket(self, request: web.Request) -> web.Response:
+        guild = self._guild_from_request(request)
+        record = self._ticket_from_request(request, guild)
+        try:
+            reopened = await tickets.reopen_ticket(self.bot, guild, record)
+        except tickets.TicketError as exc:
+            raise web.HTTPBadRequest(text=str(exc))
+        logger.warning(
+            "Dashboard reopened ticket guild=%s ticket=%s peer=%s",
+            guild.id,
+            record["id"],
+            request.remote or "unknown",
+        )
+        return web.json_response(
+            {"reopened": True, "ticket": _ticket_payload(reopened, guild)}
+        )
+
+    async def delete_ticket(self, request: web.Request) -> web.Response:
+        guild = self._guild_from_request(request)
+        record = self._ticket_from_request(request, guild)
+        await tickets.delete_ticket(self.bot, guild, record)
+        logger.warning(
+            "Dashboard deleted ticket guild=%s ticket=%s peer=%s",
+            guild.id,
+            record["id"],
+            request.remote or "unknown",
+        )
+        return web.json_response({"deleted": True, "ticketId": str(record["id"])})
+
+    # ---- Applications -------------------------------------------------- #
+    async def applications_status(self, request: web.Request) -> web.Response:
+        guild = self._guild_from_request(request)
+        wanted = (request.query.get("status") or "pending").strip().lower()
+        forms = applications.get_guild_forms(self.bot.config, guild.id)
+        form_id = (request.query.get("formId") or "").strip() or None
+        records = applications.list_applications(
+            guild.id,
+            status=wanted if wanted in applications.STATUSES else None,
+            form_id=form_id,
+            limit=MAX_DASHBOARD_ROWS,
+        )
+        return web.json_response(
+            {
+                "forms": [_application_form_payload(form, guild) for form in forms],
+                "applications": [
+                    _application_payload(record, guild) for record in records
+                ],
+                "counts": {
+                    "pending": applications.count_pending(guild.id),
+                    "shown": len(records),
+                },
+            }
+        )
+
+    async def save_application_form(self, request: web.Request) -> web.Response:
+        """Create a form (no ``formId``) or update one (with ``formId``)."""
+        guild = self._guild_from_request(request)
+        data = await self._json_body(request)
+        form_id = str(data.get("formId") or "").strip()
+        existing = applications.find_form(self.bot.config, guild.id, form_id) if form_id else None
+        if form_id and existing is None:
+            raise web.HTTPNotFound(text="That application form no longer exists.")
+
+        name = str(data.get("name") or "").strip()
+        if not name:
+            raise web.HTTPBadRequest(text="Give the form a name.")
+        if len(name) > applications.MAX_FORM_NAME_LENGTH:
+            raise web.HTTPBadRequest(
+                text=f"Form names are limited to {applications.MAX_FORM_NAME_LENGTH} characters."
+            )
+
+        review_channel = self._ticket_text_channel(
+            guild,
+            self._required_int(data.get("reviewChannelId"), "review channel"),
+            "review channel",
+        )
+        questions = self._form_questions(data.get("questions"))
+        accept_role_id = self._optional_int(data.get("acceptRoleId"), "accept role")
+        remove_role_id = self._optional_int(data.get("removeRoleId"), "remove role")
+        for role_id, label in ((accept_role_id, "accept"), (remove_role_id, "remove")):
+            if role_id is not None and guild.get_role(role_id) is None:
+                raise web.HTTPBadRequest(text=f"Choose a {label} role from this server.")
+
+        form = {
+            "form_id": existing["form_id"] if existing else applications.new_form_id(),
+            "name": name,
+            "description": str(data.get("description") or "").strip() or None,
+            "review_channel_id": review_channel.id,
+            "questions": questions,
+            "accept_role_id": accept_role_id,
+            "remove_role_id": remove_role_id,
+            "allow_multiple": bool(data.get("allowMultiple", False)),
+            "panel_channel_id": (existing or {}).get("panel_channel_id"),
+            "panel_message_id": (existing or {}).get("panel_message_id"),
+            "panel_title": (existing or {}).get("panel_title"),
+            "panel_description": (existing or {}).get("panel_description"),
+        }
+        try:
+            stored = applications.upsert_form(self.bot.config, guild.id, form)
+        except applications.ApplicationError as exc:
+            raise web.HTTPBadRequest(text=str(exc))
+        logger.info("Dashboard saved application form %s for guild %s", stored["name"], guild.id)
+        return web.json_response(
+            {
+                "saved": True,
+                "form": _application_form_payload(stored, guild),
+                "created": existing is None,
+            },
+            status=201,
+        )
+
+    async def delete_application_form(self, request: web.Request) -> web.Response:
+        guild = self._guild_from_request(request)
+        form_id = request.match_info.get("form_id", "")
+        try:
+            removed = applications.remove_form(self.bot.config, guild.id, form_id)
+        except applications.ApplicationError as exc:
+            raise web.HTTPNotFound(text=str(exc))
+        logger.info("Dashboard removed application form %s for guild %s", form_id, guild.id)
+        return web.json_response(
+            {"removed": True, "form": _application_form_payload(removed, guild)}
+        )
+
+    async def publish_application_panel(self, request: web.Request) -> web.Response:
+        guild = self._guild_from_request(request)
+        data = await self._json_body(request)
+        form = applications.find_form(
+            self.bot.config, guild.id, request.match_info.get("form_id")
+        )
+        if form is None:
+            raise web.HTTPNotFound(text="That application form no longer exists.")
+        channel = self._ticket_text_channel(
+            guild,
+            self._required_int(data.get("channelId"), "channel"),
+            "panel channel",
+        )
+        try:
+            published = await applications.publish_panel(
+                self.bot,
+                guild,
+                form,
+                channel,
+                title=data.get("title"),
+                description=data.get("description"),
+            )
+        except applications.ApplicationError as exc:
+            raise web.HTTPBadRequest(text=str(exc))
+        except discord.Forbidden as exc:
+            raise web.HTTPForbidden(
+                text="The bot needs View Channel, Send Messages and Embed Links there."
+            ) from exc
+        logger.info("Dashboard published an application panel for guild %s", guild.id)
+        return web.json_response(
+            {"published": True, "form": _application_form_payload(published, guild)},
+            status=201,
+        )
+
+    async def decide_application(self, request: web.Request) -> web.Response:
+        guild = self._guild_from_request(request)
+        record = self._application_from_request(request, guild)
+        data = await self._json_body(request)
+        decision = str(data.get("decision") or "").strip().lower()
+        if decision not in applications.DECISIONS:
+            raise web.HTTPBadRequest(text="Decide with 'approve' or 'deny'.")
+        note = str(data.get("note") or "").strip()
+        if len(note) > applications.MAX_DECISION_NOTE_LENGTH:
+            raise web.HTTPBadRequest(
+                text=f"Keep the note to {applications.MAX_DECISION_NOTE_LENGTH} characters."
+            )
+        # Attribution follows the moderation endpoints: the dashboard has no
+        # Discord identity, so the decision is recorded against the owner and
+        # logged with the peer address.
+        actor = _DashboardActor(guild.owner_id)
+        try:
+            decided = await applications.decide_application(
+                self.bot, guild, record, actor, decision, note or None
+            )
+        except applications.ApplicationError as exc:
+            raise web.HTTPBadRequest(text=str(exc))
+        logger.warning(
+            "Dashboard decided application guild=%s application=%s decision=%s peer=%s",
+            guild.id,
+            record["id"],
+            decision,
+            request.remote or "unknown",
+        )
+        return web.json_response(
+            {"decided": True, "application": _application_payload(decided, guild)}
+        )
+
     async def sync_commands(self, request: web.Request) -> web.Response:
         guild = self._guild_from_request(request)
         try:
@@ -1851,6 +2291,104 @@ class DashboardServer:
             await message.delete()
         except discord.HTTPException as exc:
             logger.info("Could not clean up dashboard rules message %s: %s", message.id, exc)
+
+    def _ticket_text_channel(
+        self, guild: discord.Guild, channel_id: int, label: str
+    ) -> discord.TextChannel:
+        """Resolve a text channel and check the bot can post in it.
+
+        Panel publishing and review posts are the parts of these features that
+        fail *visibly* (a member presses nothing) when the bot lacks a
+        permission, so the check happens here rather than after a failed post.
+        """
+        channel = guild.get_channel(int(channel_id))
+        if not isinstance(channel, discord.TextChannel):
+            raise web.HTTPBadRequest(text=f"Choose a text channel from this server as the {label}.")
+        bot_member = guild.me
+        if bot_member is not None:
+            permissions = channel.permissions_for(bot_member)
+            missing = [
+                name
+                for name, attribute in (
+                    ("View Channel", "view_channel"),
+                    ("Send Messages", "send_messages"),
+                    ("Embed Links", "embed_links"),
+                )
+                if not getattr(permissions, attribute, False)
+            ]
+            if missing:
+                raise web.HTTPBadRequest(
+                    text=f"The bot needs {', '.join(missing)} in that channel."
+                )
+        return channel
+
+    @staticmethod
+    def _form_questions(raw: object) -> list[dict]:
+        """Validate the dashboard's question editor payload.
+
+        A form is a list of up to :data:`applications.MAX_QUESTIONS` questions;
+        the limits here are Discord's own modal limits, surfaced as a 400 so the
+        administrator is told before a member ever sees a broken modal.
+        """
+        if raw is None:
+            raise web.HTTPBadRequest(text="Add at least one question.")
+        if not isinstance(raw, list):
+            raise web.HTTPBadRequest(text="Questions must be a list.")
+        if not raw:
+            raise web.HTTPBadRequest(text="Add at least one question.")
+        if len(raw) > applications.MAX_QUESTIONS:
+            raise web.HTTPBadRequest(
+                text=f"A form can ask at most {applications.MAX_QUESTIONS} questions "
+                "(Discord's modal limit)."
+            )
+        questions = []
+        for index, item in enumerate(raw, 1):
+            if not isinstance(item, dict):
+                raise web.HTTPBadRequest(text=f"Question {index} must be an object.")
+            label = str(item.get("label") or "").strip()
+            if not label:
+                raise web.HTTPBadRequest(text=f"Question {index} needs a label.")
+            if len(label) > applications.MAX_QUESTION_LABEL_LENGTH:
+                raise web.HTTPBadRequest(
+                    text=f"Question {index} is too long — labels are limited to "
+                    f"{applications.MAX_QUESTION_LABEL_LENGTH} characters."
+                )
+            style = applications.normalize_style(item.get("style"))
+            placeholder = str(item.get("placeholder") or "").strip() or None
+            if placeholder and len(placeholder) > applications.MAX_PLACEHOLDER_LENGTH:
+                raise web.HTTPBadRequest(
+                    text=f"Question {index}'s placeholder is longer than "
+                    f"{applications.MAX_PLACEHOLDER_LENGTH} characters."
+                )
+            questions.append(
+                {
+                    "label": label,
+                    "style": style,
+                    "required": bool(item.get("required", True)),
+                    "placeholder": placeholder,
+                }
+            )
+        return questions
+
+    def _ticket_from_request(
+        self, request: web.Request, guild: discord.Guild
+    ) -> dict:
+        """The ticket named in the URL path, or 404."""
+        record = tickets.get_ticket(request.match_info.get("ticket_id"))
+        if record is None or int(record["guild_id"]) != guild.id:
+            raise web.HTTPNotFound(text="That ticket no longer exists.")
+        return record
+
+    def _application_from_request(
+        self, request: web.Request, guild: discord.Guild
+    ) -> dict:
+        """The application named in the URL path, or 404."""
+        record = applications.get_application(
+            request.match_info.get("application_id")
+        )
+        if record is None or int(record["guild_id"]) != guild.id:
+            raise web.HTTPNotFound(text="That application no longer exists.")
+        return record
 
     def _persist_config(self, updated: dict) -> None:
         try:
@@ -1954,6 +2492,117 @@ class DashboardServer:
 
 _ID_FIELD_SUFFIXES = ("_id", "Id")
 _ID_FIELD_EXCEPTIONS = {"id"}  # database row keys
+
+
+def _ticket_settings_payload(settings: dict, guild: discord.Guild) -> dict:
+    """Ticket settings as the dashboard needs them (ids stringified)."""
+    panel = settings.get("panel") or {}
+    return {
+        "mode": settings.get("mode"),
+        "logChannelId": _snowflake(settings.get("log_channel_id")),
+        "categoryId": _snowflake(settings.get("category_id")),
+        "number": settings.get("number") or 0,
+        "panel": {
+            "channelId": _snowflake(panel.get("channel_id")),
+            "messageId": _snowflake(panel.get("message_id")),
+            "title": panel.get("title"),
+            "description": panel.get("description"),
+        },
+        "categories": [
+            _ticket_category_payload(category, guild)
+            for category in settings.get("categories", [])
+        ],
+    }
+
+
+def _ticket_category_payload(category: dict, guild: discord.Guild) -> dict:
+    role_id = category.get("staff_role_id")
+    role = guild.get_role(int(role_id)) if role_id else None
+    return {
+        "categoryId": category.get("category_id"),
+        "label": category.get("label"),
+        "emoji": category.get("emoji"),
+        "description": category.get("description"),
+        "mode": category.get("mode"),
+        "staffRoleId": _snowflake(role_id),
+        "staffRoleName": role.name if role else None,
+        "askSubject": bool(category.get("ask_subject", True)),
+        "pingStaff": bool(category.get("ping_staff", True)),
+    }
+
+
+def _ticket_payload(ticket: dict, guild: discord.Guild) -> dict:
+    """One ticket row, with the ids a browser must not round as strings."""
+    return {
+        "id": _snowflake(ticket.get("id")),
+        "number": ticket.get("number"),
+        "userId": _snowflake(ticket.get("user_id")),
+        "categoryId": ticket.get("category_id"),
+        "categoryLabel": ticket.get("category_label"),
+        "mode": ticket.get("mode"),
+        "status": ticket.get("status"),
+        "claimedBy": _snowflake(ticket.get("claimed_by")),
+        "claimedAt": ticket.get("claimed_at"),
+        "subject": ticket.get("subject"),
+        "location": tickets.ticket_location(guild, ticket),
+        "jumpUrl": tickets.ticket_jump_url(guild, ticket),
+        "threadId": _snowflake(ticket.get("thread_id")),
+        "createdAt": ticket.get("created_at"),
+        "closedAt": ticket.get("closed_at"),
+        "closedBy": _snowflake(ticket.get("closed_by")),
+        "closeReason": ticket.get("close_reason"),
+    }
+
+
+def _application_form_payload(form: dict, guild: discord.Guild) -> dict:
+    """One application form, including the panel and review destinations."""
+    accept_role = guild.get_role(int(form["accept_role_id"])) if form.get("accept_role_id") else None
+    remove_role = guild.get_role(int(form["remove_role_id"])) if form.get("remove_role_id") else None
+    return {
+        "formId": form.get("form_id"),
+        "name": form.get("name"),
+        "description": form.get("description"),
+        "reviewChannelId": _snowflake(form.get("review_channel_id")),
+        "acceptRoleId": _snowflake(form.get("accept_role_id")),
+        "acceptRoleName": accept_role.name if accept_role else None,
+        "removeRoleId": _snowflake(form.get("remove_role_id")),
+        "removeRoleName": remove_role.name if remove_role else None,
+        "allowMultiple": bool(form.get("allow_multiple")),
+        "panelChannelId": _snowflake(form.get("panel_channel_id")),
+        "panelMessageId": _snowflake(form.get("panel_message_id")),
+        "panelTitle": form.get("panel_title"),
+        "panelDescription": form.get("panel_description"),
+        "questions": [
+            {
+                "label": question["label"],
+                "style": question["style"],
+                "required": bool(question.get("required", True)),
+                "placeholder": question.get("placeholder"),
+            }
+            for question in form.get("questions", [])
+        ],
+    }
+
+
+def _application_payload(application: dict, guild: discord.Guild) -> dict:
+    """One submission, including the answers staff decide on."""
+    return {
+        "id": _snowflake(application.get("id")),
+        "formId": application.get("form_id"),
+        "formName": application.get("form_name"),
+        "userId": _snowflake(application.get("user_id")),
+        "status": application.get("status"),
+        "submittedAt": application.get("submitted_at"),
+        "decidedAt": application.get("decided_at"),
+        "decidedBy": _snowflake(application.get("decided_by")),
+        "decisionNote": application.get("decision_note"),
+        "reviewChannelId": _snowflake(application.get("review_channel_id")),
+        "reviewMessageId": _snowflake(application.get("review_message_id")),
+        "answers": [
+            {"question": pair.get("question"), "answer": pair.get("answer")}
+            for pair in application.get("answers") or []
+        ],
+    }
 
 
 def _ruleset_payload(settings: dict, guild: discord.Guild) -> dict:
