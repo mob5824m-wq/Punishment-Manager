@@ -55,10 +55,21 @@ dashboard's history read from.
 
 **Who can run what**
 
-`/manage` is visible to members with **Moderate Members**. The administrative
-commands — `/manage setup`, `/manage fixcommands` and everything under
-`/manage rules` — check for **Administrator** when they run, because Discord
-applies a single permission to a whole command group.
+Discord permissions are *not* the gate. Moderation — `/manage punish`,
+`pardon`, `warn`, `warnings` and `status` — requires the server's configured
+**staff role** (set a staff role with `/manage setup staff_role:@Staff`), and
+administrators. Holding *Moderate Members* is not enough: a server can grant
+that permission to anyone, so Sentinel re-checks the caller's roles on every
+run and refuses with an ephemeral message naming the staff role.
+
+While no staff role is configured yet, moderation falls back to the old rule
+(*Moderate Members* or *Manage Server*) so a fresh install keeps working; the
+refusal message points at `/manage setup staff_role:`.
+
+The administrative commands — `/manage setup`, `/manage fixcommands` and
+everything under `/manage rules` — check for **Administrator** when they run.
+Ticket and application management re-check their own staff rules. See
+[Commands](#5-commands).
 
 ---
 
@@ -146,7 +157,8 @@ names any location it had to fall back to.
   <https://discord.com/developers/applications>.
 * The bot must be invited with at minimum:
   * **Manage Roles** *(for punishment and rules-acceptance roles)*
-  * **Moderate Members** *(required by `/manage`)*
+  * **Moderate Members** *(not required: moderation is gated by the staff
+    role. It is the fallback rule on servers that have not set one yet.)*
   * **Send Messages** *(for staff-channel embeds and rules posts)*
   * **Embed Links** and **Add Reactions** *(for rules posts)*
   * **Use Application Commands**
@@ -432,7 +444,8 @@ older versions keep working unchanged.
   "staff_channel_id": 444444444444444444,
   "dm_user":          true,
   "rules":            {},
-  "reaction_roles":   {},
+  "tickets":          {},
+  "applications":     {},
   "dashboard_enabled": true,
   "dashboard_host":    "127.0.0.1",
   "dashboard_port":    8765
@@ -444,7 +457,9 @@ The `bot_token`, `server_id`, and role ids go at the top level
 omitted, use `/manage setup` to associate role settings with each server. The bot
 fills the `rules` map when a rule set is published (a list of named sets per
 server), the `reaction_roles` map when a reaction-role post is published from
-the dashboard, and generates `dashboard_token` on first startup. Keep `config.json` private; it contains
+the dashboard, `tickets` when a ticket panel or category is configured, and
+`applications` when an application form is created — all per server. It also
+generates `dashboard_token` on first startup. Keep `config.json` private; it contains
 credentials. The `guilds`, `token`, and `log_channel_id` keys are a legacy
 multi-server shape and are still respected for backwards compatibility.
 
@@ -493,8 +508,13 @@ You should see:
 
 When the bot is running, open **<http://127.0.0.1:8765>** on the bot host.
 The dashboard covers connected servers, active punishments, warnings,
-pardon/apply actions, the rules post, multi-role reaction-role menus, server
-role/channel settings, slash-command sync, and punishment history.
+pardon/apply actions, the rules post, multi-role reaction-role menus, tickets,
+application forms and submissions, server role/channel settings,
+slash-command sync, and punishment history. The **Tickets** page publishes the
+panel, edits the categories and modes, and lists every ticket with
+close/reopen/delete; the **Applications** page builds forms (questions, review
+channel, accept/remove roles), publishes Apply panels, and reads submissions
+with Approve/Deny and a decision note.
 
 **Finding the dashboard key.** The first startup generates a private
 dashboard key and saves it as `dashboard_token` in the bot's `config.json`.
@@ -587,20 +607,54 @@ since they need a message box, a live preview, and one role picker per emoji.
 
 | Command              | Who can use it                  | What it does |
 |----------------------|---------------------------------|--------------|
-| `/manage punish`      | Members with *Moderate Members* | Adds the punish role for the configured duration. Posts a staff embed and DMs the member. |
-| `/manage warn`       | Members with *Moderate Members* | Records a warning (reason + moderator + time). No role is changed. Posts a staff embed and DMs the member. |
-| `/manage warnings`   | Members with *Moderate Members* | Lists a member's recorded warnings. Pass `clear:true` to delete them all (this is logged to the staff channel). |
-| `/manage pardon`     | Members with *Moderate Members* | Ends the punishment early and removes the punish / post-punish role. Posts a staff embed and DMs the member. |
-| `/manage status`     | Members with *Moderate Members* | Shows the server configuration and a list of active punishments. Pass a `user` to see that member's active status, history, and warnings. |
+| `/manage punish`      | Staff role (or administrators) | Adds the punish role for the configured duration. Posts a staff embed and DMs the member. |
+| `/manage warn`       | Staff role (or administrators) | Records a warning (reason + moderator + time). No role is changed. Posts a staff embed and DMs the member. |
+| `/manage warnings`   | Staff role (or administrators) | Lists a member's recorded warnings. Pass `clear:true` to delete them all (this is logged to the staff channel). |
+| `/manage pardon`     | Staff role (or administrators) | Ends the punishment early and removes the punish / post-punish role. Posts a staff embed and DMs the member. |
+| `/manage status`     | Staff role (or administrators) | Shows the server configuration and a list of active punishments. Pass a `user` to see that member's active status, history, and warnings. |
 | `/manage rules publish`     | Server administrators           | Posts a named rule set and sets its ✅ acceptance reaction role. Publishing the same name replaces that set. |
 | `/manage rules disable`     | Server administrators           | Stops handling reactions for one rule set (pass `name` when several exist). Existing roles are unchanged. |
 | `/manage rules list`        | Server administrators           | Lists the published rule sets with their channel, role and message. |
+| `/manage tickets panel`     | Server administrators           | Sets the options (mode, log channel, ticket category) and posts or refreshes the panel. |
+| `/manage tickets category`  | Server administrators           | Lists the panel buttons when called bare; with a `label` it adds or edits one, and `remove:true` deletes it. |
+| `/manage tickets console`   | Staff (staff role or moderation permissions) | The ticket queue: a summary and a select. Pick a ticket to read it and claim, close or reopen it. |
+| `/manage applications form` | Server administrators           | Lists the forms when called bare; with a `name` it creates or edits one, and `remove:true` deletes it. |
+| `/manage applications panel` | Server administrators          | Posts (or refreshes) an Apply panel for one form. |
+| `/manage applications review` | Staff                          | The review queue: a summary and a select. Pick a submission to read the answers and approve or deny it. |
+| `/manage applications decide` | Staff                          | Approves or denies one submission by id, with an optional note. |
 | `/manage setup`             | Server administrators           | Configures the punishment roles, staff channel, and DM behavior. |
 | `/manage fixcommands`       | Server administrators           | Removes duplicated slash commands (e.g. doubled `/manage` entries) and re-syncs this server. |
+| `/apply`                    | **Every member**                | Opens the application modal. It cannot list, view or edit anything. |
+| `/ticket`                   | **Every member**                | Opens a ticket: choose a category, answer the subject box. It cannot read or edit any ticket. |
 
-Discord offers the whole group to anyone with **Moderate Members**, so the
-administrator rows above are enforced *when the command runs*: a moderator
-who tries `/manage setup` gets an ephemeral "administrators only" reply.
+### A small command surface, on purpose
+
+Both new systems keep to **three staff sub-commands each** — tickets are
+`panel`, `category`, `console`; applications are `form`, `panel`, `review`
+(plus `decide` for a submission that is not in the queue). Everything else
+happens where the work is:
+
+* **Where you look is where you act.** `/manage tickets console` and
+  `/manage applications review` are single ephemeral messages that *are* the
+  queue: a summary, then a select of the records. Picking one swaps the message
+  for its details and its buttons (Claim / Close / Reopen, or Approve / Deny),
+  and those buttons run the same permission-checked handlers as the ones in the
+  ticket or the staff channel.
+* **List and edit share a command.** `/manage tickets category` with no options
+  lists the categories; naming one adds or edits it, and anything left out is
+  kept — so `/manage applications form name:"Staff" allow_multiple:true` changes
+  one setting without touching the questions or the review channel.
+* **Options are optional.** `/manage tickets panel` without a channel only saves
+  the settings, and with a channel only refreshes the panel, so an
+  administrator never has to restate what they set last time.
+
+No row above is enforced by Discord: `/manage` carries no permission gate, so
+every check happens *when the command runs*. A member without the staff role
+who tries `/manage punish` gets an ephemeral refusal naming the role, and a
+moderator who tries `/manage setup` gets an "administrators only" reply. (The
+group is left visible on purpose — a role cannot be expressed as a Discord
+permission, and hiding the group behind *Moderate Members* would hide it from
+the staff-role holders the server wants moderating.)
 
 ### `/manage punish` options
 
@@ -633,6 +687,120 @@ Protected members (admins, moderators, staff role holders, bots, and anyone
 above the bot's role) cannot be warned, and nobody can warn themselves.
 Warnings are DMed to the member and posted to the staff channel using the same
 `dm_user` / `staff_channel_id` settings as punishments.
+
+
+### Tickets
+
+Members open a ticket from a panel button, or with `/ticket`; the conversation
+stays between them and staff. There are two shapes and a server can use
+**both** — the default is chosen once, and any category can override it:
+
+| Mode | What the member gets | When to use it |
+|------|----------------------|----------------|
+| **Private thread** (default) | A private thread under the panel channel. Invite-only: the opener is added, and so is everyone holding the category's staff role (up to 20). Staff outside that group press **Claim** on the staff notice and are added. | Servers whose staff team fits in a private thread. Keeps everything in one channel, so the panel channel doubles as the ticket list. |
+| **Private channel** | Its own channel, `@everyone` denied, with the opener, the staff role and the bot allowed. | Busier servers: a role grant reaches every staff member at once, and long transcripts do not pile up in one channel. |
+
+Set it up in two steps:
+
+```text
+/manage tickets category label:"General help" emoji:❓
+/manage tickets panel channel:#open-a-ticket mode:"Private thread" log:#staff-log
+```
+
+`/manage tickets panel` is the one settings command: `mode` picks how new
+tickets open, `log` is where staff get the notice, and `parent` files
+channel-mode tickets under a Discord category. Every option is optional —
+running it with only a channel just refreshes the panel's buttons, and running
+it with only a mode changes that setting and leaves the panel where it is.
+
+* **Categories** are the panel buttons. `/manage tickets category` on its own
+  lists them; naming one adds or edits it, and options you leave out are kept,
+  so `/manage tickets category label:"General help" emoji:🎫` re-badges one
+  button without touching the rest. Each one can name its own
+  `staff_role`, its own `mode`, a description (shown in the panel's category
+  list), and whether to ask "what is this about?" before opening
+  (`ask_subject`, on by default). Up to 25 per server.
+* The **panel** is one bot message. Publishing again edits that same message,
+  so a server never accumulates stale panels. A button whose category has since
+  been deleted explains that instead of failing silently.
+* **Staff notices** go to `/manage tickets`' log channel, or — if none is
+  set — to the staff channel from `/manage setup`. The notice carries **Claim**
+  and **Close** buttons, so a staff member who is not in a private thread can
+  join it with one click.
+* Inside the ticket, the header shows who opened it, the category, the mode,
+  the status, who claimed and closed it and why, and carries **Claim**,
+  **Close** and **Reopen**.
+* **Closing** locks the ticket (`closed-…`, the opener can no longer post),
+  posts the reason, DMs the opener when `dm_user` is on, and keeps the record.
+  **Reopening** undoes it. Closing and reopening are recorded with whoever did
+  it.
+* **Claiming** marks the ticket as taken, adds the claimer to the thread and
+  announces it, so two staff members do not answer the same question.
+* Tickets are stored in SQLite with per-server numbers (`#0007`), so
+  `/manage tickets console` still lists one whose thread has been renamed,
+  archived or deleted by hand.
+
+#### What a normal member can do
+
+| | Member who opened it | Other members | Staff |
+|---|---|---|---|
+| Open a ticket (panel button or `/ticket`) | ✅ | ✅ | ✅ |
+| See that ticket | ✅ | ❌ | ✅ |
+| Claim / Reopen | ❌ | ❌ | ✅ |
+| Close | ✅ (withdraw their own) | ❌ | ✅ |
+| List or view **any** ticket | ❌ — there is no command or button that shows a ticket list to a member | | ✅ |
+
+Members never see a ticket they did not open, and nothing lets them edit,
+search or browse tickets. `/ticket` only creates one; reading is
+`/manage tickets console`, which Discord hides from anyone without **Moderate
+Members** and which re-checks staff permission when it runs (as does every
+button it shows). The dashboard can list and act on every ticket, and it
+requires the dashboard token.
+
+### Applications
+
+An application form is a short set of questions members answer in a modal; the
+answers go to staff for a decision.
+
+```text
+/manage applications form name:"Staff application" review_channel:#staff-apply questions:"Why do you want to join? | short:Timezone | Experience"
+/manage applications panel form:"Staff application" channel:#apply
+```
+
+`/manage applications form` on its own lists the forms; naming one creates it,
+or edits it when it already exists — and editing only changes what you pass, so
+`/manage applications form name:"Staff application" allow_multiple:true`
+flips one setting and leaves the questions, the review channel and the roles
+exactly as they were. `remove:true` deletes a form (submissions already
+received stay readable).
+
+* **Questions** — one to five (Discord's modal limit), each a one-line box or a
+  paragraph. In the slash command, separate them with ` | ` and prefix
+  `short:` for a one-line box; the dashboard has a proper editor with the same
+  limits.
+* **Submission** stores every answer next to the question that was asked (so
+  editing the form later never rewrites what somebody was asked), posts a
+  review card in the form's **review channel** with **Approve** and **Deny**
+  buttons, and DMs the applicant a confirmation.
+* **Decisions** can be made from those buttons, from
+  `/manage applications review` (pick a submission, then Approve or Deny),
+  from `/manage applications decide` by id, or from the dashboard. The decision is written
+  once (a second attempt is refused), the review card loses its buttons and
+  shows the outcome, the applicant is DM'd the note, and the form's *accept*
+  role is added (or its *remove* role taken away) when the bot is able to.
+* A member can have one **pending** application per form at a time; the
+  dashboard can allow repeats (`allow_multiple`) if the server wants them.
+* The dashboard's **Applications** page lists submissions and shows the full
+  answers, so staff can decide without scrolling back through a channel.
+
+#### What a normal member can do
+
+Members can **submit** an application and nothing else. `/apply` (and the panel
+button) opens the modal; the only commands that can read or decide a submission
+are `/manage applications form`, `review` and `decide`, which re-check staff
+permission when they run. There is no command, button or dashboard page that
+shows a member their own — or anyone else's — answers back, and the dashboard
+itself is behind the staff token.
 
 ---
 
@@ -946,10 +1114,16 @@ installer tells you when that's the case).
 Sentinel/
 ├── bot.py                  # bot entry point and command registration
 ├── command_tree.py         # the shared /manage group + admin check
-├── dashboard.py            # authenticated server-side dashboard/API
-├── dashboard.html          # dashboard UI
+├── settings.py             # per-guild config accessors (staff role, DM, ...)
+├── store.py                # shared SQLite helpers (execute/fetch/insert)
+├── tickets.py              # ticket panels, private threads/channels, claim/close
+├── applications.py         # application forms, modals, review and decisions
 ├── rules.py                # rules publishing and the acceptance reaction role
 ├── reaction_roles.py       # dashboard-published reaction-role menus
+├── dashboard.py            # authenticated server-side dashboard/API
+├── dashboard.html          # dashboard UI
+├── discord_markdown.py     # Markdown rendering/linting for the editors
+├── duckdns.py              # optional DuckDNS dynamic-DNS updates
 ├── installer.py            # interactive first-run installer
 ├── paths.py                # where config/db/logs live at runtime
 ├── requirements.txt
@@ -976,13 +1150,18 @@ Sentinel/
 │   └── windows/
 │       └── installer.nsi
 ├── tests/
+│   ├── test_applications.py     # application forms, permissions, review cards
+│   ├── test_arch.py             # packaged-build architecture checks
 │   ├── test_commands.py         # slash-command descriptions and guild sync
 │   ├── test_dashboard.py        # dashboard login/session security + endpoints
+│   ├── test_duckdns.py          # DuckDNS update handling
+│   ├── test_glibc.py            # Linux build baseline checks
 │   ├── test_markdown.py         # Discord Markdown renderer/linter
 │   ├── test_paths.py            # packaged-install path resolution (read-only app dir)
 │   ├── test_reaction_roles.py   # reaction-role menus (storage, emoji, give/remove)
 │   ├── test_release_workflow.py # merge/tag release publishing (workflows + scripts)
 │   ├── test_rules.py            # rules acceptance/reaction-role behavior
+│   ├── test_tickets.py          # ticket panels, private threads, claim/close/reopen
 │   ├── test_version.py          # VERSION plumbing (build scripts, tag, --version)
 │   └── test_warnings.py         # warning escalation behavior
 └── data/                    # created at runtime, source checkouts only

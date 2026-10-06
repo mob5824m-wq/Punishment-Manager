@@ -9,6 +9,8 @@
   "token": "",
   "guilds": {},
   "rules": {},
+  "tickets": {},
+  "applications": {},
   "dashboard_enabled": true,
   "dashboard_host": "127.0.0.1",
   "dashboard_port": 8765,

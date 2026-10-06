@@ -82,13 +82,16 @@ class FakeRole:
 
 
 class FakeMember:
-    def __init__(self, user_id, *, name="Member", perms=None, top_role=None, bot_user=False):
+    def __init__(
+        self, user_id, *, name="Member", perms=None, top_role=None, bot_user=False,
+        roles=(),
+    ):
         self.id = user_id
         self.display_name = name
         self.name = name
         self.bot = bot_user
         self.mention = f"<@{user_id}>"
-        self.roles = []
+        self.roles = list(roles)
         self.top_role = top_role or FakeRole(1, 1)
         self.guild_permissions = perms or FakePerms()
         self.display_avatar = None
@@ -99,17 +102,18 @@ class FakeMember:
 
 
 class FakeGuild:
-    def __init__(self, guild_id, me, members):
+    def __init__(self, guild_id, me, members, roles=()):
         self.id = guild_id
         self.name = "Test Guild"
         self.me = me
         self._members = {member.id: member for member in members}
+        self._roles = {role.id: role for role in roles}
 
     def get_member(self, user_id):
         return self._members.get(int(user_id))
 
-    def get_role(self, _role_id):
-        return None
+    def get_role(self, role_id):
+        return self._roles.get(int(role_id))
 
     def get_channel(self, _channel_id):
         return None
@@ -169,11 +173,22 @@ async def main():
         top_role=FakeRole(12, 20),
     )
     plain = FakeMember(505, name="Plain", top_role=FakeRole(13, 3))
-    guild = FakeGuild(guild_id, me, [me, target, moderator, staff, plain])
+    staff_role = FakeRole(606, 30)
+    # Holds the configured staff role and *no* Discord moderation permission:
+    # exactly who the staff-role rule is meant to let in.
+    staff_only = FakeMember(
+        707, name="StaffOnly", top_role=FakeRole(14, 4), roles=[staff_role]
+    )
+    guild = FakeGuild(
+        guild_id, me, [me, target, moderator, staff, plain, staff_only],
+        roles=[staff_role],
+    )
     bot.bot.config = {
         "server_id": guild_id,
         "punish_role_id": 555,
         "post_role_id": 556,
+        # Phase 1: no staff role configured yet - the historical permission
+        # rule applies, so the existing flow below keeps working.
         "staff_role_id": None,
         "dm_user": True,
     }
@@ -256,6 +271,40 @@ async def main():
         "title": clear_embed.title,
         "fields": {field.name: field.value for field in clear_embed.fields},
     }
+
+    # ---- Phase 2: a staff role is configured ------------------------- #
+    # From here on the staff role is the gate: a member who has Discord's
+    # Moderate Members permission but not the role may not moderate, and a
+    # member who has the role (and nothing else) may.
+    bot.bot.config["staff_role_id"] = staff_role.id
+    results["count_before_phase2"] = bot.count_warnings(guild_id, target.id)
+
+    refused = {}
+    for label, interaction, call in (
+        ("warn", FakeInteraction(guild, moderator), lambda i: cog._handle_warn(i, target, "nope")),
+        ("warnings", FakeInteraction(guild, moderator), lambda i: cog._handle_warnings(i, target, True)),
+        ("punish", FakeInteraction(guild, moderator), lambda i: cog._handle_punish(i, target, "1h", "nope")),
+        ("pardon", FakeInteraction(guild, moderator), lambda i: cog._handle_pardon(i, target)),
+        ("status", FakeInteraction(guild, moderator), lambda i: cog._handle_status(i, target)),
+    ):
+        await call(interaction)
+        refused[label] = interaction.replies
+    results["non_staff_refusals"] = refused
+    results["count_after_non_staff_attempts"] = bot.count_warnings(guild_id, target.id)
+
+    # Plain members are refused too, and told the same thing.
+    plain_attempt = FakeInteraction(guild, plain)
+    await cog._handle_warn(plain_attempt, target, "nope")
+    results["plain_refusal"] = plain_attempt.replies
+
+    # Holding the staff role is enough, with no Discord permission at all.
+    allowed = FakeInteraction(guild, staff_only)
+    await cog._handle_warn(allowed, target, "staff role warning")
+    results["staff_only_replies"] = allowed.replies
+    results["staff_only_count"] = bot.count_warnings(guild_id, target.id)
+    staff_status = FakeInteraction(guild, staff_only)
+    await cog._handle_status(staff_status, target)
+    results["staff_only_status"] = staff_status.replies
 
     with open(sys.argv[1], "w", encoding="utf-8") as fh:
         json.dump(results, fh)
@@ -346,11 +395,57 @@ class BotWarningCommandTests(unittest.TestCase):
         self.assertIn("spam in #general", listing)
         self.assertIn("<@303>", listing)
 
-    def test_clearing_requires_moderate_members(self) -> None:
-        self.assertIn(
-            "Moderate Members permission", "\n".join(self.result["clear_denied_replies"])
-        )
+    def test_clearing_is_refused_on_a_server_with_no_staff_role_yet(self) -> None:
+        """No staff role configured: the refusal says how to set one.
+
+        The old permission rule still applies in that state (see the phase-1
+        flow), so a member with no permissions at all is refused and pointed at
+        ``/manage setup staff_role:``.
+        """
+        reply = "\n".join(self.result["clear_denied_replies"])
+        self.assertIn("staff role", reply)
+        self.assertIn("/manage setup staff_role:", reply)
         self.assertEqual(self.result["count_after_denied_clear"], 2)
+
+    # ---- Phase 2: the staff role is the gate --------------------------- #
+
+    def test_every_moderation_command_refuses_a_non_staff_moderator(self) -> None:
+        """Moderate Members is not enough once a staff role is configured.
+
+        The harness calls all five handlers as a member who has Discord's
+        *Moderate Members* permission but not the staff role; each must refuse
+        with the same message (the role is mentioned) and change nothing.
+        """
+        refusals = self.result["non_staff_refusals"]
+        self.assertEqual(
+            sorted(refusals), ["pardon", "punish", "status", "warn", "warnings"]
+        )
+        for label, replies in refusals.items():
+            with self.subTest(command=label):
+                reply = "\n".join(replies)
+                self.assertIn("Only members with the <@&606> role", reply)
+                self.assertNotIn("Moderate Members", reply)
+        # The refused attempts recorded no warning at all.
+        self.assertEqual(
+            self.result["count_after_non_staff_attempts"],
+            self.result["count_before_phase2"],
+        )
+        self.assertIn(
+            "Only members with the <@&606> role", "\n".join(self.result["plain_refusal"])
+        )
+
+    def test_the_staff_role_alone_is_enough(self) -> None:
+        """A staff-role holder with no Discord permissions can moderate."""
+        self.assertIn(
+            "Warned <@202>", "\n".join(self.result["staff_only_replies"])
+        )
+        self.assertEqual(
+            self.result["staff_only_count"], self.result["count_before_phase2"] + 1
+        )
+        # ... and can read the command that shows member history.
+        self.assertIn(
+            "Punishment status for <@202>", "\n".join(self.result["staff_only_status"])
+        )
 
     def test_clear_removes_every_warning_and_reports_the_count(self) -> None:
         self.assertIn("Cleared **2** warning(s)", "\n".join(self.result["clear_replies"]))

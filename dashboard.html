@@ -283,6 +283,8 @@
         <button class="nav-btn active" data-page="overview"><span class="nav-icon">◈</span> Overview</button>
         <button class="nav-btn" data-page="punishments"><span class="nav-icon">⚑</span> Moderation</button>
         <button class="nav-btn" data-page="rules"><span class="nav-icon">§</span> Rules & reactions</button>
+        <button class="nav-btn" data-page="tickets"><span class="nav-icon">🎟</span> Tickets</button>
+        <button class="nav-btn" data-page="applications"><span class="nav-icon">📝</span> Applications</button>
         <button class="nav-btn" data-page="settings"><span class="nav-icon">⚙</span> Server settings</button>
         <button class="nav-btn" data-page="activity"><span class="nav-icon">◷</span> History</button>
       </nav>
@@ -514,6 +516,105 @@
         </article>
       </section>
 
+      <section id="page-tickets" class="page">
+        <div class="toolbar"><div><h2>Tickets</h2><p>Members open a ticket from a panel button; it stays private to them and staff. Members never see this page — the dashboard is staff-only, and there is no member-facing command that lists tickets.</p></div><div class="toolbar-right"><button id="refresh-tickets" class="btn secondary">↻ Refresh</button></div></div>
+        <div class="grid two-col">
+          <article class="card">
+            <div class="card-head"><div><h2 class="card-title">Ticket panel</h2><p class="card-desc">Publish (or re-publish) the message with one button per category. Republishing edits the existing message, so it never doubles up.</p></div><span id="ticket-panel-state" class="tag muted">Not published</span></div>
+            <form id="ticket-panel-form">
+              <div class="form-grid">
+                <div class="field"><label for="ticket-panel-channel">Panel channel</label><select id="ticket-panel-channel" required><option value="">Choose a text channel</option></select></div>
+                <div class="field"><label for="ticket-panel-title">Panel title <span class="hint">Optional</span></label><input id="ticket-panel-title" maxlength="256" placeholder="Support tickets"></div>
+                <div class="field full"><label for="ticket-panel-description">Panel text <span class="hint">Shown above the buttons</span></label><textarea id="ticket-panel-description" maxlength="4096" placeholder="Press a button below to open a private ticket."></textarea></div>
+              </div>
+              <div style="display:flex;gap:8px;margin-top:14px"><button class="btn" type="submit">Publish panel</button><button id="ticket-panel-refresh" class="btn secondary" type="button">↻ Reset form</button></div>
+            </form>
+          </article>
+          <article class="card">
+            <div class="card-head"><div><h2 class="card-title">How tickets arrive</h2><p class="card-desc">Threads are invite-only; channels use Discord permissions so a whole staff role gets access at once.</p></div></div>
+            <div class="form-grid">
+              <div class="field full"><label for="ticket-mode">Default mode <span class="hint">Each category can override it</span></label><select id="ticket-mode"><option value="thread">Private thread (recommended)</option><option value="channel">Private channel</option></select></div>
+              <div class="field full"><label for="ticket-log-channel">Staff notice channel <span class="hint">Where Claim/Close notices are posted</span></label><select id="ticket-log-channel"><option value="">Use the configured staff channel</option></select></div>
+              <div class="field full"><label for="ticket-category">Channel category <span class="hint">Where channel-mode tickets are created</span></label><select id="ticket-category"><option value="">Same category as the panel</option></select></div>
+            </div>
+            <div style="margin-top:14px"><button id="ticket-settings-save" class="btn" type="button">Save ticket settings</button></div>
+          </article>
+        </div>
+        <div class="grid two-col" style="margin-top:16px">
+          <article class="card">
+            <div class="card-head"><div><h2 class="card-title">Categories</h2><p class="card-desc">One button per category. A category can use its own staff role and mode.</p></div><span id="ticket-category-total" class="tag muted">0 categories</span></div>
+            <div id="ticket-category-list" class="table-wrap"><div class="empty">Loading categories…</div></div>
+          </article>
+          <article class="card">
+            <div class="card-head"><div><h2 class="card-title">Add or update a category</h2><p class="card-desc">Saving with an existing name updates that button instead of adding a second one.</p></div><span id="ticket-category-state" class="tag muted">New category</span></div>
+            <form id="ticket-category-form">
+              <div class="form-grid">
+                <div class="field"><label for="ticket-category-label">Name</label><input id="ticket-category-label" maxlength="80" placeholder="General help" required></div>
+                <div class="field"><label for="ticket-category-emoji">Emoji <span class="hint">Optional</span></label><input id="ticket-category-emoji" maxlength="100" placeholder="❓"></div>
+                <div class="field"><label for="ticket-category-role">Staff role <span class="hint">Overrides the server staff role</span></label><select id="ticket-category-role"><option value="">Server staff role</option></select></div>
+                <div class="field"><label for="ticket-category-mode">Mode <span class="hint">Inherits the default when empty</span></label><select id="ticket-category-mode"><option value="">Inherit default</option><option value="thread">Private thread</option><option value="channel">Private channel</option></select></div>
+                <div class="field full"><label for="ticket-category-description">Description <span class="hint">Shown in the panel's category list</span></label><input id="ticket-category-description" maxlength="200" placeholder="Questions about the server"></div>
+                <div class="field"><label for="ticket-category-subject">Ask for a subject <span class="hint">Modal before opening</span></label><select id="ticket-category-subject"><option value="true">Yes</option><option value="false">No</option></select></div>
+                <div class="field"><label for="ticket-category-ping">Ping the staff role</label><select id="ticket-category-ping"><option value="true">Yes</option><option value="false">No</option></select></div>
+              </div>
+              <div style="display:flex;gap:8px;margin-top:14px"><button class="btn" type="submit">Save category</button><button id="ticket-category-cancel" class="btn secondary" type="button">Cancel edit</button></div>
+            </form>
+          </article>
+        </div>
+        <article class="card" style="margin-top:16px">
+          <div class="card-head"><div><h2 class="card-title">Open and closed tickets</h2><p class="card-desc">Closing locks the ticket and keeps the record; deleting removes the thread/channel too.</p></div><div style="display:flex;align-items:center;gap:8px"><select id="ticket-status-filter" style="width:auto"><option value="all">All statuses</option><option value="open">Open and claimed</option><option value="closed">Closed</option></select><span id="ticket-total" class="tag muted">0 shown</span></div></div>
+          <div id="ticket-table" class="table-wrap"><div class="empty">Loading tickets…</div></div>
+        </article>
+      </section>
+      <section id="page-applications" class="page">
+        <div class="toolbar"><div><h2>Applications</h2><p>Members fill in a form from /apply or a panel button. Answers land in the review channel and here; only staff can read or decide them.</p></div><div class="toolbar-right"><button id="refresh-applications" class="btn secondary">↻ Refresh</button></div></div>
+        <div class="grid two-col">
+          <article class="card">
+            <div class="card-head"><div><h2 class="card-title">Forms</h2><p class="card-desc">Each form has its own questions, review channel and panel.</p></div><span id="application-form-total" class="tag muted">0 forms</span></div>
+            <div id="application-form-list" class="table-wrap"><div class="empty">No application forms yet — create one on the right.</div></div>
+          </article>
+          <article class="card">
+            <div class="card-head"><div><h2 class="card-title">Form editor</h2><p class="card-desc">Up to five questions (Discord's modal limit). A question can be a one-line box or a paragraph.</p></div><span id="application-form-state" class="tag muted">New form</span></div>
+            <form id="application-form">
+              <input type="hidden" id="application-form-id">
+              <div class="form-grid">
+                <div class="field"><label for="application-name">Name</label><input id="application-name" maxlength="80" placeholder="Staff application" required></div>
+                <div class="field"><label for="application-review-channel">Review channel</label><select id="application-review-channel" required><option value="">Choose a text channel</option></select></div>
+                <div class="field"><label for="application-accept-role">Role on approval <span class="hint">Optional</span></label><select id="application-accept-role"><option value="">Don't change roles</option></select></div>
+                <div class="field"><label for="application-remove-role">Role on denial <span class="hint">Optional</span></label><select id="application-remove-role"><option value="">Don't change roles</option></select></div>
+                <div class="field full"><label for="application-description">Description <span class="hint">Shown on the panel</span></label><input id="application-description" maxlength="300" placeholder="Apply to join the staff team"></div>
+                <div class="field"><label for="application-allow-multiple">Allow repeat applications</label><select id="application-allow-multiple"><option value="false">No — one pending at a time</option><option value="true">Yes</option></select></div>
+              </div>
+              <div class="field full" style="margin-top:14px"><label>Questions <span id="application-question-count" class="hint">0 / 5</span></label><div id="application-questions"></div><button id="application-question-add" class="btn secondary small" type="button" style="margin-top:8px">+ Add question</button></div>
+              <div style="display:flex;gap:8px;margin-top:14px"><button class="btn" type="submit">Save form</button><button id="application-form-cancel" class="btn secondary" type="button">Cancel edit</button></div>
+            </form>
+          </article>
+        </div>
+        <div class="grid two-col" style="margin-top:16px">
+          <article class="card">
+            <div class="card-head"><div><h2 class="card-title">Publish a panel</h2><p class="card-desc">Posts an Apply button for the chosen form. Members press it, answer the modal, and you get a review card.</p></div><span id="application-panel-state" class="tag muted">Not published</span></div>
+            <form id="application-panel-publish">
+              <div class="form-grid">
+                <div class="field"><label for="application-panel-form">Form</label><select id="application-panel-form" required><option value="">Choose a form</option></select></div>
+                <div class="field"><label for="application-panel-channel">Channel</label><select id="application-panel-channel" required><option value="">Choose a text channel</option></select></div>
+                <div class="field"><label for="application-panel-title">Panel title <span class="hint">Optional</span></label><input id="application-panel-title" maxlength="256" placeholder="Applications"></div>
+                <div class="field"><label for="application-panel-description">Panel text <span class="hint">Optional</span></label><input id="application-panel-description" maxlength="4096" placeholder="Press the button below to apply"></div>
+              </div>
+              <div style="margin-top:14px"><button class="btn" type="submit">Publish panel</button></div>
+            </form>
+          </article>
+          <article class="card">
+            <div class="card-head"><div><h2 class="card-title">Guidance</h2><p class="card-desc">What members can and cannot do.</p></div></div>
+            <div class="inline-status disabled"><div class="status-icon">!</div><div><strong>Members can only submit</strong><span>They never see this page, the submissions, or anyone else's answers. There is no command that lists applications for them — /apply only opens the form.</span></div></div>
+            <div class="inline-status" style="margin-top:10px"><div class="status-icon">✓</div><div><strong>Decisions notify the applicant</strong><span>Approving or denying DMs them the outcome and can add or remove the role you chose for the form.</span></div></div>
+          </article>
+        </div>
+        <article class="card" style="margin-top:16px">
+          <div class="card-head"><div><h2 class="card-title">Submissions</h2><p class="card-desc">Newest first. Approve or deny straight from here — the same decision the Discord buttons record.</p></div><div style="display:flex;align-items:center;gap:8px"><select id="application-status-filter" style="width:auto"><option value="pending">Pending</option><option value="approved">Approved</option><option value="denied">Denied</option><option value="all">All</option></select><span id="application-total" class="tag muted">0 shown</span></div></div>
+          <div id="application-table" class="table-wrap"><div class="empty">Loading applications…</div></div>
+          <div id="application-detail" style="margin-top:14px"></div>
+        </article>
+      </section>
       <section id="page-settings" class="page">
         <div class="toolbar"><div><h2>Server configuration</h2><p>Configure punishment roles, staff notifications, and user DMs.</p></div></div>
         <div class="banner"><span>ⓘ</span><span><strong>Role hierarchy matters.</strong> The bot's role must be above the punish and post-punishment roles. The staff channel and DM setting are saved for the selected server.</span></div>
@@ -549,10 +650,12 @@
         overview: ["Control center", "Overview", "Monitor connected servers and active moderation."],
         punishments: ["Moderation", "Moderation", "Manage timed role actions, warnings, and active cases."],
         rules: ["Community", "Rules & reactions", "Publish the rules post and build multi-role reaction menus."],
+        tickets: ["Support", "Tickets", "Publish the ticket panel, tune categories and handle open tickets."],
+        applications: ["Recruiting", "Applications", "Build application forms, publish panels and decide submissions."],
         settings: ["Configuration", "Server settings", "Set role flow, staff alerts, and member notifications."],
         activity: ["Audit trail", "History", "Review recent completed and pardoned cases."],
       };
-      const state = { csrf: "", guildId: sessionStorage.getItem("pm.guild") || "", page: "overview", overview: null, detail: null, toastTimer: null, reactionPosts: [], reactionConfig: null, reactionEditId: null };
+      const state = { csrf: "", guildId: sessionStorage.getItem("pm.guild") || "", page: "overview", overview: null, detail: null, toastTimer: null, reactionPosts: [], reactionConfig: null, reactionEditId: null, ticketSettings: null, tickets: [], applicationForms: [], applications: [], applicationEditId: null, applicationDetailId: null };
       const $ = (id) => document.getElementById(id);
       const escapeHtml = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 
@@ -892,6 +995,8 @@
           await loadReactionRoles();
           await refreshReactionPreview();
         }
+        if (page === "tickets") await loadTickets();
+        if (page === "applications") await loadApplications();
       }
 
       async function loadPunishments() {
@@ -1512,6 +1617,407 @@
       $("refresh-punishments").addEventListener("click", () => loadPunishments().catch((e) => showToast(friendlyError(e.message), true)));
       $("refresh-warnings").addEventListener("click", () => loadWarnings().catch((e) => showToast(friendlyError(e.message), true)));
       $("refresh-history").addEventListener("click", () => loadHistory().catch((e) => showToast(friendlyError(e.message), true)));
+
+
+      // ---- Tickets ------------------------------------------------------ //
+      // Everything these pages do is a staff action: the routes live behind the
+      // dashboard token, and the bot re-checks permissions inside every button
+      // handler it publishes. Members have no equivalent page or command.
+      function ticketModeLabel(mode) { return mode === "channel" ? "Private channel" : "Private thread"; }
+
+      function renderTicketCategories() {
+        const settings = state.ticketSettings || {};
+        const categories = settings.categories || [];
+        $("ticket-category-total").textContent = `${categories.length} categor${categories.length === 1 ? "y" : "ies"}`;
+        const root = $("ticket-category-list");
+        if (!categories.length) {
+          root.innerHTML = `<div class="empty"><strong>No categories yet</strong>Add one on the right, then publish the panel.</div>`;
+          return;
+        }
+        root.innerHTML = `<table><thead><tr><th>Button</th><th>Mode</th><th>Staff role</th><th>Opens with</th><th>Action</th></tr></thead><tbody>${categories.map((category) => `
+          <tr>
+            <td><strong>${escapeHtml(category.emoji ? `${category.emoji} ` : "")}${escapeHtml(category.label)}</strong>${category.description ? `<div class="subtle">${escapeHtml(category.description)}</div>` : ""}</td>
+            <td>${escapeHtml(category.mode ? ticketModeLabel(category.mode) : `Default (${ticketModeLabel(settings.mode)})`)}</td>
+            <td>${category.staffRoleName ? escapeHtml(category.staffRoleName) : "<span class=\"subtle\">Server staff role</span>"}</td>
+            <td>${category.askSubject ? "Subject prompt" : "Straight in"}</td>
+            <td><button class="btn secondary small ticket-category-edit" data-category="${escapeHtml(category.categoryId)}" type="button">Edit</button> <button class="btn danger small ticket-category-remove" data-category="${escapeHtml(category.categoryId)}" type="button">Remove</button></td>
+          </tr>`).join("")}</tbody></table>`;
+        root.querySelectorAll(".ticket-category-edit").forEach((button) => button.addEventListener("click", () => startTicketCategoryEdit(button.dataset.category)));
+        root.querySelectorAll(".ticket-category-remove").forEach((button) => button.addEventListener("click", () => removeTicketCategory(button.dataset.category)));
+      }
+
+      function startTicketCategoryEdit(categoryId) {
+        const category = (state.ticketSettings?.categories || []).find((item) => item.categoryId === categoryId);
+        if (!category) return;
+        $("ticket-category-label").value = category.label || "";
+        $("ticket-category-emoji").value = category.emoji || "";
+        $("ticket-category-role").value = category.staffRoleId || "";
+        $("ticket-category-mode").value = category.mode || "";
+        $("ticket-category-description").value = category.description || "";
+        $("ticket-category-subject").value = String(category.askSubject !== false);
+        $("ticket-category-ping").value = String(category.pingStaff !== false);
+        $("ticket-category-state").textContent = `Editing ${category.label}`;
+        $("ticket-category-label").dataset.category = category.categoryId;
+        $("ticket-category-label").focus();
+      }
+
+      function cancelTicketCategoryEdit() {
+        delete $("ticket-category-label").dataset.category;
+        $("ticket-category-form").reset();
+        $("ticket-category-state").textContent = "New category";
+      }
+
+      async function removeTicketCategory(categoryId) {
+        try {
+          await api(`/api/guilds/${encodeURIComponent(state.guildId)}/tickets/categories/${encodeURIComponent(categoryId)}`, { method: "DELETE" });
+          showToast("Category removed. Publish the panel to update the buttons.");
+          await loadTickets();
+        } catch (error) { showToast(friendlyError(error.message), true); }
+      }
+
+      function renderTickets() {
+        const tickets = state.tickets || [];
+        $("ticket-total").textContent = `${tickets.length} shown`;
+        const root = $("ticket-table");
+        if (!tickets.length) {
+          root.innerHTML = `<div class="empty"><strong>No tickets here</strong>Members open them from the panel buttons.</div>`;
+          return;
+        }
+        root.innerHTML = `<table><thead><tr><th>Ticket</th><th>Member</th><th>Category</th><th>Mode</th><th>Status</th><th>Claimed</th><th>Opened</th><th>Action</th></tr></thead><tbody>${tickets.map((ticket) => `
+          <tr>
+            <td>${ticket.jumpUrl ? `<a href="${escapeHtml(ticket.jumpUrl)}" target="_blank" rel="noopener">${escapeHtml(ticket.location)}</a>` : escapeHtml(ticket.location)}<div class="subtle">#${String(ticket.number || 0).padStart(4, "0")}</div></td>
+            <td>&lt;@${escapeHtml(ticket.userId)}&gt;</td>
+            <td>${escapeHtml(ticket.categoryLabel)}</td>
+            <td>${escapeHtml(ticketModeLabel(ticket.mode))}</td>
+            <td>${escapeHtml(ticket.status)}</td>
+            <td>${ticket.claimedBy ? `&lt;@${escapeHtml(ticket.claimedBy)}&gt;` : "<span class=\"subtle\">—</span>"}</td>
+            <td>${escapeHtml(formatDate(ticket.createdAt))}</td>
+            <td>
+              ${ticket.status === "closed"
+                ? `<button class="btn secondary small ticket-reopen" data-ticket="${escapeHtml(ticket.id)}" type="button">Reopen</button>`
+                : `<button class="btn secondary small ticket-close" data-ticket="${escapeHtml(ticket.id)}" type="button">Close</button>`}
+              <button class="btn danger small ticket-delete" data-ticket="${escapeHtml(ticket.id)}" type="button">Delete</button>
+            </td>
+          </tr>`).join("")}</tbody></table>`;
+        root.querySelectorAll(".ticket-close").forEach((button) => button.addEventListener("click", () => closeTicket(button.dataset.ticket)));
+        root.querySelectorAll(".ticket-reopen").forEach((button) => button.addEventListener("click", () => reopenTicket(button.dataset.ticket)));
+        root.querySelectorAll(".ticket-delete").forEach((button) => button.addEventListener("click", () => deleteTicket(button.dataset.ticket)));
+      }
+
+      async function loadTickets() {
+        if (!state.guildId) return;
+        const status = $("ticket-status-filter").value || "all";
+        const result = await api(`/api/guilds/${encodeURIComponent(state.guildId)}/tickets?status=${encodeURIComponent(status)}`);
+        state.ticketSettings = result.settings || {};
+        state.tickets = result.tickets || [];
+        const panel = state.ticketSettings.panel || {};
+        $("ticket-panel-state").textContent = panel.messageId ? "Published" : "Not published";
+        $("ticket-panel-state").classList.toggle("success", Boolean(panel.messageId));
+        $("ticket-panel-state").classList.toggle("muted", !panel.messageId);
+        $("ticket-mode").value = state.ticketSettings.mode || "thread";
+        fillSelect("ticket-log-channel", state.detail?.channels || [], state.ticketSettings.logChannelId, "Use the configured staff channel");
+        fillSelect("ticket-category", state.detail?.categories || [], state.ticketSettings.categoryId, "Same category as the panel");
+        fillSelect("ticket-panel-channel", state.detail?.channels || [], panel.channelId, "Choose a text channel");
+        if (panel.title) $("ticket-panel-title").value = panel.title;
+        if (panel.description) $("ticket-panel-description").value = panel.description;
+        fillSelect("ticket-category-role", state.detail?.roles || [], null, "Server staff role");
+        renderTicketCategories();
+        renderTickets();
+      }
+
+      async function closeTicket(ticketId) {
+        const reason = window.prompt("Reason for closing this ticket (optional):") || "";
+        try {
+          await api(`/api/guilds/${encodeURIComponent(state.guildId)}/tickets/${encodeURIComponent(ticketId)}/close`, { method: "POST", body: JSON.stringify({ reason }) });
+          showToast("Ticket closed."); await loadTickets();
+        } catch (error) { showToast(friendlyError(error.message), true); }
+      }
+
+      async function reopenTicket(ticketId) {
+        try {
+          await api(`/api/guilds/${encodeURIComponent(state.guildId)}/tickets/${encodeURIComponent(ticketId)}/reopen`, { method: "POST", body: "{}" });
+          showToast("Ticket reopened."); await loadTickets();
+        } catch (error) { showToast(friendlyError(error.message), true); }
+      }
+
+      async function deleteTicket(ticketId) {
+        if (!window.confirm("Delete this ticket? The thread/channel is removed from Discord and the record is deleted.")) return;
+        try {
+          await api(`/api/guilds/${encodeURIComponent(state.guildId)}/tickets/${encodeURIComponent(ticketId)}`, { method: "DELETE" });
+          showToast("Ticket deleted."); await loadTickets();
+        } catch (error) { showToast(friendlyError(error.message), true); }
+      }
+
+      // ---- Applications ------------------------------------------------- //
+      function applicationQuestionRow(question = {}) {
+        const row = document.createElement("div");
+        row.className = "form-grid";
+        row.style.cssText = "margin-bottom:10px;padding:10px;border:1px solid var(--line);border-radius:10px";
+        row.innerHTML = `
+          <div class="field"><label>Question <span class="hint">Max 45 characters</span></label><input class="application-question-label" maxlength="45" value="${escapeHtml(question.label || "")}" placeholder="Why do you want to join?" required></div>
+          <div class="field"><label>Answer box</label><select class="application-question-style"><option value="paragraph">Paragraph</option><option value="short">One line</option></select></div>
+          <div class="field"><label>Required</label><select class="application-question-required"><option value="true">Yes</option><option value="false">No</option></select></div>
+          <div class="field"><label>Placeholder <span class="hint">Optional</span></label><input class="application-question-placeholder" maxlength="100" value="${escapeHtml(question.placeholder || "")}" placeholder="Tell us in your own words"></div>
+          <div class="field full"><button class="btn danger small application-question-remove" type="button">Remove question</button></div>`;
+        row.querySelector(".application-question-style").value = question.style === "short" ? "short" : "paragraph";
+        row.querySelector(".application-question-required").value = String(question.required !== false);
+        row.querySelector(".application-question-remove").addEventListener("click", () => { row.remove(); updateApplicationQuestionCount(); });
+        return row;
+      }
+
+      function updateApplicationQuestionCount() {
+        const total = $("application-questions").querySelectorAll(".application-question-label").length;
+        $("application-question-count").textContent = `${total} / 5`;
+      }
+
+      function addApplicationQuestion(question) {
+        const root = $("application-questions");
+        if (root.querySelectorAll(".application-question-label").length >= 5) { showToast("A form can hold five questions.", true); return; }
+        root.appendChild(applicationQuestionRow(question));
+        updateApplicationQuestionCount();
+      }
+
+      function readApplicationQuestions() {
+        return [...$("application-questions").querySelectorAll(".form-grid")].map((row) => ({
+          label: row.querySelector(".application-question-label").value.trim(),
+          style: row.querySelector(".application-question-style").value,
+          required: row.querySelector(".application-question-required").value === "true",
+          placeholder: row.querySelector(".application-question-placeholder").value.trim() || null,
+        })).filter((question) => question.label);
+      }
+
+      function renderApplicationForms() {
+        const forms = state.applicationForms || [];
+        $("application-form-total").textContent = `${forms.length} form${forms.length === 1 ? "" : "s"}`;
+        const root = $("application-form-list");
+        if (!forms.length) {
+          root.innerHTML = `<div class="empty"><strong>No forms yet</strong>Create one on the right, then publish its panel.</div>`;
+        } else {
+          root.innerHTML = `<table><thead><tr><th>Form</th><th>Questions</th><th>Reviews in</th><th>Panel</th><th>Action</th></tr></thead><tbody>${forms.map((form) => `
+            <tr>
+              <td><strong>${escapeHtml(form.name)}</strong>${form.description ? `<div class="subtle">${escapeHtml(form.description)}</div>` : ""}</td>
+              <td>${form.questions.length}</td>
+              <td>${form.reviewChannelId ? `&lt;#${escapeHtml(form.reviewChannelId)}&gt;` : "<span class=\"subtle\">not set</span>"}</td>
+              <td>${form.panelChannelId ? "Published" : "<span class=\"subtle\">Not published</span>"}</td>
+              <td><button class="btn secondary small application-form-edit" data-form="${escapeHtml(form.formId)}" type="button">Edit</button> <button class="btn secondary small application-form-panel" data-form="${escapeHtml(form.formId)}" type="button">Panel</button> <button class="btn danger small application-form-remove" data-form="${escapeHtml(form.formId)}" type="button">Delete</button></td>
+            </tr>`).join("")}</tbody></table>`;
+          root.querySelectorAll(".application-form-edit").forEach((button) => button.addEventListener("click", () => startApplicationFormEdit(button.dataset.form)));
+          root.querySelectorAll(".application-form-panel").forEach((button) => button.addEventListener("click", () => { $("application-panel-form").value = button.dataset.form; $("application-panel-channel").focus(); showToast("Pick a channel and press Publish panel."); }));
+          root.querySelectorAll(".application-form-remove").forEach((button) => button.addEventListener("click", () => removeApplicationForm(button.dataset.form)));
+        }
+        const select = $("application-panel-form");
+        const wanted = select.value;
+        select.innerHTML = forms.length
+          ? forms.map((form) => `<option value="${escapeHtml(form.formId)}">${escapeHtml(form.name)}</option>`).join("")
+          : `<option value="">No forms yet</option>`;
+        if (wanted && forms.some((form) => form.formId === wanted)) select.value = wanted;
+      }
+
+      function startApplicationFormEdit(formId) {
+        const form = (state.applicationForms || []).find((item) => item.formId === formId);
+        if (!form) return;
+        state.applicationEditId = formId;
+        $("application-form-id").value = formId;
+        $("application-name").value = form.name || "";
+        $("application-description").value = form.description || "";
+        fillSelect("application-review-channel", state.detail?.channels || [], form.reviewChannelId, "Choose a text channel");
+        fillSelect("application-accept-role", state.detail?.roles || [], form.acceptRoleId, "Don't change roles");
+        fillSelect("application-remove-role", state.detail?.roles || [], form.removeRoleId, "Don't change roles");
+        $("application-allow-multiple").value = String(Boolean(form.allowMultiple));
+        $("application-questions").innerHTML = "";
+        (form.questions || []).forEach((question) => addApplicationQuestion(question));
+        updateApplicationQuestionCount();
+        $("application-form-state").textContent = `Editing ${form.name}`;
+        $("application-name").focus();
+      }
+
+      function cancelApplicationFormEdit() {
+        state.applicationEditId = null;
+        $("application-form").reset();
+        $("application-form-id").value = "";
+        $("application-questions").innerHTML = "";
+        addApplicationQuestion({ label: "Why do you want to join?", style: "paragraph", required: true });
+        updateApplicationQuestionCount();
+        $("application-form-state").textContent = "New form";
+      }
+
+      async function removeApplicationForm(formId) {
+        if (!window.confirm("Delete this form? Submissions already received stay in the list below.")) return;
+        try {
+          await api(`/api/guilds/${encodeURIComponent(state.guildId)}/applications/forms/${encodeURIComponent(formId)}`, { method: "DELETE" });
+          showToast("Form deleted."); await loadApplications();
+        } catch (error) { showToast(friendlyError(error.message), true); }
+      }
+
+      function renderApplications() {
+        const applications = state.applications || [];
+        $("application-total").textContent = `${applications.length} shown`;
+        const root = $("application-table");
+        if (!applications.length) {
+          root.innerHTML = `<div class="empty"><strong>No submissions here</strong>Members apply with /apply or a panel button.</div>`;
+        } else {
+          root.innerHTML = `<table><thead><tr><th>#</th><th>Form</th><th>Member</th><th>Status</th><th>Submitted</th><th>Action</th></tr></thead><tbody>${applications.map((application) => `
+            <tr>
+              <td>${escapeHtml(application.id)}</td>
+              <td>${escapeHtml(application.formName)}</td>
+              <td>&lt;@${escapeHtml(application.userId)}&gt;</td>
+              <td>${escapeHtml(application.status)}</td>
+              <td>${escapeHtml(formatDate(application.submittedAt))}</td>
+              <td>
+                <button class="btn secondary small application-view" data-application="${escapeHtml(application.id)}" type="button">View</button>
+                ${application.status === "pending" ? `
+                  <button class="btn small application-approve" data-application="${escapeHtml(application.id)}" type="button">Approve</button>
+                  <button class="btn danger small application-deny" data-application="${escapeHtml(application.id)}" type="button">Deny</button>` : ""}
+              </td>
+            </tr>`).join("")}</tbody></table>`;
+          root.querySelectorAll(".application-view").forEach((button) => button.addEventListener("click", () => renderApplicationDetail(button.dataset.application)));
+          root.querySelectorAll(".application-approve").forEach((button) => button.addEventListener("click", () => decideApplication(button.dataset.application, "approve")));
+          root.querySelectorAll(".application-deny").forEach((button) => button.addEventListener("click", () => decideApplication(button.dataset.application, "deny")));
+        }
+        renderApplicationDetail(state.applicationDetailId);
+      }
+
+      function renderApplicationDetail(applicationId) {
+        state.applicationDetailId = applicationId;
+        const root = $("application-detail");
+        const application = (state.applications || []).find((item) => item.id === applicationId);
+        if (!application) { root.innerHTML = ""; return; }
+        root.innerHTML = `
+          <article class="card">
+            <div class="card-head"><div><h2 class="card-title">Application ${escapeHtml(application.id)} — ${escapeHtml(application.formName)}</h2><p class="card-desc">Submitted by &lt;@${escapeHtml(application.userId)}&gt; · ${escapeHtml(formatDate(application.submittedAt))}</p></div><span class="tag ${application.status === "approved" ? "success" : application.status === "denied" ? "warn" : "muted"}">${escapeHtml(application.status)}</span></div>
+            ${(application.answers || []).map((pair, index) => `<div class="field" style="margin-bottom:10px"><label>${index + 1}. ${escapeHtml(pair.question)}</label><div class="subtle" style="white-space:pre-wrap">${escapeHtml(pair.answer || "(left blank)")}</div></div>`).join("")}
+            ${application.decisionNote ? `<div class="field"><label>Decision note</label><div class="subtle">${escapeHtml(application.decisionNote)}</div></div>` : ""}
+            <div style="margin-top:12px"><button class="btn secondary small" type="button" id="application-detail-close">Close</button></div>
+          </article>`;
+        $("application-detail-close").addEventListener("click", () => { state.applicationDetailId = null; root.innerHTML = ""; });
+      }
+
+      async function decideApplication(applicationId, decision) {
+        const note = window.prompt(`${decision === "approve" ? "Approve" : "Deny"} application ${applicationId}. Note for the applicant (optional):`) || "";
+        try {
+          await api(`/api/guilds/${encodeURIComponent(state.guildId)}/applications/${encodeURIComponent(applicationId)}/decision`, { method: "POST", body: JSON.stringify({ decision, note }) });
+          showToast(`Application ${decision === "approve" ? "approved" : "denied"}.`);
+          await loadApplications();
+        } catch (error) { showToast(friendlyError(error.message), true); }
+      }
+
+      async function loadApplications() {
+        if (!state.guildId) return;
+        const status = $("application-status-filter").value || "pending";
+        const result = await api(`/api/guilds/${encodeURIComponent(state.guildId)}/applications?status=${encodeURIComponent(status)}`);
+        state.applicationForms = result.forms || [];
+        state.applications = result.applications || [];
+        fillSelect("application-review-channel", state.detail?.channels || [], null, "Choose a text channel");
+        fillSelect("application-accept-role", state.detail?.roles || [], null, "Don't change roles");
+        fillSelect("application-remove-role", state.detail?.roles || [], null, "Don't change roles");
+        fillSelect("application-panel-channel", state.detail?.channels || [], null, "Choose a text channel");
+        renderApplicationForms();
+        renderApplications();
+      }
+
+      // ---- Wiring ------------------------------------------------------- //
+      $("refresh-tickets").addEventListener("click", () => loadTickets().catch((error) => showToast(friendlyError(error.message), true)));
+      $("ticket-status-filter").addEventListener("change", () => loadTickets().catch((error) => showToast(friendlyError(error.message), true)));
+      $("ticket-category-cancel").addEventListener("click", cancelTicketCategoryEdit);
+      $("ticket-settings-save").addEventListener("click", async (event) => {
+        const button = event.currentTarget; button.disabled = true;
+        try {
+          await api(`/api/guilds/${encodeURIComponent(state.guildId)}/tickets/settings`, {
+            method: "PUT",
+            body: JSON.stringify({
+              mode: $("ticket-mode").value,
+              logChannelId: $("ticket-log-channel").value || null,
+              categoryId: $("ticket-category").value || null,
+            }),
+          });
+          showToast("Ticket settings saved."); await loadTickets();
+        } catch (error) { showToast(friendlyError(error.message), true); }
+        finally { button.disabled = false; }
+      });
+      $("ticket-panel-form").addEventListener("submit", async (event) => {
+        event.preventDefault(); const button = event.submitter; button.disabled = true;
+        try {
+          await api(`/api/guilds/${encodeURIComponent(state.guildId)}/tickets/panel`, {
+            method: "POST",
+            body: JSON.stringify({
+              channelId: $("ticket-panel-channel").value,
+              title: $("ticket-panel-title").value.trim() || null,
+              description: $("ticket-panel-description").value.trim() || null,
+            }),
+          });
+          showToast("Ticket panel published."); await loadTickets();
+        } catch (error) { showToast(friendlyError(error.message), true); }
+        finally { button.disabled = false; }
+      });
+      $("ticket-panel-refresh").addEventListener("click", () => {
+        $("ticket-panel-title").value = state.ticketSettings?.panel?.title || "";
+        $("ticket-panel-description").value = state.ticketSettings?.panel?.description || "";
+      });
+      $("ticket-category-form").addEventListener("submit", async (event) => {
+        event.preventDefault(); const button = event.submitter; button.disabled = true;
+        const editing = $("ticket-category-label").dataset.category || null;
+        try {
+          await api(`/api/guilds/${encodeURIComponent(state.guildId)}/tickets/categories`, {
+            method: "POST",
+            body: JSON.stringify({
+              categoryId: editing,
+              label: $("ticket-category-label").value.trim(),
+              emoji: $("ticket-category-emoji").value.trim() || null,
+              staffRoleId: $("ticket-category-role").value || null,
+              mode: $("ticket-category-mode").value || null,
+              description: $("ticket-category-description").value.trim() || null,
+              askSubject: $("ticket-category-subject").value === "true",
+              pingStaff: $("ticket-category-ping").value === "true",
+            }),
+          });
+          showToast("Category saved. Publish the panel to update the buttons.");
+          cancelTicketCategoryEdit(); await loadTickets();
+        } catch (error) { showToast(friendlyError(error.message), true); }
+        finally { button.disabled = false; }
+      });
+      $("refresh-applications").addEventListener("click", () => loadApplications().catch((error) => showToast(friendlyError(error.message), true)));
+      $("application-status-filter").addEventListener("change", () => loadApplications().catch((error) => showToast(friendlyError(error.message), true)));
+      $("application-question-add").addEventListener("click", () => addApplicationQuestion());
+      $("application-form-cancel").addEventListener("click", cancelApplicationFormEdit);
+      $("application-form").addEventListener("submit", async (event) => {
+        event.preventDefault(); const button = event.submitter; button.disabled = true;
+        try {
+          const questions = readApplicationQuestions();
+          if (!questions.length) throw new Error("Add at least one question.");
+          await api(`/api/guilds/${encodeURIComponent(state.guildId)}/applications/forms`, {
+            method: "POST",
+            body: JSON.stringify({
+              formId: $("application-form-id").value || null,
+              name: $("application-name").value.trim(),
+              description: $("application-description").value.trim() || null,
+              reviewChannelId: $("application-review-channel").value,
+              acceptRoleId: $("application-accept-role").value || null,
+              removeRoleId: $("application-remove-role").value || null,
+              allowMultiple: $("application-allow-multiple").value === "true",
+              questions,
+            }),
+          });
+          showToast("Form saved.");
+          cancelApplicationFormEdit(); await loadApplications();
+        } catch (error) { showToast(friendlyError(error.message), true); }
+        finally { button.disabled = false; }
+      });
+      $("application-panel-publish").addEventListener("submit", async (event) => {
+        event.preventDefault(); const button = event.submitter; button.disabled = true;
+        const formId = $("application-panel-form").value;
+        try {
+          await api(`/api/guilds/${encodeURIComponent(state.guildId)}/applications/forms/${encodeURIComponent(formId)}/panel`, {
+            method: "POST",
+            body: JSON.stringify({
+              channelId: $("application-panel-channel").value,
+              title: $("application-panel-title").value.trim() || null,
+              description: $("application-panel-description").value.trim() || null,
+            }),
+          });
+          showToast("Application panel published."); await loadApplications();
+        } catch (error) { showToast(friendlyError(error.message), true); }
+        finally { button.disabled = false; }
+      });
 
       async function initialize() {
         try {

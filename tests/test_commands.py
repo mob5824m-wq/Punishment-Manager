@@ -18,8 +18,10 @@ the consequences of that shape:
 * only the top-level command is uploaded (guild copies are taken from the
   local tree, so the empty global upload cannot empty the bot);
 * Discord applies ``default_member_permissions`` to the top-level command
-  only, so the administrative sub-commands re-check for *Administrator* when
-  they run - see ``test_admin_commands_refuse_non_admins``.
+  only, and Sentinel leaves it unset: the commands re-check their own rules at
+  runtime instead - *Administrator* for the administrative ones
+  (``test_admin_commands_refuse_non_admins``) and the configured staff role for
+  moderation.
 
 The bot logs that and keeps running (it has to: the scheduler that releases
 punished members lives in the same process), so it looked healthy while Discord
@@ -216,8 +218,8 @@ async def main():
     fix_start = len(events)
     await cog._handle_fixcommands(interaction)
 
-    # The group is offered to everyone with Moderate Members, so the admin-only
-    # commands have to refuse a caller who is not an administrator.
+    # The group carries no Discord permission gate, so the admin-only commands
+    # have to refuse a caller who is not an administrator.
     refusal_start = len(events)
     non_admin = FakeInteraction(202, administrator=False)
     await cog._handle_fixcommands(non_admin)
@@ -445,14 +447,49 @@ class CommandTreeTests(unittest.TestCase):
             "manage status", "manage setup", "manage fixcommands",
             "manage rules", "manage rules publish", "manage rules disable",
             "manage rules list",
+            "manage tickets", "manage tickets panel", "manage tickets category",
+            "manage tickets console",
+            "manage applications", "manage applications form",
+            "manage applications panel", "manage applications review",
+            "manage applications decide",
+            "apply", "ticket",
         ):
             self.assertIn(expected, names, f"command tree has: {sorted(names)}")
 
-    def test_every_command_hangs_off_the_manage_group(self) -> None:
-        """Everything lives under /manage: one upload, one place to look."""
+    def test_only_three_commands_are_top_level(self) -> None:
+        """Three top-level commands, and each one is deliberate.
+
+        ``/manage`` is the whole staff surface (gated at runtime, not by
+        Discord). ``/apply`` and ``/ticket`` are the member-facing commands:
+        they open a modal/select and can read nothing back. Anything else
+        landing at the top level would show up in every server's command list,
+        so this pins the three.
+        """
         self.assertEqual(
-            sorted(cmd["name"] for cmd in self.payload), ["manage"],
+            sorted(cmd["name"] for cmd in self.payload), ["apply", "manage", "ticket"],
             "a stray top-level command would double the bot's Discord footprint",
+        )
+
+    def test_no_command_uses_a_discord_permission_gate(self) -> None:
+        """Discord's permission defaults decide nothing; runtime checks do.
+
+        A permission cannot express "holds the staff role", and hiding
+        ``/manage`` behind *Moderate Members* would hide it from staff-role
+        holders who lack that permission - the exact members the server wants
+        moderating. So every command is visible to everyone in the server and
+        each handler re-checks when it runs: the staff role for moderation
+        (tests/test_warnings.py), *Administrator* for setup/fixcommands/rules
+        (``test_admin_commands_refuse_non_admins``), and the ticket/application
+        staff rules (tests/test_tickets.py, test_applications.py).
+        """
+        self.assertIsNone(
+            self.meta["apply"]["default_member_permissions"],
+            "/apply must be visible to every member",
+        )
+        self.assertTrue(self.meta["apply"]["guild_only"], "/apply is server-only")
+        self.assertIsNone(
+            self.meta["manage"]["default_member_permissions"],
+            "/manage must not be gated by a Discord permission",
         )
 
     def test_every_description_fits_discords_limit(self) -> None:
@@ -463,19 +500,19 @@ class CommandTreeTests(unittest.TestCase):
             "and register none of the commands:\n  " + "\n  ".join(problems),
         )
 
-    def test_manage_group_is_guild_only_and_moderator_visible(self) -> None:
+    def test_manage_group_is_guild_only_and_left_ungated(self) -> None:
         # Discord applies `default_member_permissions` to the top-level command
-        # only, so the group is the one permission gate for every sub-command.
-        # Moderate Members = 1 << 40.
-        self.assertEqual(self.meta["manage"]["default_member_permissions"], str(1 << 40))
+        # only, and Sentinel leaves it unset (like `/apply`): the group adds no
+        # permission gate, and the handlers own the real rules.
+        self.assertIsNone(self.meta["manage"]["default_member_permissions"])
         self.assertTrue(self.meta["manage"]["guild_only"], "/manage is server-only")
 
     def test_admin_commands_refuse_non_admins(self) -> None:
         """The admin-only commands re-check *Administrator* when they run.
 
-        They cannot rely on ``default_member_permissions`` any more: a
-        sub-command shares its group's setting, and the group is visible to
-        anyone with Moderate Members.
+        They cannot rely on ``default_member_permissions`` at all: Discord only
+        honours it on the top-level command, and the group is deliberately
+        visible to everyone so runtime checks can do the gating.
         """
         replies = self.sync["non_admin_replies"]
         self.assertEqual(len(replies), 2, replies)
@@ -503,13 +540,15 @@ class CommandTreeTests(unittest.TestCase):
             [
                 ["get-global", None],
                 ["clear", None], ["sync", None, 0],   # duplicates deleted
-                ["copy", 101], ["sync", 101, 1],      # configured server_id
-                ["copy", 202], ["sync", 202, 1],      # other connected guild
-                ["copy", 303], ["sync", 303, 1],      # joined after startup
+                # Three top-level commands per guild upload: /manage (staff),
+                # /apply and /ticket (every member).
+                ["copy", 101], ["sync", 101, 3],      # configured server_id
+                ["copy", 202], ["sync", 202, 3],      # other connected guild
+                ["copy", 303], ["sync", 303, 3],      # joined after startup
                 # /manage fixcommands: fresh duplicate found and removed ...
                 ["get-global", None], ["clear", None], ["sync", None, 0],
                 # ... and this server's copy re-uploaded, then verified empty.
-                ["sync", 202, 1], ["get-global", None],
+                ["sync", 202, 3], ["get-global", None],
             ],
             "unexpected command registration traffic",
         )
@@ -522,7 +561,7 @@ class CommandTreeTests(unittest.TestCase):
     def test_duplicate_cleanup_keeps_the_local_tree_intact(self) -> None:
         # Guild copies are made from the local global tree, so emptying the
         # Discord-side registry must not remove the commands locally.
-        self.assertEqual(self.sync["local_commands"], ["manage"])
+        self.assertEqual(self.sync["local_commands"], ["apply", "manage", "ticket"])
 
     def test_fixcommands_removes_duplicates_and_reports_it(self) -> None:
         reply = "\n".join(self.sync["fix_reply"])
