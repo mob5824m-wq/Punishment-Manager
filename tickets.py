@@ -2190,7 +2190,6 @@ class TicketMixin:
         if interaction.guild is None:
             await _respond(interaction, "Tickets only work inside a server.")
             return
-        guild = interaction.guild
 
         if action == ACTION_OPEN:
             await self._handle_open_button(interaction, argument)
