@@ -49,9 +49,14 @@ the group (and through a permission re-check), which is what keeps "members can
 apply but not view or edit" true.
 
 Discord only honours ``default_member_permissions`` on the *top-level*
-command, so the group is the single permission gate: it is visible to members
-with **Moderate Members**, and every administrative command re-checks for
-**Administrator** when it runs.
+command, and Sentinel leaves it unset (the group is visible to everyone in the
+server). A role is not expressible as a permission, and hiding ``/manage``
+behind *Moderate Members* would hide it from staff-role holders who lack that
+permission — so each command decides for itself when it runs: moderation needs
+the configured staff role (or Administrator, see
+:func:`settings.moderation_denial`), ``setup``/``fixcommands``/``rules`` need
+Administrator (:func:`is_administrator`), and the ticket and application
+commands re-check their own staff rules.
 """
 
 from __future__ import annotations

@@ -55,10 +55,21 @@ dashboard's history read from.
 
 **Who can run what**
 
-`/manage` is visible to members with **Moderate Members**. The administrative
-commands — `/manage setup`, `/manage fixcommands` and everything under
-`/manage rules` — check for **Administrator** when they run, because Discord
-applies a single permission to a whole command group.
+Discord permissions are *not* the gate. Moderation — `/manage punish`,
+`pardon`, `warn`, `warnings` and `status` — requires the server's configured
+**staff role** (set a staff role with `/manage setup staff_role:@Staff`), and
+administrators. Holding *Moderate Members* is not enough: a server can grant
+that permission to anyone, so Sentinel re-checks the caller's roles on every
+run and refuses with an ephemeral message naming the staff role.
+
+While no staff role is configured yet, moderation falls back to the old rule
+(*Moderate Members* or *Manage Server*) so a fresh install keeps working; the
+refusal message points at `/manage setup staff_role:`.
+
+The administrative commands — `/manage setup`, `/manage fixcommands` and
+everything under `/manage rules` — check for **Administrator** when they run.
+Ticket and application management re-check their own staff rules. See
+[Commands](#5-commands).
 
 ---
 
@@ -146,7 +157,8 @@ names any location it had to fall back to.
   <https://discord.com/developers/applications>.
 * The bot must be invited with at minimum:
   * **Manage Roles** *(for punishment and rules-acceptance roles)*
-  * **Moderate Members** *(required by `/manage`)*
+  * **Moderate Members** *(not required: moderation is gated by the staff
+    role. It is the fallback rule on servers that have not set one yet.)*
   * **Send Messages** *(for staff-channel embeds and rules posts)*
   * **Embed Links** and **Add Reactions** *(for rules posts)*
   * **Use Application Commands**
@@ -595,11 +607,11 @@ since they need a message box, a live preview, and one role picker per emoji.
 
 | Command              | Who can use it                  | What it does |
 |----------------------|---------------------------------|--------------|
-| `/manage punish`      | Members with *Moderate Members* | Adds the punish role for the configured duration. Posts a staff embed and DMs the member. |
-| `/manage warn`       | Members with *Moderate Members* | Records a warning (reason + moderator + time). No role is changed. Posts a staff embed and DMs the member. |
-| `/manage warnings`   | Members with *Moderate Members* | Lists a member's recorded warnings. Pass `clear:true` to delete them all (this is logged to the staff channel). |
-| `/manage pardon`     | Members with *Moderate Members* | Ends the punishment early and removes the punish / post-punish role. Posts a staff embed and DMs the member. |
-| `/manage status`     | Members with *Moderate Members* | Shows the server configuration and a list of active punishments. Pass a `user` to see that member's active status, history, and warnings. |
+| `/manage punish`      | Staff role (or administrators) | Adds the punish role for the configured duration. Posts a staff embed and DMs the member. |
+| `/manage warn`       | Staff role (or administrators) | Records a warning (reason + moderator + time). No role is changed. Posts a staff embed and DMs the member. |
+| `/manage warnings`   | Staff role (or administrators) | Lists a member's recorded warnings. Pass `clear:true` to delete them all (this is logged to the staff channel). |
+| `/manage pardon`     | Staff role (or administrators) | Ends the punishment early and removes the punish / post-punish role. Posts a staff embed and DMs the member. |
+| `/manage status`     | Staff role (or administrators) | Shows the server configuration and a list of active punishments. Pass a `user` to see that member's active status, history, and warnings. |
 | `/manage rules publish`     | Server administrators           | Posts a named rule set and sets its ✅ acceptance reaction role. Publishing the same name replaces that set. |
 | `/manage rules disable`     | Server administrators           | Stops handling reactions for one rule set (pass `name` when several exist). Existing roles are unchanged. |
 | `/manage rules list`        | Server administrators           | Lists the published rule sets with their channel, role and message. |
@@ -636,9 +648,13 @@ happens where the work is:
   the settings, and with a channel only refreshes the panel, so an
   administrator never has to restate what they set last time.
 
-Discord offers the whole group to anyone with **Moderate Members**, so the
-administrator rows above are enforced *when the command runs*: a moderator
-who tries `/manage setup` gets an ephemeral "administrators only" reply.
+No row above is enforced by Discord: `/manage` carries no permission gate, so
+every check happens *when the command runs*. A member without the staff role
+who tries `/manage punish` gets an ephemeral refusal naming the role, and a
+moderator who tries `/manage setup` gets an "administrators only" reply. (The
+group is left visible on purpose — a role cannot be expressed as a Discord
+permission, and hiding the group behind *Moderate Members* would hide it from
+the staff-role holders the server wants moderating.)
 
 ### `/manage punish` options
 

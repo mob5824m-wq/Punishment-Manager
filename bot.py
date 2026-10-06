@@ -22,9 +22,12 @@ Everything is reached through one slash-command group, ``/manage``:
 
 Members open tickets and submit applications through the buttons on panels
 staff published, or with those two member commands; they can never list, view
-or edit anybody's ticket or application. Its authenticated server-side web
-dashboard manages connected servers, moderation, warnings, the rules post,
-reaction-role menus, tickets, applications, configuration and history.
+or edit anybody's ticket or application. Moderation itself is staff-role-only:
+punish, pardon, warn, warnings and status all require the server's configured
+staff role (administrators also qualify), re-checked on every call. Its
+authenticated server-side web dashboard manages connected servers, moderation,
+warnings, the rules post, reaction-role menus, tickets, applications,
+configuration and history.
 """
 
 from __future__ import annotations
@@ -60,6 +63,7 @@ from settings import (
     get_staff_channel_id,
     get_staff_role_id,
     is_protected_member,
+    moderation_denial,
     save_config,
     should_dm_user,
 )
@@ -1367,18 +1371,28 @@ class SentinelCog(RulesMixin, TicketMixin, ApplicationsMixin, commands.Cog):
         here, after the decorator machinery has run.
 
         Discord applies ``default_member_permissions`` to the *top-level*
-        command only, so the whole group shares one setting: visible to
-        everyone with **Moderate Members**. The administrative commands
-        (``setup``, ``fixcommands`` and everything under ``rules``) re-check
-        for **Administrator** when they run, via
-        :func:`command_tree.is_administrator`.
+        command only, so the whole group shares one setting. It is left unset
+        (``None``), the same as ``/apply``: showing ``/manage`` to members with
+        *Moderate Members* would hide it from the very people the server wants
+        moderating — members who hold the staff role but no moderation
+        permission — and Discord has no way to express "has role X". So
+        visibility is wide and every command decides for itself when it runs:
+
+        * moderation (punish, pardon, warn, warnings, status) requires the
+          configured staff role or Administrator
+          (:meth:`_moderation_denial`);
+        * ``setup``, ``fixcommands`` and the ``rules`` commands require
+          Administrator (:func:`command_tree.is_administrator`);
+        * the ticket and application commands re-check their own staff rules.
+
+        A server that would rather keep the group hidden from members can
+        restrict it (or individual commands) in Server Settings → Integrations;
+        the runtime checks are what actually gate the work.
         """
         # ``self.manage_group`` is the copy Cog.__new__ made for this cog
         # (see ``manage_group`` below); assigning to the shared object from
         # command_tree would miss the copy Discord actually receives.
-        self.manage_group.default_permissions = discord.Permissions(
-            moderate_members=True
-        )
+        self.manage_group.default_permissions = None
         self.manage_group.guild_only = True
 
     # ---- Buttons, selects and modals ----------------------------------- #
@@ -1544,6 +1558,9 @@ class SentinelCog(RulesMixin, TicketMixin, ApplicationsMixin, commands.Cog):
         except discord.HTTPException:
             return
 
+        if not await self._require_moderator(interaction):
+            return
+
         cfg = get_guild_config(self.bot.config, interaction.guild_id)
         if not cfg:
             await self._safe_followup(
@@ -1634,21 +1651,33 @@ class SentinelCog(RulesMixin, TicketMixin, ApplicationsMixin, commands.Cog):
                     "Skipped DM to %s: DMs unavailable.", user.id
                 )
 
-    @staticmethod
-    def _can_moderate(interaction: discord.Interaction) -> bool:
-        """Whether the caller may clear warnings.
+    def _moderation_denial(self, interaction: discord.Interaction) -> Optional[str]:
+        """Why the caller may not run a moderation command, or ``None``.
 
-        Discord hides the command from members without *Moderate Members* via
-        ``default_member_permissions``, but a server can relax that per
-        integration, so the destructive path re-checks the permission here.
+        One rule for every moderation command (punish, pardon, warn, warnings,
+        status): the caller must hold the configured staff role, or be an
+        administrator. See :func:`settings.moderation_denial` for why Discord's
+        *Moderate Members* permission is not enough on its own.
         """
-        perms = getattr(interaction.user, "guild_permissions", None)
-        if perms is None:
-            return False
-        return bool(
-            getattr(perms, "administrator", False)
-            or getattr(perms, "moderate_members", False)
+        return moderation_denial(
+            interaction.user,
+            self.bot.config,
+            guild=getattr(interaction, "guild", None),
+            guild_id=getattr(interaction, "guild_id", None),
         )
+
+    async def _require_moderator(self, interaction: discord.Interaction) -> bool:
+        """Send the refusal and return ``False`` when the caller is not staff.
+
+        Every moderation handler starts here, so a member who guesses the
+        command name — or a server that relaxed the command's visibility in
+        Discord's integration settings — still cannot punish anyone.
+        """
+        denial = self._moderation_denial(interaction)
+        if denial is None:
+            return True
+        await self._safe_followup(interaction, denial)
+        return False
 
     async def _handle_warn(
         self,
@@ -1668,6 +1697,9 @@ class SentinelCog(RulesMixin, TicketMixin, ApplicationsMixin, commands.Cog):
             await self._safe_followup(
                 interaction, "Warnings only work inside a server."
             )
+            return
+
+        if not await self._require_moderator(interaction):
             return
 
         if user.id == interaction.user.id:
@@ -1752,13 +1784,10 @@ class SentinelCog(RulesMixin, TicketMixin, ApplicationsMixin, commands.Cog):
             )
             return
 
+        if not await self._require_moderator(interaction):
+            return
+
         if clear:
-            if not self._can_moderate(interaction):
-                await self._safe_followup(
-                    interaction,
-                    "You need the Moderate Members permission to clear warnings.",
-                )
-                return
             try:
                 removed = clear_warnings(interaction.guild_id, user.id)
             except sqlite3.Error as exc:
@@ -1812,6 +1841,9 @@ class SentinelCog(RulesMixin, TicketMixin, ApplicationsMixin, commands.Cog):
         except discord.InteractionResponded:
             pass
         except discord.HTTPException:
+            return
+
+        if not await self._require_moderator(interaction):
             return
 
         cfg = get_guild_config(self.bot.config, interaction.guild_id)
@@ -2022,6 +2054,9 @@ class SentinelCog(RulesMixin, TicketMixin, ApplicationsMixin, commands.Cog):
         interaction: discord.Interaction,
         user: Optional[discord.Member] = None,
     ) -> None:
+        if not await self._require_moderator(interaction):
+            return
+
         cfg = get_guild_config(self.bot.config, interaction.guild_id)
         if not cfg:
             await interaction.response.send_message(

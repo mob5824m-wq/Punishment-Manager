@@ -132,6 +132,63 @@ def should_dm_user(cfg: dict, guild_id: Optional[int] = None) -> bool:
     return bool(cfg.get("dm_user", True))
 
 
+def moderation_denial(
+    member: object,
+    cfg: dict,
+    *,
+    guild: object = None,
+    guild_id: Optional[int] = None,
+) -> Optional[str]:
+    """Why ``member`` may not use Sentinel's moderation commands, or ``None``.
+
+    Moderation (punish, pardon, warn, warnings, status) is a *staff* job:
+    holding the configured staff role — ``/manage setup staff_role:`` — is what
+    qualifies. Discord's *Moderate Members* permission is deliberately not
+    enough on its own, because a server can hand that permission to anyone,
+    and those members should not be punishing people.
+
+    Two deliberate exceptions:
+
+    * **Administrators** always qualify. They choose the staff role in the
+      first place, and an administrator can grant themselves the role in two
+      clicks — refusing them adds friction, not safety.
+    * A server that has **no staff role configured yet** keeps the historical
+      permission rule (Moderate Members / Manage Server / Administrator), so
+      moderation does not stop working on a first-run server. The refusal says
+      how to switch to the staff-role rule.
+
+    The return value is worded for the member who hit the wall, so callers can
+    send it as-is.
+    """
+    perms = getattr(member, "guild_permissions", None)
+    if perms is not None and getattr(perms, "administrator", False):
+        return None
+
+    resolved_id = guild_id if guild_id is not None else getattr(guild, "id", None)
+    staff_role_id = get_staff_role_id(cfg, resolved_id)
+    if staff_role_id is None:
+        # Not configured: the old permission rule, so first-run servers keep
+        # working. (Once a staff role is set, only staff and admins pass.)
+        if perms is not None and (
+            getattr(perms, "moderate_members", False)
+            or getattr(perms, "manage_guild", False)
+        ):
+            return None
+        return (
+            "Only staff can use moderation commands. An administrator can set the "
+            "staff role with `/manage setup staff_role:@Staff`."
+        )
+
+    roles = getattr(member, "roles", None) or []
+    if any(getattr(role, "id", None) == staff_role_id for role in roles):
+        return None
+    role = None
+    if guild is not None and hasattr(guild, "get_role"):
+        role = guild.get_role(staff_role_id)
+    mention = getattr(role, "mention", None) or f"<@&{staff_role_id}>"
+    return f"Only members with the {mention} role can use moderation commands."
+
+
 def is_protected_member(
     member: discord.Member, cfg: dict, *, guild: discord.Guild
 ) -> Optional[str]:
