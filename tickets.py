@@ -1,8 +1,27 @@
 """Tickets for Sentinel: panel buttons, private threads or private channels.
 
 Members open a ticket by pressing a button on a *panel* an administrator
-published. Staff get notified, can **claim** the ticket, and close it; the
-whole conversation stays between the opener and staff.
+published, or with ``/ticket``. Staff get notified, can **claim** the ticket,
+and close it; the whole conversation stays between the opener and staff.
+
+The command surface is three sub-commands, not nine:
+
+``/manage tickets panel``
+    Sets the options (mode, log channel, channel-ticket category) and posts or
+    refreshes the panel. Everything an administrator configures lives here.
+
+``/manage tickets category``
+    Lists the panel buttons when called bare; with a label it adds or edits
+    one, and ``remove:true`` deletes it.
+
+``/manage tickets console``
+    One ephemeral message that *is* the staff queue: a summary embed and a
+    select of tickets. Picking one swaps in the ticket's card and its
+    Claim/Close/Reopen buttons — the same handlers the in-ticket buttons use.
+
+``/ticket``
+    The member-facing way in: a category select, then the subject modal. It can
+    only ever create a ticket.
 
 Two shapes, chosen per server (``mode``) and overridable per category
 (``category["mode"]``) — "both" is a supported configuration, not a fallback:
@@ -139,6 +158,11 @@ ACTION_CLAIM = "claim"        # sentinel:tk:claim:<ticket_id>       (button)
 ACTION_CLOSE = "close"        # sentinel:tk:close:<ticket_id>       (button)
 ACTION_CLOSED = "closed"      # sentinel:tk:closed:<ticket_id>      (modal submit)
 ACTION_REOPEN = "reopen"      # sentinel:tk:reopen:<ticket_id>      (button)
+ACTION_PICK = "pick"          # sentinel:tk:pick                    (/ticket category select)
+ACTION_CONSOLE = "console"    # sentinel:tk:console                 (/manage tickets select)
+
+#: How many tickets the staff console lists (Discord allows 25 options).
+CONSOLE_LIMIT = 25
 
 
 class TicketError(Exception):
@@ -430,7 +454,7 @@ def remove_category(config: dict, guild_id: int, wanted: object) -> dict:
     category = find_category(settings, wanted)
     if category is None:
         raise TicketError(
-            "No ticket category matches that. Use `/manage tickets categories`."
+            "No ticket category matches that. Use `/manage tickets category`."
         )
     settings["categories"] = [
         existing
@@ -891,6 +915,129 @@ def log_view(ticket: dict) -> discord.ui.View:
     return view
 
 
+def ticket_picker_view(categories: list[dict]) -> discord.ui.View:
+    """A select of categories, for the member-facing ``/ticket`` command.
+
+    The panel offers the same choices as buttons; the select is what makes
+    ``/ticket`` work without a published panel. Values are category ids, so a
+    pick is resolved against the *current* configuration.
+    """
+    view = discord.ui.View(timeout=300)
+    options = []
+    for category in categories[:25]:
+        option = discord.SelectOption(
+            label=category["label"][:100],
+            value=category["category_id"],
+            description=(category.get("description") or "")[:100] or None,
+        )
+        if category.get("emoji"):
+            try:
+                option.emoji = category["emoji"]
+            except (TypeError, ValueError):
+                logger.info("Ignoring unusable emoji %r", category["emoji"])
+        options.append(option)
+    view.add_item(
+        discord.ui.Select(
+            placeholder="What do you need help with?",
+            options=options,
+            custom_id=custom_id(ACTION_PICK),
+        )
+    )
+    return view
+
+
+def console_embed(
+    guild: discord.Guild, records: list[dict], *, filtered: bool = False
+) -> discord.Embed:
+    """The summary that sits above the staff console's ticket select."""
+    counts: dict[str, int] = {}
+    for record in records:
+        status = str(record.get("status") or STATUS_OPEN)
+        counts[status] = counts.get(status, 0) + 1
+    embed = discord.Embed(
+        title="Ticket console",
+        description=(
+            "Pick a ticket below to read it and claim, close or reopen it. "
+            + ("Close and reopen it from the card that appears." if not filtered else "")
+        ),
+        color=discord.Color.from_rgb(240, 166, 60),
+    )
+    for status in (STATUS_OPEN, STATUS_CLAIMED, STATUS_CLOSED):
+        if counts.get(status):
+            embed.add_field(name=status.capitalize(), value=str(counts[status]), inline=True)
+    embed.set_footer(text=f"{guild.name} • {len(records)} shown")
+    return embed
+
+
+def console_view(records: list[dict]) -> discord.ui.View:
+    """A select of tickets for the staff console."""
+    view = discord.ui.View(timeout=300)
+    options = []
+    for record in records[:CONSOLE_LIMIT]:
+        label = f"#{int(record.get('number') or 0):04d} · {record.get('category_label') or 'ticket'}"
+        detail = " · ".join(
+            part
+            for part in (
+                str(record.get("status") or STATUS_OPEN),
+                (record.get("subject") or "").strip() or None,
+            )
+            if part
+        )
+        options.append(
+            discord.SelectOption(
+                label=label[:100],
+                value=str(record["id"]),
+                description=detail[:100] or None,
+            )
+        )
+    view.add_item(
+        discord.ui.Select(
+            placeholder="Choose a ticket",
+            options=options,
+            custom_id=custom_id(ACTION_CONSOLE),
+        )
+    )
+    return view
+
+
+def console_ticket_view(ticket: dict) -> discord.ui.View:
+    """Claim / Close / Reopen for the ticket the console has selected.
+
+    The buttons reuse the in-ticket custom ids, so a staff member acts through
+    exactly the same (permission-checked) handlers as inside the ticket itself.
+    """
+    view = discord.ui.View(timeout=300)
+    status = str(ticket.get("status") or STATUS_OPEN)
+    if status == STATUS_CLOSED:
+        view.add_item(
+            discord.ui.Button(
+                label="Reopen",
+                emoji="🔓",
+                custom_id=custom_id(ACTION_REOPEN, ticket["id"]),
+                style=discord.ButtonStyle.primary,
+            )
+        )
+        return view
+    if status == STATUS_OPEN:
+        view.add_item(
+            discord.ui.Button(
+                label="Claim",
+                emoji="🙋",
+                custom_id=custom_id(ACTION_CLAIM, ticket["id"]),
+                style=discord.ButtonStyle.success,
+            )
+        )
+    view.add_item(
+        discord.ui.Button(
+            label="Close",
+            emoji="🔒",
+            custom_id=custom_id(ACTION_CLOSE, ticket["id"]),
+            style=discord.ButtonStyle.danger,
+        )
+    )
+    return view
+
+
 def log_embed(guild: discord.Guild, ticket: dict) -> discord.Embed:
     """The staff-channel notice for a ticket."""
     embed = discord.Embed(
@@ -1006,7 +1153,7 @@ async def publish_panel(
     if not settings["categories"]:
         raise TicketError(
             "Add at least one ticket category first "
-            "(/manage tickets add-category)."
+            "(/manage tickets category label:…)."
         )
 
     if title is not None and len(title) > MAX_PANEL_TITLE_LENGTH:
@@ -1694,34 +1841,91 @@ class TicketMixin:
         description="Ticket panels, categories and staff controls.",
     )
 
-    # ---- Panel / settings (administrators) ----------------------------- #
+    # ---- Setup: one command configures and publishes the panel --------- #
     @tickets_group.command(
         name="panel",
-        description="Post or refresh the ticket panel in a channel. (administrators)",
+        description="Set the ticket options and post (or refresh) the panel. (administrators)",
     )
     @app_commands.describe(
-        channel="Channel where members press a button to open a ticket.",
+        channel="Channel members press a button in (optional after the first publish).",
+        mode="How new tickets open: a private thread or a private channel.",
+        log="Where staff get the ticket notice (defaults to the server's staff channel).",
+        parent="Discord category for channel-mode tickets (defaults to the panel's).",
         title="Optional panel title (defaults to 'Support tickets').",
         description="Optional panel text shown above the buttons.",
+    )
+    @app_commands.choices(
+        mode=[
+            app_commands.Choice(name="Private thread (default)", value=MODE_THREAD),
+            app_commands.Choice(name="Private channel", value=MODE_CHANNEL),
+        ]
     )
     async def tickets_panel(
         self,
         interaction: discord.Interaction,
-        channel: discord.TextChannel,
+        channel: Optional[discord.TextChannel] = None,
+        mode: Optional[app_commands.Choice[str]] = None,
+        log: Optional[discord.TextChannel] = None,
+        parent: Optional[discord.CategoryChannel] = None,
         title: Optional[str] = None,
         description: Optional[str] = None,
     ) -> None:
+        """Everything an administrator needs, in the order they need it.
+
+        Settings are saved first and the panel is published second, so a
+        half-configured server keeps whatever worked before: passing only
+        ``channel`` refreshes the buttons, passing only ``mode`` changes how
+        the next ticket opens.
+        """
         await self._defer(interaction)
         if not is_administrator(interaction):
-            await self._respond(interaction, "Only server administrators can publish the ticket panel.")
+            await self._respond(
+                interaction, "Only server administrators can set up the ticket panel."
+            )
             return
         guild = interaction.guild
-        if guild is None or channel.guild.id != guild.id:
-            await self._respond(interaction, "Choose a channel from this server.")
+        for option, value in (("channel", channel), ("log", log), ("parent", parent)):
+            if value is not None and getattr(value, "guild", guild).id != guild.id:
+                await self._respond(interaction, f"Choose a {option} from this server.")
+                return
+
+        settings = get_guild_tickets(self.bot.config, guild.id)
+        changes: list[str] = []
+        if mode is not None:
+            settings["mode"] = mode.value
+            changes.append(f"new tickets use **{mode.value}**")
+        if log is not None:
+            settings["log_channel_id"] = log.id
+            changes.append(f"staff notices go to {log.mention}")
+        if parent is not None:
+            settings["category_id"] = parent.id
+            changes.append(f"channel tickets are filed under **{parent.name}**")
+        if changes:
+            write_guild_tickets(self.bot.config, guild.id, settings)
+
+        # The channel is optional: without one we only save the options (and
+        # say where the panel currently is, if it was published before).
+        panel = settings.get("panel") or {}
+        target = channel
+        if target is None and panel.get("channel_id"):
+            target = guild.get_channel(int(panel["channel_id"]))
+        if target is None and not changes:
+            await self._respond(
+                interaction,
+                "Give me a channel to publish the panel in — `/manage tickets panel "
+                "channel:#open-a-ticket`.",
+            )
+            return
+        if target is None:
+            await self._respond(
+                interaction,
+                "Saved: " + ", ".join(changes) + ". Run this again with a channel "
+                "to publish the panel (or `/manage tickets panel channel:…`).",
+            )
             return
         try:
-            panel = await publish_panel(
-                self.bot, guild, channel, title=title, description=description
+            published = await publish_panel(
+                self.bot, guild, target, title=title, description=description
             )
         except TicketError as exc:
             await self._respond(interaction, str(exc))
@@ -1732,52 +1936,30 @@ class TicketMixin:
                 "I need *View Channel*, *Send Messages* and *Embed Links* in that channel.",
             )
             return
-        await self._respond(
-            interaction,
-            f"Ticket panel published in <#{panel['channel_id']}> with "
-            f"{len(get_guild_tickets(self.bot.config, guild.id)['categories'])} "
-            "categor(ies).",
-        )
+        categories = len(get_guild_tickets(self.bot.config, guild.id)["categories"])
+        summary = f"Ticket panel published in <#{published['channel_id']}>"
+        summary += f" with {categories} categor{'y' if categories == 1 else 'ies'}."
+        if changes:
+            summary = "Saved: " + ", ".join(changes) + ".\n" + summary
+        if not categories:
+            summary += (
+                "\nAdd buttons with `/manage tickets category label:…` and publish again."
+            )
+        await self._respond(interaction, summary)
 
+    # ---- Categories: list, add, edit and remove in one command --------- #
     @tickets_group.command(
-        name="mode",
-        description="Choose how new tickets are created by default. (administrators)",
-    )
-    @app_commands.describe(mode="'thread' = private thread, 'channel' = private channel.")
-    @app_commands.choices(
-        mode=[
-            app_commands.Choice(name="Private thread (default)", value=MODE_THREAD),
-            app_commands.Choice(name="Private channel", value=MODE_CHANNEL),
-        ]
-    )
-    async def tickets_mode(
-        self, interaction: discord.Interaction, mode: app_commands.Choice[str]
-    ) -> None:
-        await self._defer(interaction)
-        if not is_administrator(interaction):
-            await self._respond(interaction, "Only server administrators can change ticket settings.")
-            return
-        settings = get_guild_tickets(self.bot.config, interaction.guild_id)
-        settings["mode"] = mode.value
-        write_guild_tickets(self.bot.config, interaction.guild_id, settings)
-        await self._respond(
-            interaction,
-            f"New tickets will be created as **{mode.value}** unless a category "
-            "overrides it. Republish the panel to update its footer.",
-        )
-
-    # ---- Categories (administrators) ----------------------------------- #
-    @tickets_group.command(
-        name="add-category",
-        description="Add or update a ticket category on the panel. (administrators)",
+        name="category",
+        description="List, add, edit or remove a ticket category (a panel button). (administrators)",
     )
     @app_commands.describe(
-        label="Button label, e.g. 'General help'.",
-        staff_role="Role that can see this category's tickets (defaults to the staff role).",
+        label="The button's name. Omit it to list the categories instead.",
         emoji="Optional emoji for the button.",
+        staff_role="Role that sees this category's tickets (defaults to the staff role).",
         mode="Optional override: private thread or private channel.",
         description="Optional text shown in the panel's category list.",
         ask_subject="Ask 'what is this about?' before opening (default: yes).",
+        remove="Set to true to delete this category (existing tickets stay).",
     )
     @app_commands.choices(
         mode=[
@@ -1785,21 +1967,53 @@ class TicketMixin:
             app_commands.Choice(name="Private channel", value=MODE_CHANNEL),
         ]
     )
-    async def tickets_add_category(
+    async def tickets_category(
         self,
         interaction: discord.Interaction,
-        label: str,
-        staff_role: Optional[discord.Role] = None,
+        label: Optional[str] = None,
         emoji: Optional[str] = None,
+        staff_role: Optional[discord.Role] = None,
         mode: Optional[app_commands.Choice[str]] = None,
         description: Optional[str] = None,
         ask_subject: Optional[bool] = None,
+        remove: Optional[bool] = None,
     ) -> None:
+        """Without ``label`` this is the old ``categories`` list command.
+
+        Editing is by name: ``label`` matching an existing category updates it
+        (keeping every option that was left out), anything else adds a new one.
+        """
         await self._defer(interaction)
         if not is_administrator(interaction):
-            await self._respond(interaction, "Only server administrators can change ticket categories.")
+            await self._respond(
+                interaction, "Only server administrators can change ticket categories."
+            )
             return
         guild = interaction.guild
+        settings = get_guild_tickets(self.bot.config, guild.id)
+
+        if label is None:
+            if not settings["categories"]:
+                await self._respond(
+                    interaction,
+                    "No ticket categories yet — add one with "
+                    "`/manage tickets category label:General help`.",
+                )
+                return
+            lines = [
+                f"**Ticket categories** (default: `{settings['mode']}`) — "
+                "edit one by running this command with its name."
+            ]
+            for category in settings["categories"]:
+                role = category.get("staff_role_id")
+                lines.append(
+                    f"- {category.get('emoji') or '•'} **{category['label']}** · "
+                    f"`{effective_mode(settings, category)}` · "
+                    f"staff role: {f'<@&{role}>' if role else 'configured staff role'}"
+                )
+            await self._respond(interaction, "\n".join(lines))
+            return
+
         cleaned = (label or "").strip()
         if not cleaned:
             await self._respond(interaction, "Give the category a name.")
@@ -1809,10 +2023,27 @@ class TicketMixin:
                 interaction, f"Keep the label to {MAX_LABEL_LENGTH} characters or fewer."
             )
             return
+        existing = find_category(settings, cleaned)
         if staff_role is not None and staff_role.guild.id != guild.id:
             await self._respond(interaction, "Choose a role from this server.")
             return
-        existing = find_category(get_guild_tickets(self.bot.config, guild.id), cleaned)
+
+        if remove:
+            if existing is None:
+                await self._respond(interaction, f"No ticket category named **{cleaned}**.")
+                return
+            try:
+                removed = remove_category(self.bot.config, guild.id, cleaned)
+            except TicketError as exc:
+                await self._respond(interaction, str(exc))
+                return
+            await self._respond(
+                interaction,
+                f"Removed **{removed['label']}**. Existing tickets in it stay where they "
+                "are; run `/manage tickets panel` to drop the button.",
+            )
+            return
+
         category = {
             "category_id": existing["category_id"] if existing else new_category_id(),
             "label": cleaned,
@@ -1830,73 +2061,25 @@ class TicketMixin:
             "ping_staff": True,
         }
         try:
-            upsert_category(self.bot.config, guild.id, category)
+            stored = upsert_category(self.bot.config, guild.id, category)
         except TicketError as exc:
             await self._respond(interaction, str(exc))
             return
         await self._respond(
             interaction,
-            f"Category **{cleaned}** "
+            f"Category **{stored['label']}** "
             + ("updated" if existing else "added")
-            + ". Republish the panel with `/manage tickets panel` to show it.",
+            + f" (opens as `{effective_mode(get_guild_tickets(self.bot.config, guild.id), stored)}`). "
+            "Run `/manage tickets panel` to show it.",
         )
 
+    # ---- Staff console: the list, the details and the buttons ---------- #
     @tickets_group.command(
-        name="remove-category",
-        description="Remove a ticket category from the panel. (administrators)",
-    )
-    @app_commands.describe(label="The category's name (as shown on the panel).")
-    async def tickets_remove_category(
-        self, interaction: discord.Interaction, label: str
-    ) -> None:
-        await self._defer(interaction)
-        if not is_administrator(interaction):
-            await self._respond(interaction, "Only server administrators can change ticket categories.")
-            return
-        try:
-            removed = remove_category(self.bot.config, interaction.guild_id, label)
-        except TicketError as exc:
-            await self._respond(interaction, str(exc))
-            return
-        await self._respond(
-            interaction,
-            f"Removed **{removed['label']}**. Existing tickets in it stay where they are; "
-            "republish the panel to drop the button.",
-        )
-
-    @tickets_group.command(
-        name="categories",
-        description="List this server's ticket categories and how they open.",
-    )
-    async def tickets_categories(self, interaction: discord.Interaction) -> None:
-        await self._defer(interaction)
-        if not await self._require_ticket_staff(interaction):
-            return
-        settings = get_guild_tickets(self.bot.config, interaction.guild_id)
-        if not settings["categories"]:
-            await self._respond(
-                interaction,
-                "No ticket categories yet. An administrator can add one with "
-                "`/manage tickets add-category`.",
-            )
-            return
-        lines = [f"**Ticket categories** (default mode: `{settings['mode']}`)"]
-        for category in settings["categories"]:
-            role = category.get("staff_role_id")
-            lines.append(
-                f"- {category.get('emoji') or '•'} **{category['label']}** · "
-                f"`{effective_mode(settings, category)}` · "
-                f"staff role: {f'<@&{role}>' if role else 'configured staff role'}"
-            )
-        await self._respond(interaction, "\n".join(lines))
-
-    # ---- Staff controls ------------------------------------------------ #
-    @tickets_group.command(
-        name="list",
-        description="List tickets in this server. (staff)",
+        name="console",
+        description="Work the ticket queue: pick a ticket, then claim, close or reopen it. (staff)",
     )
     @app_commands.describe(
-        status="Filter: open (open + claimed), closed, or all.",
+        status="Which tickets to offer (default: the open ones).",
         user="Only tickets opened by this member.",
     )
     @app_commands.choices(
@@ -1906,147 +2089,90 @@ class TicketMixin:
             app_commands.Choice(name="All", value="all"),
         ]
     )
-    async def tickets_list(
+    async def tickets_console(
         self,
         interaction: discord.Interaction,
         status: Optional[app_commands.Choice[str]] = None,
         user: Optional[discord.Member] = None,
     ) -> None:
+        """One ephemeral message that *is* the ticket queue.
+
+        The select is reloaded from the database on every pick, so what staff
+        see is what the tickets actually say — and the Claim/Close/Reopen
+        buttons it reveals are the same (permission-checked) handlers as the
+        ones inside a ticket.
+        """
         await self._defer(interaction)
         if not await self._require_ticket_staff(interaction):
             return
         wanted = status.value if status is not None else "open"
-        tickets = list_tickets(
+        records = list_tickets(
             interaction.guild_id,
             status=None if wanted == "all" else wanted,
             user_id=user.id if user is not None else None,
+            limit=CONSOLE_LIMIT,
         )
-        if not tickets:
-            await self._respond(interaction, "No tickets match that filter.")
-            return
-        lines = [f"**Tickets** ({len(tickets)} shown)"]
-        for ticket in tickets:
-            claimed = f" · claimed by <@{ticket['claimed_by']}>" if ticket.get("claimed_by") else ""
-            lines.append(
-                f"- #{int(ticket['number']):04d} · {_ticket_mention(interaction.guild, ticket)} · "
-                f"{ticket['category_label']} · <@{ticket['user_id']}> · "
-                f"`{ticket['status']}`{claimed} · {_format_timestamp(ticket['created_at'])}"
-            )
-        await self._respond(interaction, "\n".join(lines))
-
-    @tickets_group.command(
-        name="view",
-        description="Show one ticket's details. (staff)",
-    )
-    @app_commands.describe(ticket="Ticket number (#12), database id, or channel id.")
-    async def tickets_view(self, interaction: discord.Interaction, ticket: str) -> None:
-        await self._defer(interaction)
-        if not await self._require_ticket_staff(interaction):
-            return
-        record = find_ticket(interaction.guild_id, ticket)
-        if record is None:
-            await self._respond(interaction, "No ticket matches that number or id.")
-            return
-        embed = ticket_embed(interaction.guild, record)
-        embed.add_field(name="Location", value=_ticket_mention(interaction.guild, record), inline=False)
-        if record.get("log_message_id"):
-            embed.add_field(
-                name="Staff notice",
-                value=f"<#{record.get('log_channel_id')}> · message `{record['log_message_id']}`",
-                inline=False,
-            )
-        await interaction.followup.send(embed=embed, ephemeral=True)
-
-    @tickets_group.command(
-        name="claim",
-        description="Claim a ticket (adds you to it). (staff)",
-    )
-    @app_commands.describe(ticket="Ticket number or id. Defaults to this channel's ticket.")
-    async def tickets_claim(
-        self, interaction: discord.Interaction, ticket: Optional[str] = None
-    ) -> None:
-        await self._defer(interaction)
-        if not await self._require_ticket_staff(interaction):
-            return
-        record = await self._resolve_ticket(interaction, ticket)
-        if record is None:
-            return
-        try:
-            claimed = await claim_ticket(
-                self.bot, interaction.guild, record, interaction.user  # type: ignore[arg-type]
-            )
-        except TicketError as exc:
-            await self._respond(interaction, str(exc))
-            return
-        await self._respond(
-            interaction,
-            f"You claimed ticket #{int(claimed['number']):04d}"
-            + (
-                f" — {claimed['category_label']}."
-                if claimed.get("category_label")
-                else "."
-            ),
-        )
-
-    @tickets_group.command(
-        name="close",
-        description="Close a ticket and lock it. (staff, or the member who opened it)",
-    )
-    @app_commands.describe(
-        ticket="Ticket number or id. Defaults to this channel's ticket.",
-        reason="Optional reason stored with the ticket and shown to staff.",
-    )
-    async def tickets_close(
-        self,
-        interaction: discord.Interaction,
-        ticket: Optional[str] = None,
-        reason: Optional[str] = None,
-    ) -> None:
-        await self._defer(interaction)
-        record = await self._resolve_ticket(interaction, ticket)
-        if record is None:
-            return
-        member = interaction.user
-        staff = is_ticket_staff(member, self.bot.config, interaction.guild_id)
-        if not staff and actor_id(member) != int(record["user_id"]):
+        if not records:
             await self._respond(
                 interaction,
-                "Only staff can close someone else's ticket.",
+                "No tickets match that filter. Members open them from the panel, "
+                "or with `/ticket`.",
             )
             return
-        try:
-            closed = await close_ticket(
-                self.bot, interaction.guild, record, member, reason
-            )
-        except TicketError as exc:
-            await self._respond(interaction, str(exc))
-            return
-        await self._respond(
-            interaction, f"Ticket #{int(closed['number']):04d} closed."
+        await interaction.followup.send(
+            embed=console_embed(interaction.guild, records),
+            view=console_view(records),
+            ephemeral=True,
         )
 
-    @tickets_group.command(
-        name="reopen",
-        description="Reopen a closed ticket. (staff)",
-    )
-    @app_commands.describe(ticket="Ticket number or id. Defaults to this channel's ticket.")
-    async def tickets_reopen(
-        self, interaction: discord.Interaction, ticket: Optional[str] = None
+    # ---- Member command: /ticket --------------------------------------- #
+    async def _start_ticket(
+        self,
+        interaction: discord.Interaction,
+        categories: list[dict],
+        *,
+        category_id: Optional[str] = None,
     ) -> None:
-        await self._defer(interaction)
-        if not await self._require_ticket_staff(interaction):
+        """Open the category picker (or go straight to a single category)."""
+        if category_id is not None:
+            category = find_panel_category(
+                get_guild_tickets(self.bot.config, interaction.guild_id), category_id
+            )
+            if category is None:
+                await _respond(
+                    interaction,
+                    "That ticket category no longer exists — an administrator can "
+                    "update the panel with `/manage tickets panel`.",
+                )
+                return
+        else:
+            category = categories[0]
+        if category.get("ask_subject", True):
+            await _send_modal(interaction, subject_modal(category))
             return
-        record = await self._resolve_ticket(interaction, ticket)
-        if record is None:
+        await self._create_ticket(interaction, category, subject=None)
+
+    async def ticket_command(self, interaction: discord.Interaction) -> None:
+        """``/ticket`` — the member-facing way in (see :class:`TicketCog`)."""
+        guild = interaction.guild
+        categories = get_guild_tickets(self.bot.config, guild.id)["categories"]
+        if not categories:
+            await _respond(
+                interaction,
+                "This server has no ticket categories yet. An administrator can add "
+                "one with `/manage tickets category`.",
+            )
             return
-        try:
-            reopened = await reopen_ticket(self.bot, interaction.guild, record)
-        except TicketError as exc:
-            await self._respond(interaction, str(exc))
+        if len(categories) == 1:
+            await self._start_ticket(interaction, categories)
             return
-        await self._respond(
-            interaction, f"Ticket #{int(reopened['number']):04d} reopened."
+        await interaction.response.send_message(
+            "What can we help you with?",
+            view=ticket_picker_view(categories),
+            ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
         )
+
 
     # ---- Component handling -------------------------------------------- #
     async def handle_ticket_component(
@@ -2068,6 +2194,10 @@ class TicketMixin:
 
         if action == ACTION_OPEN:
             await self._handle_open_button(interaction, argument)
+        elif action == ACTION_PICK:
+            await self._handle_pick(interaction)
+        elif action == ACTION_CONSOLE:
+            await self._handle_console_pick(interaction, argument)
         elif action == ACTION_CREATE:
             await self._handle_create_modal(interaction, argument)
         elif action == ACTION_CLAIM:
@@ -2080,6 +2210,55 @@ class TicketMixin:
             await self._handle_reopen_button(interaction, argument)
         else:
             logger.info("Ignoring unknown ticket component action %r", action)
+
+    async def _handle_pick(self, interaction: discord.Interaction) -> None:
+        """A category was chosen from ``/ticket``'s select."""
+        category_id = next(iter(interaction.data.get("values") or []), None)
+        settings = get_guild_tickets(self.bot.config, interaction.guild_id)
+        category = find_panel_category(settings, category_id)
+        if category is None:
+            await _respond(
+                interaction,
+                "That ticket category no longer exists — an administrator can "
+                "update it with `/manage tickets category`.",
+            )
+            return
+        await self._start_ticket(interaction, [category], category_id=category_id)
+
+    async def _handle_console_pick(
+        self, interaction: discord.Interaction, ticket_id: Optional[str]
+    ) -> None:
+        """A ticket was chosen from ``/manage tickets console``'s select.
+
+        The message is *edited* in place: the summary and select are replaced by
+        the ticket's details and its Claim/Close/Reopen buttons, which are the
+        ordinary in-ticket handlers.
+        """
+        record = get_ticket(ticket_id)
+        if record is None or int(record["guild_id"]) != interaction.guild_id:
+            await _respond(interaction, "That ticket no longer exists.")
+            return
+        if not is_ticket_staff(
+            interaction.user,
+            self.bot.config,
+            interaction.guild_id,
+            self._category_for_record(interaction, record),
+        ):
+            await _respond(interaction, "Only staff can open the ticket console.")
+            return
+        embed = ticket_embed(interaction.guild, record)
+        embed.add_field(
+            name="Location",
+            value=_ticket_mention(interaction.guild, record),
+            inline=False,
+        )
+        try:
+            await interaction.response.edit_message(
+                embed=embed, view=console_ticket_view(record)
+            )
+        except (discord.InteractionResponded, discord.HTTPException) as exc:
+            logger.info("Could not show ticket %s in the console: %s", record["id"], exc)
+            await _respond(interaction, "I couldn't open that ticket card — try again.")
 
     def _category_from(self, guild_id: int, category_id: Optional[str]) -> dict:
         settings = get_guild_tickets(self.bot.config, guild_id)
@@ -2162,6 +2341,10 @@ class TicketMixin:
         except TicketError as exc:
             await _respond(interaction, str(exc))
             return
+        if await self._refresh_card(
+            interaction, claimed, content=f"Ticket #{int(claimed['number']):04d} is yours."
+        ):
+            return
         await _respond(
             interaction, f"Ticket #{int(claimed['number']):04d} is yours."
         )
@@ -2209,6 +2392,8 @@ class TicketMixin:
         except TicketError as exc:
             await _respond(interaction, str(exc))
             return
+        if await self._refresh_card(interaction, closed):
+            return
         await _respond(interaction, f"Ticket #{int(closed['number']):04d} closed.")
 
     async def _handle_reopen_button(
@@ -2231,6 +2416,10 @@ class TicketMixin:
         except TicketError as exc:
             await _respond(interaction, str(exc))
             return
+        if await self._refresh_card(
+            interaction, reopened, content=f"Ticket #{int(reopened['number']):04d} reopened."
+        ):
+            return
         await _respond(interaction, f"Ticket #{int(reopened['number']):04d} reopened.")
 
     def _category_for_record(
@@ -2238,6 +2427,40 @@ class TicketMixin:
     ) -> Optional[dict]:
         settings = get_guild_tickets(self.bot.config, interaction.guild_id)
         return find_panel_category(settings, record.get("category_id"))
+
+    # ---- Console card refresh ------------------------------------------ #
+    @staticmethod
+    async def _refresh_card(
+        interaction: discord.Interaction, record: dict, content: Optional[str] = None
+    ) -> bool:
+        """Redraw the ephemeral card a button belongs to, when there is one.
+
+        Buttons inside a ticket act on the ticket's own control message
+        (``refresh_ticket_messages`` redraws that). The console's buttons live
+        on an ephemeral message instead, so after acting, that message has to be
+        redrawn here — otherwise it would keep offering, say, *Claim* for a
+        ticket the same staff member just claimed.
+        """
+        message = getattr(interaction, "message", None)
+        response = getattr(interaction, "response", None)
+        if message is None or response is None:
+            return False
+        if not getattr(getattr(message, "flags", None), "ephemeral", False):
+            return False
+        embed = ticket_embed(interaction.guild, record)
+        view = console_ticket_view(record)
+        try:
+            if response.is_done():
+                await interaction.edit_original_response(embed=embed, view=view)
+            else:
+                await response.edit_message(embed=embed, view=view, content=content)
+        except (discord.InteractionResponded, discord.HTTPException) as exc:
+            logger.info(
+                "Could not redraw the console card for ticket %s: %s",
+                record.get("id"), exc,
+            )
+            return False
+        return True
 
     # ---- Shared command helpers ---------------------------------------- #
     async def _require_ticket_staff(self, interaction: discord.Interaction) -> bool:
@@ -2256,34 +2479,6 @@ class TicketMixin:
         )
         return False
 
-    async def _resolve_ticket(
-        self, interaction: discord.Interaction, ticket: Optional[str]
-    ) -> Optional[dict]:
-        """Find the ticket a staff command refers to (or the current channel's).
-
-        A ticket id can come from the option or from the channel the command was
-        typed in, which is what makes ``/manage tickets claim`` work without
-        arguments inside a ticket. Returns ``None`` after responding when it
-        cannot be resolved — the callers then simply stop.
-        """
-        if ticket:
-            record = find_ticket(interaction.guild_id, ticket)
-            if record is None:
-                await _respond(interaction, "No ticket matches that number or id.")
-                return None
-            return record
-        record = get_ticket_by_thread(
-            interaction.guild_id, getattr(interaction, "channel_id", None)
-        )
-        if record is None:
-            await _respond(
-                interaction,
-                "Run this inside a ticket, or pass a ticket number "
-                "(see `/manage tickets list`).",
-            )
-            return None
-        return record
-
     # ---- Wiring helpers shared with RulesMixin-style callbacks --------- #
     @staticmethod
     async def _defer(interaction: discord.Interaction) -> None:
@@ -2298,9 +2493,39 @@ class TicketMixin:
         await _respond(interaction, content)
 
 
+class TicketCog(commands.Cog):
+    """``/ticket`` — the one member-facing ticket command.
+
+    It is deliberately top-level (like ``/apply``): members cannot see anything
+    under ``/manage``, and opening a ticket must not require finding a panel
+    message. It only ever *creates* a ticket — reading one is limited to the
+    member who opened it and to staff, and the picker is resolved against the
+    current categories.
+    """
+
+    def __init__(self, bot: commands.Bot) -> None:
+        self.bot = bot
+
+    @app_commands.command(
+        name="ticket",
+        description="Open a private ticket with the staff team.",
+    )
+    @app_commands.guild_only()
+    async def ticket(self, interaction: discord.Interaction) -> None:
+        if interaction.guild is None:
+            await _respond(interaction, "Tickets only work inside a server.")
+            return
+        mixin = _find_mixin(self.bot)
+        if mixin is None:  # pragma: no cover - the cog is always loaded
+            await _respond(interaction, "Tickets are not available right now.")
+            return
+        await mixin.ticket_command(interaction)
+
+
 __all__ = [
     "MODE_CHANNEL",
     "MODE_THREAD",
+    "TicketCog",
     "TicketError",
     "TicketMixin",
     "close_ticket",

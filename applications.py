@@ -1,19 +1,26 @@
 """Applications for Sentinel: a form members fill in, a review staff decide on.
 
-An administrator publishes an *application panel* (``/manage applications
-panel`` or the dashboard). Members press **Apply**, answer a short modal, and
-the submission is posted to the form's review channel with **Approve** and
-**Deny** buttons. Staff can also decide from ``/manage applications decide`` or
-from the dashboard; the applicant is DM'd the outcome and, when the form names
-one, gets its accept role.
+An administrator creates a form with ``/manage applications form`` (or the
+dashboard) and publishes an *application panel* with ``/manage applications
+panel``. Members press **Apply** — or run ``/apply`` — answer a short modal,
+and the submission is posted to the form's review channel with **Approve** and
+**Deny** buttons.
+
+Staff work from three commands: ``form`` (list when called bare; create, edit
+and delete with its options), ``panel`` (publish or refresh an Apply button)
+and ``review`` — one ephemeral message that *is* the queue: a summary and a
+select of submissions, and picking one swaps in the answers and the same
+Approve/Deny buttons the review card carries. ``decide`` is the by-id shortcut
+for a submission that is not in the select. The applicant is DM'd the outcome
+and, when the form names one, gets its accept role.
 
 Normal members can *submit* an application and nothing else. There is no
 command, button or panel that lets them list, read, edit or withdraw somebody
-else's — or even their own — submission: every read path
-(``/manage applications list``, ``view``, the dashboard pages) sits behind the
-staff check in :func:`is_application_staff`, and the dashboard itself requires
-the dashboard token. `/apply` is the only member-facing command, and all it
-does is open the modal.
+else's — or even their own — submission: every read path (``/manage
+applications form``, ``review``, ``decide``, the dashboard pages) sits behind
+the staff check in :func:`is_application_staff`, and the dashboard itself
+requires the dashboard token. `/apply` is the only member-facing command, and
+all it does is open the modal.
 
 Forms are stored per guild in ``config["applications"]``::
 
@@ -111,6 +118,10 @@ ACTION_MODAL = "modal"        # sentinel:ap:modal:<form_id>        (modal submit
 ACTION_CHOOSE = "choose"      # sentinel:ap:choose                 (form picker)
 ACTION_DECIDE = "decide"      # sentinel:ap:decide:<id>:<approve|deny>  (button)
 ACTION_DECIDED = "decided"    # sentinel:ap:decided:<id>:<approve|deny>  (modal submit)
+ACTION_REVIEW = "review"      # sentinel:ap:review                   (/manage applications review select)
+
+#: How many submissions the staff review queue offers (Discord allows 25).
+REVIEW_LIMIT = 25
 
 
 class ApplicationError(Exception):
@@ -368,7 +379,7 @@ def remove_form(config: dict, guild_id: int, wanted: object) -> dict:
     form = find_form(config, guild_id, wanted)
     if form is None:
         raise ApplicationError(
-            "No form matches that. Use `/manage applications forms`."
+            "No form matches that. Use `/manage applications form` to list them."
         )
     remaining = [
         existing
@@ -766,6 +777,55 @@ def review_view(application: dict) -> discord.ui.View:
     return view
 
 
+def review_queue_embed(guild: discord.Guild, submissions: list[dict]) -> discord.Embed:
+    """The summary above the staff review queue's submission select."""
+    counts: dict[str, int] = {}
+    for submission in submissions:
+        status = str(submission.get("status") or STATUS_PENDING)
+        counts[status] = counts.get(status, 0) + 1
+    embed = discord.Embed(
+        title="Applications to review",
+        description=(
+            "Pick a submission below to read the answers and approve or deny it. "
+            "The applicant is DMed the outcome."
+        ),
+        color=discord.Color.from_rgb(88, 165, 255),
+    )
+    for status in (STATUS_PENDING, STATUS_APPROVED, STATUS_DENIED):
+        if counts.get(status):
+            embed.add_field(name=status.capitalize(), value=str(counts[status]), inline=True)
+    embed.set_footer(text=f"{guild.name} • {len(submissions)} shown")
+    return embed
+
+
+def review_queue_view(submissions: list[dict]) -> discord.ui.View:
+    """A select of submissions for the staff review queue."""
+    view = discord.ui.View(timeout=300)
+    options = []
+    for submission in submissions[:REVIEW_LIMIT]:
+        label = f"#{submission['id']} · {submission.get('form_name') or 'application'}"
+        detail = " · ".join(
+            part
+            for part in (
+                str(submission.get("status") or STATUS_PENDING),
+                f"<@{submission.get('user_id')}>",
+                _format_timestamp(submission.get("submitted_at")),
+            )
+            if part
+        )
+        options.append(
+            discord.SelectOption(label=label[:100], value=str(submission["id"]), description=detail[:100] or None)
+        )
+    view.add_item(
+        discord.ui.Select(
+            placeholder="Choose a submission",
+            options=options,
+            custom_id=custom_id(ACTION_REVIEW),
+        )
+    )
+    return view
+
+
 def decision_modal(application: dict, decision: str) -> discord.ui.Modal:
     """Ask for an optional note before the decision is recorded."""
     verb = "Approve" if decision == DECISION_APPROVE else "Deny"
@@ -1149,30 +1209,77 @@ class ApplicationsMixin:
         description="Application forms, panels and decisions.",
     )
 
-    # ---- Forms (administrators, but the list is staff-readable) --------- #
+    # ---- Forms: list, create, edit and delete in one command ----------- #
     @applications_group.command(
-        name="form-add",
-        description="Create an application form. (administrators)",
+        name="form",
+        description="List, create, edit or delete an application form. (administrators)",
     )
     @app_commands.describe(
-        name="Form name, e.g. 'Staff application'.",
+        name="The form's name. Omit it to list the forms instead.",
         review_channel="Staff channel where submissions are posted.",
-        questions="Questions separated by ' | ' (up to 5). Defaults to one starter question.",
-        description="Optional text shown on the panel.",
+        questions="Questions separated by ' | ' (up to 5), e.g. 'Why us? | short:Timezone'.",
+        description="Optional text shown on the panel and the review card.",
+        accept_role="Role to give an approved applicant.",
+        remove_role="Role to take away from an approved applicant.",
+        allow_multiple="Allow a new application while one is pending (default: no).",
+        remove="Set to true to delete this form (old submissions stay readable).",
     )
-    async def applications_form_add(
+    async def applications_form(
         self,
         interaction: discord.Interaction,
-        name: str,
-        review_channel: discord.TextChannel,
+        name: Optional[str] = None,
+        review_channel: Optional[discord.TextChannel] = None,
         questions: Optional[str] = None,
         description: Optional[str] = None,
+        accept_role: Optional[discord.Role] = None,
+        remove_role: Optional[discord.Role] = None,
+        allow_multiple: Optional[bool] = None,
+        remove: Optional[bool] = None,
     ) -> None:
+        """Without ``name`` this is the old ``forms`` list command.
+
+        Naming an existing form edits it and keeps every option that was left
+        out, so ``/manage applications form name:"Staff" allow_multiple:true``
+        does not wipe the questions or the review channel.
+        """
         await self._defer(interaction)
         if not is_administrator(interaction):
-            await self._respond(interaction, "Only server administrators can create forms.")
+            await self._respond(
+                interaction, "Only server administrators can change application forms."
+            )
             return
         guild = interaction.guild
+        forms = get_guild_forms(self.bot.config, guild.id)
+
+        if name is None:
+            if not forms:
+                await self._respond(
+                    interaction,
+                    "No application forms yet — create one with "
+                    "`/manage applications form name:Staff application "
+                    "review_channel:#staff-apply`.",
+                )
+                return
+            lines = [f"**Application forms** ({len(forms)}) — edit one by naming it."]
+            for form in forms:
+                review = (
+                    f"<#{form['review_channel_id']}>"
+                    if form.get("review_channel_id")
+                    else "the staff channel"
+                )
+                panel = (
+                    f"<#{form['panel_channel_id']}>"
+                    if form.get("panel_channel_id")
+                    else "no panel yet"
+                )
+                lines.append(
+                    f"- **{form['name']}** · reviews in {review} · panel: {panel}\n"
+                    f"  asks: "
+                    + ", ".join(question["label"] for question in form["questions"])
+                )
+            await self._respond(interaction, "\n".join(lines))
+            return
+
         cleaned = (name or "").strip()
         if not cleaned:
             await self._respond(interaction, "Give the form a name.")
@@ -1183,136 +1290,96 @@ class ApplicationsMixin:
             )
             return
         existing = find_form(self.bot.config, guild.id, cleaned)
-        if existing is not None:
+
+        if remove:
+            if existing is None:
+                await self._respond(interaction, f"No application form named **{cleaned}**.")
+                return
+            try:
+                removed = remove_form(self.bot.config, guild.id, cleaned)
+            except ApplicationError as exc:
+                await self._respond(interaction, str(exc))
+                return
             await self._respond(
                 interaction,
-                f"A form called **{cleaned}** already exists. Edit it from the "
-                "dashboard, or pick another name.",
+                f"Deleted **{removed['name']}**. Submissions already received stay in the "
+                "dashboard's history.",
             )
             return
-        if review_channel.guild.id != guild.id:
-            await self._respond(interaction, "Choose a channel from this server.")
-            return
-        parsed = parse_question_list(questions) if questions else []
-        form = {
-            "form_id": new_form_id(),
-            "name": cleaned,
-            "description": description,
-            "review_channel_id": review_channel.id,
-            "questions": parsed or [{"label": DEFAULT_QUESTION}],
-        }
-        try:
-            stored = upsert_form(self.bot.config, guild.id, form)
-        except ApplicationError as exc:
-            await self._respond(interaction, str(exc))
-            return
-        await self._respond(
-            interaction,
-            f"Form **{stored['name']}** created with "
-            f"{len(stored['questions'])} question(s) and reviews in "
-            f"{review_channel.mention}. Publish it with "
-            f"`/manage applications panel`.",
-        )
 
-    @applications_group.command(
-        name="form-questions",
-        description="Replace a form's questions (up to 5, separated by ' | '). (administrators)",
-    )
-    @app_commands.describe(
-        form="The form's name or id.",
-        questions="Questions separated by ' | '. Prefix with 'short:' for a one-line box.",
-    )
-    async def applications_form_questions(
-        self, interaction: discord.Interaction, form: str, questions: str
-    ) -> None:
-        await self._defer(interaction)
-        if not is_administrator(interaction):
-            await self._respond(interaction, "Only server administrators can edit forms.")
-            return
-        record = find_form(self.bot.config, interaction.guild_id, form)
-        if record is None:
-            await self._respond(interaction, "No form matches that name or id.")
-            return
-        parsed = parse_question_list(questions)
-        if not parsed:
-            await self._respond(
-                interaction, "Give at least one question, separated by ` | `."
-            )
-            return
-        try:
-            updated = update_form(
-                self.bot.config, interaction.guild_id, record["form_id"], questions=parsed
-            )
-        except ApplicationError as exc:
-            await self._respond(interaction, str(exc))
-            return
-        await self._respond(
-            interaction,
-            f"**{updated['name']}** now asks:\n"
-            + "\n".join(
-                f"{index}. {question['label']}" for index, question in enumerate(updated["questions"], 1)
-            ),
-        )
+        for option, value in (
+            ("review channel", review_channel),
+            ("accept role", accept_role),
+            ("remove role", remove_role),
+        ):
+            if value is not None and getattr(value, "guild", guild).id != guild.id:
+                await self._respond(interaction, f"Choose a {option} from this server.")
+                return
 
-    @applications_group.command(
-        name="form-remove",
-        description="Delete an application form. (administrators)",
-    )
-    @app_commands.describe(form="The form's name or id.")
-    async def applications_form_remove(
-        self, interaction: discord.Interaction, form: str
-    ) -> None:
-        await self._defer(interaction)
-        if not is_administrator(interaction):
-            await self._respond(interaction, "Only server administrators can delete forms.")
-            return
-        try:
-            removed = remove_form(self.bot.config, interaction.guild_id, form)
-        except ApplicationError as exc:
-            await self._respond(interaction, str(exc))
-            return
-        await self._respond(
-            interaction,
-            f"Deleted **{removed['name']}**. Submissions already received stay in the "
-            "dashboard's history.",
-        )
-
-    @applications_group.command(
-        name="forms",
-        description="List this server's application forms.",
-    )
-    async def applications_forms(self, interaction: discord.Interaction) -> None:
-        await self._defer(interaction)
-        if not await self._require_application_staff(interaction):
-            return
-        forms = get_guild_forms(self.bot.config, interaction.guild_id)
-        if not forms:
+        if existing is None:
+            if review_channel is None:
+                await self._respond(
+                    interaction,
+                    "New forms need a review channel: "
+                    "`/manage applications form name:Staff application "
+                    "review_channel:#staff-apply`.",
+                )
+                return
+            parsed = parse_question_list(questions) if questions else []
+            form = {
+                "form_id": new_form_id(),
+                "name": cleaned,
+                "description": description,
+                "review_channel_id": review_channel.id,
+                "accept_role_id": accept_role.id if accept_role is not None else None,
+                "remove_role_id": remove_role.id if remove_role is not None else None,
+                "allow_multiple": bool(allow_multiple),
+                "questions": parsed or [{"label": DEFAULT_QUESTION}],
+            }
+            try:
+                stored = upsert_form(self.bot.config, guild.id, form)
+            except ApplicationError as exc:
+                await self._respond(interaction, str(exc))
+                return
             await self._respond(
                 interaction,
-                "No application forms yet. An administrator can create one with "
-                "`/manage applications form-add`.",
+                f"Form **{stored['name']}** created with {len(stored['questions'])} "
+                f"question(s) and reviews in {review_channel.mention}. Publish it with "
+                "`/manage applications panel`.",
             )
             return
-        lines = [f"**Application forms** ({len(forms)})"]
-        for form in forms:
-            review = (
-                f"<#{form['review_channel_id']}>"
-                if form.get("review_channel_id")
-                else "the staff channel"
-            )
-            panel = (
-                f"<#{form['panel_channel_id']}>"
-                if form.get("panel_channel_id")
-                else "no panel yet"
-            )
-            questions = ", ".join(
-                question["label"] for question in form["questions"]
-            )
-            lines.append(
-                f"- **{form['name']}** · reviews in {review} · panel: {panel}\n"
-                f"  asks: {questions}"
-            )
-        await self._respond(interaction, "\n".join(lines))
+
+        fields: dict = {"name": cleaned}
+        if review_channel is not None:
+            fields["review_channel_id"] = review_channel.id
+        if questions is not None:
+            parsed = parse_question_list(questions)
+            if not parsed:
+                await self._respond(
+                    interaction, "Give at least one question, separated by ` | `."
+                )
+                return
+            fields["questions"] = parsed
+        if description is not None:
+            fields["description"] = description
+        if accept_role is not None:
+            fields["accept_role_id"] = accept_role.id
+        if remove_role is not None:
+            fields["remove_role_id"] = remove_role.id
+        if allow_multiple is not None:
+            fields["allow_multiple"] = bool(allow_multiple)
+        try:
+            stored = update_form(self.bot.config, guild.id, existing["form_id"], **fields)
+        except ApplicationError as exc:
+            await self._respond(interaction, str(exc))
+            return
+        changed = ", ".join(
+            key for key in fields if key != "name"
+        ) or "nothing else"
+        await self._respond(
+            interaction,
+            f"Updated **{stored['name']}** ({changed}).",
+        )
 
     # ---- Panel --------------------------------------------------------- #
     @applications_group.command(
@@ -1363,13 +1430,13 @@ class ApplicationsMixin:
             f"Panel for **{published['name']}** published in <#{published['panel_channel_id']}>.",
         )
 
-    # ---- Review -------------------------------------------------------- #
+    # ---- Review: the queue, the answers and the decision --------------- #
     @applications_group.command(
-        name="list",
-        description="List applications. (staff)",
+        name="review",
+        description="Review submissions: pick one to read the answers and approve or deny it. (staff)",
     )
     @app_commands.describe(
-        status="Filter by decision state.",
+        status="Which submissions to offer (default: the pending ones).",
         form="Only submissions for this form.",
     )
     @app_commands.choices(
@@ -1380,60 +1447,48 @@ class ApplicationsMixin:
             app_commands.Choice(name="All", value="all"),
         ]
     )
-    async def applications_list(
+    async def applications_review(
         self,
         interaction: discord.Interaction,
         status: Optional[app_commands.Choice[str]] = None,
         form: Optional[str] = None,
     ) -> None:
+        """One ephemeral message that is the review queue.
+
+        Picking a submission replaces the summary with the applicant's answers
+        and the same Approve/Deny buttons the review card in the staff channel
+        carries, so there is one decision path no matter where staff start.
+        """
         await self._defer(interaction)
         if not await self._require_application_staff(interaction):
             return
         wanted = status.value if status is not None else STATUS_PENDING
         record = find_form(self.bot.config, interaction.guild_id, form) if form else None
-        applications = list_applications(
+        submissions = list_applications(
             interaction.guild_id,
             status=None if wanted == "all" else wanted,
             form_id=record["form_id"] if record is not None else None,
+            limit=REVIEW_LIMIT,
         )
-        if not applications:
-            await self._respond(interaction, "No applications match that filter.")
-            return
-        lines = [f"**Applications** ({len(applications)} shown)"]
-        for application in applications:
-            lines.append(
-                f"- `#{application['id']}` · **{application['form_name']}** · "
-                f"<@{application['user_id']}> · `{application['status']}` · "
-                f"{_format_timestamp(application['submitted_at'])}"
+        if not submissions:
+            await self._respond(
+                interaction,
+                "No submissions match that filter. Members apply with `/apply` or a "
+                "panel button.",
             )
-        lines.append("Use `/manage applications view <id>` for the answers.")
-        await self._respond(interaction, "\n".join(lines))
-
-    @applications_group.command(
-        name="view",
-        description="Show one application's answers. (staff)",
-    )
-    @app_commands.describe(application="The application id from /manage applications list.")
-    async def applications_view(
-        self, interaction: discord.Interaction, application: str
-    ) -> None:
-        await self._defer(interaction)
-        if not await self._require_application_staff(interaction):
-            return
-        record = get_application(application)
-        if record is None or int(record["guild_id"]) != interaction.guild_id:
-            await self._respond(interaction, "No application matches that id.")
             return
         await interaction.followup.send(
-            embed=review_embed(interaction.guild, record), ephemeral=True
+            embed=review_queue_embed(interaction.guild, submissions),
+            view=review_queue_view(submissions),
+            ephemeral=True,
         )
 
     @applications_group.command(
         name="decide",
-        description="Approve or deny an application. (staff)",
+        description="Approve or deny one submission by id, without opening the queue. (staff)",
     )
     @app_commands.describe(
-        application="The application id.",
+        application="The submission id shown in /manage applications review.",
         decision="Approve or deny it.",
         note="Optional note shown to the applicant and stored with the decision.",
     )
@@ -1475,6 +1530,7 @@ class ApplicationsMixin:
             "The applicant has been told.",
         )
 
+
     # ---- Component handling -------------------------------------------- #
     async def handle_application_component(
         self,
@@ -1507,6 +1563,10 @@ class ApplicationsMixin:
                 interaction,
                 parts[0] if parts else None,
                 parts[1] if len(parts) > 1 else None,
+            )
+        elif action == ACTION_REVIEW:
+            await self._handle_review_pick(
+                interaction, parts[0] if parts else None
             )
         else:
             logger.info("Ignoring unknown application component action %r", action)
@@ -1579,6 +1639,36 @@ class ApplicationsMixin:
             f"Thanks! Application `#{application['id']}` for **{form['name']}** "
             "is with the staff team. You'll get a DM when they decide.",
         )
+
+    async def _handle_review_pick(
+        self, interaction: discord.Interaction, application_id: Optional[str]
+    ) -> None:
+        """A submission was chosen from ``/manage applications review``.
+
+        The queue message is *edited* into the review card: the same embed the
+        staff channel shows, and the same Approve/Deny buttons, so both routes
+        end in :func:`decide_application`.
+        """
+        record = get_application(application_id)
+        if record is None or int(record["guild_id"]) != interaction.guild_id:
+            await _respond(interaction, "That application no longer exists.")
+            return
+        if not is_application_staff(
+            interaction.user, self.bot.config, interaction.guild_id
+        ):
+            await _respond(interaction, "Only staff can review applications.")
+            return
+        try:
+            await interaction.response.edit_message(
+                embed=review_embed(interaction.guild, record),
+                view=review_view(record),
+            )
+        except (discord.InteractionResponded, discord.HTTPException) as exc:
+            logger.info(
+                "Could not show application %s in the review queue: %s",
+                record["id"], exc,
+            )
+            await _respond(interaction, "I couldn't open that submission — try again.")
 
     async def _handle_decide_button(
         self,
@@ -1756,6 +1846,8 @@ def parse_question_list(text: Optional[str]) -> list[dict]:
 __all__ = [
     "ApplicationError",
     "ApplicationsCog",
+    "review_queue_embed",
+    "review_queue_view",
     "ApplicationsMixin",
     "DECISION_APPROVE",
     "DECISION_DENY",

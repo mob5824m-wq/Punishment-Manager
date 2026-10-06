@@ -11,15 +11,20 @@ Everything is reached through one slash-command group, ``/manage``:
     /manage setup       configure roles, staff channel and DMs (admins)
     /manage fixcommands clean up duplicated slash commands (admins)
     /manage rules ...   publish rule sets and their acceptance role (admins)
-    /manage tickets ... ticket panel, categories, claim/close (staff)
-    /manage applications ... application forms, panels and decisions (staff)
+    /manage tickets panel      set the options and publish the panel (admins)
+    /manage tickets category   list / add / edit / remove a panel button (admins)
+    /manage tickets console    work the ticket queue (staff)
+    /manage applications form    list / create / edit / delete a form (admins)
+    /manage applications panel   publish an Apply panel (admins)
+    /manage applications review  read submissions and decide (staff)
     /apply              fill in an application form (every member)
+    /ticket             open a ticket (every member)
 
 Members open tickets and submit applications through the buttons on panels
-staff published; they can never list, view or edit anybody's ticket or
-application. Its authenticated server-side web dashboard manages connected
-servers, moderation, warnings, the rules post, reaction-role menus, tickets,
-applications, configuration and history.
+staff published, or with those two member commands; they can never list, view
+or edit anybody's ticket or application. Its authenticated server-side web
+dashboard manages connected servers, moderation, warnings, the rules post,
+reaction-role menus, tickets, applications, configuration and history.
 """
 
 from __future__ import annotations
@@ -63,7 +68,7 @@ from applications import (
     ApplicationsMixin,
     route_application_interaction,
 )
-from tickets import TicketMixin, route_ticket_interaction
+from tickets import TicketCog, TicketMixin, route_ticket_interaction
 
 
 # --------------------------------------------------------------------------- #
@@ -1346,8 +1351,9 @@ class SentinelCog(RulesMixin, TicketMixin, ApplicationsMixin, commands.Cog):
     own. The mixins' helpers expect ``bot`` and ``_save_config`` (each is
     normally constructed with them); this cog is the one Discord sees.
 
-    ``/apply`` is the exception: it is a *top-level* command, so it lives in
-    :class:`applications.ApplicationsCog`.
+    ``/apply`` and ``/ticket`` are the exceptions: they are *top-level*
+    commands, so they live in :class:`applications.ApplicationsCog` and
+    :class:`tickets.TicketCog`.
     """
 
     def __init__(self, bot_: SentinelBot) -> None:
@@ -2187,9 +2193,11 @@ async def _register_cog() -> None:
     if bot.get_cog("ReactionRolesCog") is None:
         await bot.add_cog(ReactionRolesCog(bot))
     if bot.get_cog("ApplicationsCog") is None:
-        # /apply: the one member-facing command, published as its own
-        # top-level command.
+        # /apply and /ticket: the two member-facing commands, published as
+        # top-level commands of their own.
         await bot.add_cog(ApplicationsCog(bot))
+    if bot.get_cog("TicketCog") is None:
+        await bot.add_cog(TicketCog(bot))
 
 
 # --------------------------------------------------------------------------- #

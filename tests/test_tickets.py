@@ -41,7 +41,7 @@ import discord  # noqa: E402
 import bot as bot_module  # noqa: E402
 import store  # noqa: E402
 import tickets  # noqa: E402
-from tickets import TicketError, TicketMixin  # noqa: E402
+from tickets import TicketCog, TicketError, TicketMixin  # noqa: E402
 
 
 def _patch_channel_types() -> list:
@@ -109,6 +109,7 @@ GUILD_ID = 123456789012345678
 OPENER_ID = 111111111111111111
 STAFF_ID = 222222222222222222
 OUTSIDER_ID = 333333333333333333
+ADMIN_ID = 121212121212121212
 BOT_ID = 999999999999999999
 STAFF_ROLE_ID = 444444444444444444
 OTHER_ROLE_ID = 555555555555555555
@@ -318,6 +319,12 @@ class _FakeGuild:
             self._channels[channel.id] = channel
             self.text_channels.append(channel)
 
+    def add_category(self, category_id: int, name: str):
+        category = _FakeCategoryChannel(category_id, name)
+        self.categories.append(category)
+        self._channels[category.id] = category
+        return category
+
     def add_role(self, role_id: int, name: str, members=()) -> _FakeRole:
         role = _FakeRole(role_id, name, members)
         self._roles[role_id] = role
@@ -351,6 +358,7 @@ class _FakeResponse:
         self.deferred = False
         self.messages: list[dict] = []
         self.modals: list[object] = []
+        self.edits: list[dict] = []
 
     def is_done(self) -> bool:
         return self.deferred
@@ -363,6 +371,10 @@ class _FakeResponse:
             {"content": content, "embed": embed, "view": view, "ephemeral": ephemeral}
         )
 
+    async def edit_message(self, *, embed=None, view=None, content=None) -> None:
+        # The console/review selects rewrite their own ephemeral message.
+        self.edits.append({"content": content, "embed": embed, "view": view})
+
     async def send_modal(self, modal) -> None:
         self.modals.append(modal)
 
@@ -371,23 +383,44 @@ class _FakeFollowup:
     def __init__(self) -> None:
         self.messages: list[dict] = []
         self.embeds: list[object] = []
+        self.views: list[object] = []
 
     async def send(self, content=None, *, embed=None, ephemeral=False, view=None, allowed_mentions=None):
         if content is not None:
             self.messages.append({"content": content, "ephemeral": ephemeral})
         if embed is not None:
             self.embeds.append(embed)
+        if view is not None:
+            self.views.append(view)
+
+
+class _FakeComponentMessage:
+    """Just enough of a message for ``interaction.message``.
+
+    ``_refresh_card`` looks at ``flags.ephemeral`` to tell the console's card
+    (ephemeral, worth redrawing) from a ticket's own public control message.
+    """
+
+    def __init__(self, *, ephemeral: bool = False) -> None:
+        self.flags = SimpleNamespace(ephemeral=ephemeral)
 
 
 class _FakeInteraction:
-    def __init__(self, *, user, guild, channel_id=PANEL_CHANNEL_ID, data=None) -> None:
+    def __init__(
+        self, *, user, guild, channel_id=PANEL_CHANNEL_ID, data=None, message=None
+    ) -> None:
         self.user = user
         self.guild = guild
         self.guild_id = guild.id
         self.channel_id = channel_id
         self.data = data or {}
+        self.message = message
+        self.edited: list[dict] = []
         self.response = _FakeResponse()
         self.followup = _FakeFollowup()
+
+    async def edit_original_response(self, *, embed=None, view=None) -> None:
+        self.edited.append({"embed": embed, "view": view})
 
     def replies(self) -> list[str]:
         return [item["content"] for item in self.response.messages + self.followup.messages]
@@ -695,18 +728,28 @@ class TicketFlowTests(_IsolatedStoreMixin, unittest.IsolatedAsyncioTestCase):
 
 
 class TicketCommandTests(_IsolatedStoreMixin, unittest.IsolatedAsyncioTestCase):
-    """The slash commands, including what a normal member is refused."""
+    """The three staff commands, and what a normal member is refused.
+
+    The surface is deliberately small: ``panel`` configures and publishes,
+    ``category`` lists/adds/edits/removes, ``console`` is where staff work the
+    queue. Reading or acting on a ticket that is not yours is refused on every
+    one of them.
+    """
 
     def setUp(self) -> None:
         self._isolate()
         self.guild = _FakeGuild()
         self.staff_role = self.guild.add_role(STAFF_ROLE_ID, "Staff")
+        self.category = self.guild.add_category(CATEGORY_CHANNEL_ID, "Tickets")
         self.opener = _member(OPENER_ID)
         self.staff = _member(STAFF_ID, roles=[STAFF_ROLE_ID])
-        self.guild.set_members([self.opener, self.staff])
+        self.admin = _member(ADMIN_ID)
+        self.admin.guild_permissions = SimpleNamespace(administrator=True)
+        self.guild.set_members([self.opener, self.staff, self.admin])
         self.config = {
             "server_id": GUILD_ID,
             "staff_role_id": STAFF_ROLE_ID,
+            "staff_channel_id": LOG_CHANNEL_ID,
             "tickets": {
                 str(GUILD_ID): {
                     "log_channel_id": LOG_CHANNEL_ID,
@@ -735,76 +778,244 @@ class TicketCommandTests(_IsolatedStoreMixin, unittest.IsolatedAsyncioTestCase):
             subject="Please help",
         )
 
-    async def test_a_member_cannot_list_or_view_tickets(self) -> None:
+    async def test_a_member_cannot_use_any_staff_ticket_command(self) -> None:
         await self._open_ticket()
         for handler, kwargs in (
-            (self.mixin.tickets_list.callback, {}),
-            (self.mixin.tickets_view.callback, {"ticket": "#1"}),
-            (self.mixin.tickets_claim.callback, {"ticket": "#1"}),
-            (self.mixin.tickets_reopen.callback, {"ticket": "#1"}),
+            (self.mixin.tickets_console.callback, {}),
+            (self.mixin.tickets_category.callback, {}),
+            (self.mixin.tickets_panel.callback, {}),
         ):
             with self.subTest(handler=handler.__name__):
                 interaction = _FakeInteraction(user=self.opener, guild=self.guild)
                 await handler(self.mixin, interaction, **kwargs)
+                reply = "\n".join(interaction.replies()).lower()
                 self.assertTrue(
-                    any(
-                        "only staff" in reply.lower()
-                        for reply in interaction.replies()
-                    ),
+                    "only staff" in reply or "only server administrators" in reply,
                     interaction.replies(),
                 )
 
-    async def test_staff_can_list_and_view_tickets(self) -> None:
+    async def test_console_lists_and_details_tickets_for_staff(self) -> None:
         ticket = await self._open_ticket()
-        listing = _FakeInteraction(user=self.staff, guild=self.guild)
-        await self.mixin.tickets_list.callback(self.mixin, listing)
-        self.assertTrue(any("#0001" in reply for reply in listing.replies()), listing.replies())
+        console = _FakeInteraction(user=self.staff, guild=self.guild)
+        await self.mixin.tickets_console.callback(self.mixin, console)
+        self.assertEqual(len(console.followup.embeds), 1)
+        embed = console.followup.embeds[0]
+        self.assertEqual(embed.title, "Ticket console")
+        self.assertIn("Open", [field.name for field in embed.fields])
+        # The select offers the ticket by number and subject.
+        view = console.followup.views[0]
+        options = view.children[0].options
+        self.assertEqual(options[0].value, str(ticket["id"]))
+        self.assertIn("#0001", options[0].label)
+        self.assertIn("Please help", options[0].description)
 
-        detail = _FakeInteraction(user=self.staff, guild=self.guild)
-        await self.mixin.tickets_view.callback(self.mixin, detail, ticket="#0001")
-        self.assertEqual(len(detail.followup.embeds), 1)
-        self.assertIn("Ticket #0001", detail.followup.embeds[0].title)
-
-    async def test_staff_can_claim_and_close_from_inside_the_ticket(self) -> None:
-        ticket = await self._open_ticket()
-        claim = _FakeInteraction(
-            user=self.staff, guild=self.guild, channel_id=ticket["thread_id"]
+        # Picking it rewrites the same message into the ticket's card, with the
+        # buttons that act on it.
+        pick = _FakeInteraction(
+            user=self.staff,
+            guild=self.guild,
+            data={"custom_id": f"sentinel:tk:console:{ticket['id']}", "values": [str(ticket["id"])]},
         )
-        await self.mixin.tickets_claim.callback(self.mixin, claim)
-        self.assertEqual(tickets.get_ticket(ticket["id"])["status"], tickets.STATUS_CLAIMED)
+        await tickets.route_ticket_interaction(self.bot, pick)
+        self.assertEqual(len(pick.response.edits), 1)
+        card = pick.response.edits[0]
+        self.assertIn("Ticket #0001", card["embed"].title)
+        labels = [child.label for child in card["view"].children]
+        self.assertEqual(labels, ["Claim", "Close"])
 
-        close = _FakeInteraction(
-            user=self.staff, guild=self.guild, channel_id=ticket["thread_id"]
-        )
-        await self.mixin.tickets_close.callback(self.mixin, close, reason="Done")
-        self.assertEqual(tickets.get_ticket(ticket["id"])["status"], tickets.STATUS_CLOSED)
-        self.assertEqual(tickets.get_ticket(ticket["id"])["close_reason"], "Done")
-
-    async def test_the_opener_can_withdraw_their_own_ticket_only(self) -> None:
+    async def test_console_refuses_a_member_and_hides_closed_tickets_by_default(self) -> None:
         ticket = await self._open_ticket()
-        own = _FakeInteraction(
-            user=self.opener, guild=self.guild, channel_id=ticket["thread_id"]
-        )
-        await self.mixin.tickets_close.callback(self.mixin, own)
-        self.assertEqual(tickets.get_ticket(ticket["id"])["status"], tickets.STATUS_CLOSED)
+        await tickets.close_ticket(self.bot, self.guild, ticket, self.staff, "done")
 
-    async def test_a_member_cannot_close_someone_elses_ticket(self) -> None:
-        ticket = await self._open_ticket()
-        outsider = _member(OUTSIDER_ID)
-        self.guild.set_members([self.opener, self.staff, outsider])
-        other = _FakeInteraction(user=outsider, guild=self.guild, channel_id=ticket["thread_id"])
-        await self.mixin.tickets_close.callback(self.mixin, other)
-        self.assertEqual(tickets.get_ticket(ticket["id"])["status"], tickets.STATUS_OPEN)
+        empty = _FakeInteraction(user=self.staff, guild=self.guild)
+        await self.mixin.tickets_console.callback(self.mixin, empty)
         self.assertTrue(
-            any("only staff" in reply.lower() for reply in other.replies()), other.replies()
+            any("no tickets match" in reply.lower() for reply in empty.replies()),
+            empty.replies(),
         )
 
-    async def test_categories_command_lists_modes(self) -> None:
-        interaction = _FakeInteraction(user=self.staff, guild=self.guild)
-        await self.mixin.tickets_categories.callback(self.mixin, interaction)
-        reply = "\n".join(interaction.replies())
+        closed = _FakeInteraction(user=self.staff, guild=self.guild)
+        await self.mixin.tickets_console.callback(
+            self.mixin, closed, status=SimpleNamespace(value=tickets.STATUS_CLOSED)
+        )
+        self.assertEqual(len(closed.followup.embeds), 1)
+        # A closed ticket's card offers Reopen, not Claim.
+        pick = _FakeInteraction(
+            user=self.staff,
+            guild=self.guild,
+            data={"custom_id": f"sentinel:tk:console:{ticket['id']}", "values": [str(ticket["id"])]},
+        )
+        await tickets.route_ticket_interaction(self.bot, pick)
+        labels = [child.label for child in pick.response.edits[0]["view"].children]
+        self.assertEqual(labels, ["Reopen"])
+
+        refused = _FakeInteraction(user=self.opener, guild=self.guild)
+        await self.mixin.tickets_console.callback(self.mixin, refused)
+        self.assertTrue(
+            any("only staff" in reply.lower() for reply in refused.replies()),
+            refused.replies(),
+        )
+
+    async def test_claiming_from_the_console_redraws_its_card(self) -> None:
+        """A console button must not leave its own card offering the old action.
+
+        The card is an ephemeral message (not the ticket's control message), so
+        ``_refresh_card`` redraws it with the state the action produced.
+        """
+        ticket = await self._open_ticket()
+        press = _FakeInteraction(
+            user=self.staff,
+            guild=self.guild,
+            data={"custom_id": f"sentinel:tk:claim:{ticket['id']}"},
+            message=_FakeComponentMessage(ephemeral=True),
+        )
+        await tickets.route_ticket_interaction(self.bot, press)
+        card = press.response.edits[0]
+        self.assertEqual(
+            tickets.get_ticket(ticket["id"])["status"], tickets.STATUS_CLAIMED
+        )
+        # Claim is gone (already claimed); Close is still there.
+        self.assertEqual([child.label for child in card["view"].children], ["Close"])
+        self.assertIn("is yours", card["content"])
+
+        # A button inside the ticket keeps its existing behaviour: the public
+        # control message is left to refresh_ticket_messages().
+        inside = _FakeInteraction(
+            user=self.staff,
+            guild=self.guild,
+            channel_id=ticket["thread_id"],
+            data={"custom_id": f"sentinel:tk:close:{ticket['id']}"},
+            message=_FakeComponentMessage(ephemeral=False),
+        )
+        await tickets.route_ticket_interaction(self.bot, inside)
+        self.assertEqual(inside.response.edits, [])
+        self.assertEqual(len(inside.response.modals), 1)
+
+    async def test_category_command_lists_adds_edits_and_removes(self) -> None:
+        listed = _FakeInteraction(user=self.admin, guild=self.guild)
+        await self.mixin.tickets_category.callback(self.mixin, listed)
+        reply = "\n".join(listed.replies())
         self.assertIn("General help", reply)
         self.assertIn(tickets.MODE_THREAD, reply)
+
+        added = _FakeInteraction(user=self.admin, guild=self.guild)
+        await self.mixin.tickets_category.callback(
+            self.mixin, added, label="Billing", emoji="💳", description="Invoices"
+        )
+        stored = tickets.find_category(
+            tickets.get_guild_tickets(self.bot.config, GUILD_ID), "Billing"
+        )
+        self.assertIsNotNone(stored)
+        self.assertEqual(stored["description"], "Invoices")
+
+        edited = _FakeInteraction(user=self.admin, guild=self.guild)
+        await self.mixin.tickets_category.callback(
+            self.mixin, edited, label="Billing", mode=SimpleNamespace(value=tickets.MODE_CHANNEL)
+        )
+        stored = tickets.find_category(
+            tickets.get_guild_tickets(self.bot.config, GUILD_ID), "Billing"
+        )
+        # Editing by name keeps the options that were left out ...
+        self.assertEqual(stored["description"], "Invoices")
+        self.assertEqual(stored["emoji"], "💳")
+        # ... and applies the one that was given.
+        self.assertEqual(stored["mode"], tickets.MODE_CHANNEL)
+
+        removed = _FakeInteraction(user=self.admin, guild=self.guild)
+        await self.mixin.tickets_category.callback(
+            self.mixin, removed, label="Billing", remove=True
+        )
+        self.assertIsNone(
+            tickets.find_category(tickets.get_guild_tickets(self.bot.config, GUILD_ID), "Billing")
+        )
+
+    async def test_panel_command_saves_options_and_publishes(self) -> None:
+        admin = _FakeInteraction(user=self.admin, guild=self.guild)
+        await self.mixin.tickets_panel.callback(
+            self.mixin,
+            admin,
+            channel=self.guild.get_channel(PANEL_CHANNEL_ID),
+            mode=SimpleNamespace(value=tickets.MODE_CHANNEL),
+            log=self.guild.get_channel(LOG_CHANNEL_ID),
+            parent=self.category,
+        )
+        self.assertEqual(len(admin.followup.messages), 1)
+        reply = admin.followup.messages[0]["content"]
+        self.assertIn("Saved:", reply)
+        self.assertIn("published", reply)
+        settings = tickets.get_guild_tickets(self.bot.config, GUILD_ID)
+        self.assertEqual(settings["mode"], tickets.MODE_CHANNEL)
+        self.assertEqual(settings["log_channel_id"], LOG_CHANNEL_ID)
+        self.assertEqual(settings["category_id"], CATEGORY_CHANNEL_ID)
+        self.assertTrue(settings["panel"]["message_id"])
+
+    async def test_panel_command_with_a_channel_only_refreshes(self) -> None:
+        before = tickets.get_guild_tickets(self.bot.config, GUILD_ID)["mode"]
+        admin = _FakeInteraction(user=self.admin, guild=self.guild)
+        await self.mixin.tickets_panel.callback(
+            self.mixin, admin, channel=self.guild.get_channel(PANEL_CHANNEL_ID)
+        )
+        self.assertIn("published", admin.followup.messages[0]["content"])
+        # A refresh must not silently reset the server's mode.
+        self.assertEqual(tickets.get_guild_tickets(self.bot.config, GUILD_ID)["mode"], before)
+
+    async def test_panel_command_without_a_channel_just_saves(self) -> None:
+        tickets.write_guild_tickets(
+            self.bot.config, GUILD_ID, {"mode": tickets.MODE_THREAD, "categories": []}
+        )
+        admin = _FakeInteraction(user=self.admin, guild=self.guild)
+        await self.mixin.tickets_panel.callback(
+            self.mixin, admin, mode=SimpleNamespace(value=tickets.MODE_CHANNEL)
+        )
+        reply = admin.followup.messages[0]["content"]
+        self.assertIn("Saved:", reply)
+        self.assertIn("to publish the panel", reply)
+        self.assertEqual(
+            tickets.get_guild_tickets(self.bot.config, GUILD_ID)["mode"],
+            tickets.MODE_CHANNEL,
+        )
+        # Nothing was published: there is no panel to publish into yet.
+        self.assertFalse(tickets.get_guild_tickets(self.bot.config, GUILD_ID)["panel"])
+
+    async def test_member_starts_a_ticket_with_the_ticket_command(self) -> None:
+        member = self.guild.get_member(OPENER_ID)
+        interaction = _FakeInteraction(user=member, guild=self.guild)
+        self.bot.cogs["TicketCog"] = TicketCog(self.bot)
+        await self.bot.cogs["TicketCog"].ticket.callback(self.bot.cogs["TicketCog"], interaction)
+        # Two categories? No - one category, so it goes straight to the modal.
+        self.assertEqual(len(interaction.response.modals), 1)
+        self.assertEqual(interaction.response.modals[0].custom_id, "sentinel:tk:create:help")
+
+    async def test_ticket_command_offers_a_picker_for_several_categories(self) -> None:
+        tickets.upsert_category(
+            self.bot.config, GUILD_ID, {"category_id": "bill", "label": "Billing"}
+        )
+        cog = TicketCog(self.bot)
+        interaction = _FakeInteraction(user=self.opener, guild=self.guild)
+        await cog.ticket.callback(cog, interaction)
+        self.assertEqual(len(interaction.response.messages), 1)
+        view = interaction.response.messages[0]["view"]
+        labels = [option.label for option in view.children[0].options]
+        self.assertEqual(labels, ["General help", "Billing"])
+
+        # Picking one opens that category's modal, resolved against the config.
+        pick = _FakeInteraction(
+            user=self.opener,
+            guild=self.guild,
+            data={"custom_id": "sentinel:tk:pick", "values": ["bill"]},
+        )
+        await tickets.route_ticket_interaction(self.bot, pick)
+        self.assertEqual(pick.response.modals[0].custom_id, "sentinel:tk:create:bill")
+
+    async def test_ticket_command_explains_when_nothing_is_configured(self) -> None:
+        tickets.write_guild_tickets(self.bot.config, GUILD_ID, {"categories": []})
+        cog = TicketCog(self.bot)
+        interaction = _FakeInteraction(user=self.opener, guild=self.guild)
+        await cog.ticket.callback(cog, interaction)
+        self.assertTrue(
+            any("no ticket categories" in reply.lower() for reply in interaction.replies()),
+            interaction.replies(),
+        )
 
 
 class TicketComponentTests(_IsolatedStoreMixin, unittest.IsolatedAsyncioTestCase):

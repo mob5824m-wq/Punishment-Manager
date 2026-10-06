@@ -603,17 +603,38 @@ since they need a message box, a live preview, and one role picker per emoji.
 | `/manage rules publish`     | Server administrators           | Posts a named rule set and sets its ✅ acceptance reaction role. Publishing the same name replaces that set. |
 | `/manage rules disable`     | Server administrators           | Stops handling reactions for one rule set (pass `name` when several exist). Existing roles are unchanged. |
 | `/manage rules list`        | Server administrators           | Lists the published rule sets with their channel, role and message. |
-| `/manage tickets panel`     | Server administrators           | Posts (or refreshes) the ticket panel: one button per category. |
-| `/manage tickets add-category` / `remove-category` / `categories` | Server administrators | Add, remove or list the ticket categories and how each one opens. |
-| `/manage tickets mode`      | Server administrators           | Chooses the default shape for new tickets: private thread or private channel. |
-| `/manage tickets list` / `view` | Staff (staff role or moderation permissions) | Lists tickets, or shows one ticket's details. |
-| `/manage tickets claim` / `close` / `reopen` | Staff, plus the opener for `close` | Runs the same actions as the ticket's buttons, from anywhere. |
-| `/manage applications form-add` / `form-questions` / `form-remove` / `forms` | Server administrators | Create and edit the application forms (questions, review channel, roles). |
+| `/manage tickets panel`     | Server administrators           | Sets the options (mode, log channel, ticket category) and posts or refreshes the panel. |
+| `/manage tickets category`  | Server administrators           | Lists the panel buttons when called bare; with a `label` it adds or edits one, and `remove:true` deletes it. |
+| `/manage tickets console`   | Staff (staff role or moderation permissions) | The ticket queue: a summary and a select. Pick a ticket to read it and claim, close or reopen it. |
+| `/manage applications form` | Server administrators           | Lists the forms when called bare; with a `name` it creates or edits one, and `remove:true` deletes it. |
 | `/manage applications panel` | Server administrators          | Posts (or refreshes) an Apply panel for one form. |
-| `/manage applications list` / `view` / `decide` | Staff             | Reads submissions and approves or denies them, with an optional note. |
+| `/manage applications review` | Staff                          | The review queue: a summary and a select. Pick a submission to read the answers and approve or deny it. |
+| `/manage applications decide` | Staff                          | Approves or denies one submission by id, with an optional note. |
 | `/manage setup`             | Server administrators           | Configures the punishment roles, staff channel, and DM behavior. |
 | `/manage fixcommands`       | Server administrators           | Removes duplicated slash commands (e.g. doubled `/manage` entries) and re-syncs this server. |
 | `/apply`                    | **Every member**                | Opens the application modal. It cannot list, view or edit anything. |
+| `/ticket`                   | **Every member**                | Opens a ticket: choose a category, answer the subject box. It cannot read or edit any ticket. |
+
+### A small command surface, on purpose
+
+Both new systems keep to **three staff sub-commands each** — tickets are
+`panel`, `category`, `console`; applications are `form`, `panel`, `review`
+(plus `decide` for a submission that is not in the queue). Everything else
+happens where the work is:
+
+* **Where you look is where you act.** `/manage tickets console` and
+  `/manage applications review` are single ephemeral messages that *are* the
+  queue: a summary, then a select of the records. Picking one swaps the message
+  for its details and its buttons (Claim / Close / Reopen, or Approve / Deny),
+  and those buttons run the same permission-checked handlers as the ones in the
+  ticket or the staff channel.
+* **List and edit share a command.** `/manage tickets category` with no options
+  lists the categories; naming one adds or edits it, and anything left out is
+  kept — so `/manage applications form name:"Staff" allow_multiple:true` changes
+  one setting without touching the questions or the review channel.
+* **Options are optional.** `/manage tickets panel` without a channel only saves
+  the settings, and with a channel only refreshes the panel, so an
+  administrator never has to restate what they set last time.
 
 Discord offers the whole group to anyone with **Moderate Members**, so the
 administrator rows above are enforced *when the command runs*: a moderator
@@ -654,24 +675,32 @@ Warnings are DMed to the member and posted to the staff channel using the same
 
 ### Tickets
 
-Members open a ticket from a panel button; the conversation stays between them
-and staff. There are two shapes and a server can use **both** — the default is
-chosen once, and any category can override it:
+Members open a ticket from a panel button, or with `/ticket`; the conversation
+stays between them and staff. There are two shapes and a server can use
+**both** — the default is chosen once, and any category can override it:
 
 | Mode | What the member gets | When to use it |
 |------|----------------------|----------------|
 | **Private thread** (default) | A private thread under the panel channel. Invite-only: the opener is added, and so is everyone holding the category's staff role (up to 20). Staff outside that group press **Claim** on the staff notice and are added. | Servers whose staff team fits in a private thread. Keeps everything in one channel, so the panel channel doubles as the ticket list. |
 | **Private channel** | Its own channel, `@everyone` denied, with the opener, the staff role and the bot allowed. | Busier servers: a role grant reaches every staff member at once, and long transcripts do not pile up in one channel. |
 
-Set it up in three steps:
+Set it up in two steps:
 
 ```text
-/manage tickets mode mode:Private thread
-/manage tickets add-category label:"General help" emoji:❓
-/manage tickets panel channel:#open-a-ticket
+/manage tickets category label:"General help" emoji:❓
+/manage tickets panel channel:#open-a-ticket mode:"Private thread" log:#staff-log
 ```
 
-* **Categories** are the panel buttons. Each one can name its own
+`/manage tickets panel` is the one settings command: `mode` picks how new
+tickets open, `log` is where staff get the notice, and `parent` files
+channel-mode tickets under a Discord category. Every option is optional —
+running it with only a channel just refreshes the panel's buttons, and running
+it with only a mode changes that setting and leaves the panel where it is.
+
+* **Categories** are the panel buttons. `/manage tickets category` on its own
+  lists them; naming one adds or edits it, and options you leave out are kept,
+  so `/manage tickets category label:"General help" emoji:🎫` re-badges one
+  button without touching the rest. Each one can name its own
   `staff_role`, its own `mode`, a description (shown in the panel's category
   list), and whether to ask "what is this about?" before opening
   (`ask_subject`, on by default). Up to 25 per server.
@@ -692,25 +721,25 @@ Set it up in three steps:
 * **Claiming** marks the ticket as taken, adds the claimer to the thread and
   announces it, so two staff members do not answer the same question.
 * Tickets are stored in SQLite with per-server numbers (`#0007`), so
-  `/manage tickets view 7` works even after the thread has been renamed,
+  `/manage tickets console` still lists one whose thread has been renamed,
   archived or deleted by hand.
 
 #### What a normal member can do
 
 | | Member who opened it | Other members | Staff |
 |---|---|---|---|
-| Open a ticket from the panel | ✅ | ✅ | ✅ |
+| Open a ticket (panel button or `/ticket`) | ✅ | ✅ | ✅ |
 | See that ticket | ✅ | ❌ | ✅ |
 | Claim / Reopen | ❌ | ❌ | ✅ |
 | Close | ✅ (withdraw their own) | ❌ | ✅ |
 | List or view **any** ticket | ❌ — there is no command or button that shows a ticket list to a member | | ✅ |
 
 Members never see a ticket they did not open, and nothing lets them edit,
-search or browse tickets. The commands that can read tickets all live under
-`/manage tickets`, which Discord hides from anyone without **Moderate
-Members**, and every one of them re-checks staff permission when it runs. The
-dashboard can list and act on every ticket, and it requires the dashboard
-token.
+search or browse tickets. `/ticket` only creates one; reading is
+`/manage tickets console`, which Discord hides from anyone without **Moderate
+Members** and which re-checks staff permission when it runs (as does every
+button it shows). The dashboard can list and act on every ticket, and it
+requires the dashboard token.
 
 ### Applications
 
@@ -718,10 +747,16 @@ An application form is a short set of questions members answer in a modal; the
 answers go to staff for a decision.
 
 ```text
-/manage applications form-add name:"Staff application" review_channel:#staff-apply
-/manage applications form-questions form:"Staff application" questions:"Why do you want to join? | Short:Timezone | Experience"
+/manage applications form name:"Staff application" review_channel:#staff-apply questions:"Why do you want to join? | short:Timezone | Experience"
 /manage applications panel form:"Staff application" channel:#apply
 ```
+
+`/manage applications form` on its own lists the forms; naming one creates it,
+or edits it when it already exists — and editing only changes what you pass, so
+`/manage applications form name:"Staff application" allow_multiple:true`
+flips one setting and leaves the questions, the review channel and the roles
+exactly as they were. `remove:true` deletes a form (submissions already
+received stay readable).
 
 * **Questions** — one to five (Discord's modal limit), each a one-line box or a
   paragraph. In the slash command, separate them with ` | ` and prefix
@@ -732,7 +767,8 @@ answers go to staff for a decision.
   review card in the form's **review channel** with **Approve** and **Deny**
   buttons, and DMs the applicant a confirmation.
 * **Decisions** can be made from those buttons, from
-  `/manage applications decide`, or from the dashboard. The decision is written
+  `/manage applications review` (pick a submission, then Approve or Deny),
+  from `/manage applications decide` by id, or from the dashboard. The decision is written
   once (a second attempt is refused), the review card loses its buttons and
   shows the outcome, the applicant is DM'd the note, and the form's *accept*
   role is added (or its *remove* role taken away) when the bot is able to.
@@ -745,7 +781,7 @@ answers go to staff for a decision.
 
 Members can **submit** an application and nothing else. `/apply` (and the panel
 button) opens the modal; the only commands that can read or decide a submission
-are `/manage applications list`, `view` and `decide`, which re-check staff
+are `/manage applications form`, `review` and `decide`, which re-check staff
 permission when they run. There is no command, button or dashboard page that
 shows a member their own — or anyone else's — answers back, and the dashboard
 itself is behind the staff token.

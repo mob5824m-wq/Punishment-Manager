@@ -46,6 +46,7 @@ GUILD_ID = 123456789012345678
 APPLICANT_ID = 111111111111111111
 STAFF_ID = 222222222222222222
 OUTSIDER_ID = 333333333333333333
+ADMIN_ID = 121212121212121212
 BOT_ID = 999999999999999999
 STAFF_ROLE_ID = 444444444444444444
 REVIEW_CHANNEL_ID = 555555555555555555
@@ -182,6 +183,7 @@ class _FakeResponse:
     def __init__(self) -> None:
         self.messages: list[dict] = []
         self.modals: list[object] = []
+        self.edits: list[dict] = []
         self.deferred = False
 
     def is_done(self) -> bool:
@@ -195,6 +197,10 @@ class _FakeResponse:
             {"content": content, "embed": embed, "view": view, "ephemeral": ephemeral}
         )
 
+    async def edit_message(self, *, embed=None, view=None, content=None) -> None:
+        # The review queue rewrites its own ephemeral message on a pick.
+        self.edits.append({"content": content, "embed": embed, "view": view})
+
     async def send_modal(self, modal) -> None:
         self.modals.append(modal)
 
@@ -203,12 +209,15 @@ class _FakeFollowup:
     def __init__(self) -> None:
         self.messages: list[dict] = []
         self.embeds: list[object] = []
+        self.views: list[object] = []
 
     async def send(self, content=None, *, embed=None, view=None, ephemeral=False, allowed_mentions=None):
         if content is not None:
             self.messages.append({"content": content, "ephemeral": ephemeral})
         if embed is not None:
             self.embeds.append(embed)
+        if view is not None:
+            self.views.append(view)
 
 
 class _FakeInteraction:
@@ -401,7 +410,9 @@ class SubmissionTests(_IsolatedStoreMixin, unittest.IsolatedAsyncioTestCase):
         self.applicant = _FakeMember(APPLICANT_ID)
         self.staff = _FakeMember(STAFF_ID, roles=[STAFF_ROLE_ID])
         self.outsider = _FakeMember(OUTSIDER_ID)
-        self.guild.set_members([self.applicant, self.staff, self.outsider])
+        self.admin = _FakeMember(ADMIN_ID)
+        self.admin.guild_permissions = SimpleNamespace(administrator=True)
+        self.guild.set_members([self.applicant, self.staff, self.outsider, self.admin])
         self.config = {
             "server_id": GUILD_ID,
             "staff_role_id": STAFF_ROLE_ID,
@@ -539,7 +550,9 @@ class ComponentTests(_IsolatedStoreMixin, unittest.IsolatedAsyncioTestCase):
         self.applicant = _FakeMember(APPLICANT_ID)
         self.staff = _FakeMember(STAFF_ID, roles=[STAFF_ROLE_ID])
         self.outsider = _FakeMember(OUTSIDER_ID)
-        self.guild.set_members([self.applicant, self.staff, self.outsider])
+        self.admin = _FakeMember(ADMIN_ID)
+        self.admin.guild_permissions = SimpleNamespace(administrator=True)
+        self.guild.set_members([self.applicant, self.staff, self.outsider, self.admin])
         self.config = {
             "server_id": GUILD_ID,
             "staff_role_id": STAFF_ROLE_ID,
@@ -671,11 +684,16 @@ class ComponentTests(_IsolatedStoreMixin, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(decided["status"], applications.STATUS_APPROVED)
         self.assertEqual(decided["decision_note"], "Great answers")
 
-    async def test_a_member_cannot_list_or_view_applications(self) -> None:
+    async def test_a_member_cannot_review_or_decide(self) -> None:
+        """The permission split: submitting is the only thing a member gets.
+
+        The review queue (which is where the answers live) and the by-id
+        decision are both staff-only, and the check runs when the command is
+        used, not when Discord drew it.
+        """
         application = await self._submitted()
         for handler, kwargs in (
-            (self.mixin.applications_list.callback, {}),
-            (self.mixin.applications_view.callback, {"application": str(application["id"])}),
+            (self.mixin.applications_review.callback, {}),
             (
                 self.mixin.applications_decide.callback,
                 {
@@ -683,24 +701,56 @@ class ComponentTests(_IsolatedStoreMixin, unittest.IsolatedAsyncioTestCase):
                     "decision": SimpleNamespace(value="approve"),
                 },
             ),
+            (self.mixin.applications_form.callback, {}),
         ):
             with self.subTest(handler=handler.__name__):
                 interaction = _FakeInteraction(user=self.outsider, guild=self.guild)
                 await handler(self.mixin, interaction, **kwargs)
+                reply = "\n".join(interaction.replies()).lower()
                 self.assertTrue(
-                    any("only staff" in reply.lower() for reply in interaction.replies()),
+                    "only staff" in reply or "only server administrators" in reply,
                     interaction.replies(),
                 )
 
-    async def test_staff_can_view_and_decide_by_command(self) -> None:
+    async def test_staff_review_queue_shows_answers_and_decides(self) -> None:
         application = await self._submitted()
-        view = _FakeInteraction(user=self.staff, guild=self.guild)
-        await self.mixin.applications_view.callback(
-            self.mixin, view, application=str(application["id"])
-        )
-        self.assertEqual(len(view.followup.embeds), 1)
-        self.assertIn("I want to help", view.followup.embeds[0].fields[0].value)
 
+        queue = _FakeInteraction(user=self.staff, guild=self.guild)
+        await self.mixin.applications_review.callback(self.mixin, queue)
+        self.assertEqual(len(queue.followup.embeds), 1)
+        self.assertEqual(queue.followup.embeds[0].title, "Applications to review")
+        options = queue.followup.views[0].children[0].options
+        self.assertEqual(options[0].value, str(application["id"]))
+
+        # Picking a submission rewrites the message into its review card ...
+        pick = _FakeInteraction(
+            user=self.staff,
+            guild=self.guild,
+            data={
+                "custom_id": f"sentinel:ap:review:{application['id']}",
+                "values": [str(application["id"])],
+            },
+        )
+        await applications.route_application_interaction(self.bot, pick)
+        card = pick.response.edits[0]
+        self.assertIn("I want to help", card["embed"].fields[0].value)
+        labels = [child.label for child in card["view"].children]
+        self.assertEqual(labels, ["Approve", "Deny"])
+
+        # ... and the buttons lead to the ordinary decision modal.
+        approve = _FakeInteraction(
+            user=self.staff,
+            guild=self.guild,
+            data={
+                "custom_id": f"sentinel:ap:decide:{application['id']}:approve",
+            },
+        )
+        await applications.route_application_interaction(self.bot, approve)
+        self.assertEqual(len(approve.response.modals), 1)
+
+    async def test_staff_can_decide_by_id(self) -> None:
+        """The by-id path, for a submission that is not in the queue's select."""
+        application = await self._submitted()
         decide = _FakeInteraction(user=self.staff, guild=self.guild)
         await self.mixin.applications_decide.callback(
             self.mixin,
@@ -711,7 +761,45 @@ class ComponentTests(_IsolatedStoreMixin, unittest.IsolatedAsyncioTestCase):
         )
         stored = applications.get_application(application["id"])
         self.assertEqual(stored["status"], applications.STATUS_DENIED)
+        self.assertEqual(stored["decision_note"], "Not this time")
         self.assertIsNotNone(stored["decided_at"])
+
+    async def test_form_command_lists_creates_edits_and_removes(self) -> None:
+        listed = _FakeInteraction(user=self.admin, guild=self.guild)
+        await self.mixin.applications_form.callback(self.mixin, listed)
+        reply = "\n".join(listed.replies())
+        self.assertIn("Staff application", reply)
+        self.assertIn("Why do you want to join?", reply)
+
+        created = _FakeInteraction(user=self.admin, guild=self.guild)
+        await self.mixin.applications_form.callback(
+            self.mixin,
+            created,
+            name="Event team",
+            review_channel=self.guild.get_channel(REVIEW_CHANNEL_ID),
+            questions="Why events? | short:Timezone",
+            accept_role=self.guild.get_role(ACCEPT_ROLE_ID),
+        )
+        stored = applications.find_form(self.bot.config, GUILD_ID, "Event team")
+        self.assertIsNotNone(stored)
+        self.assertEqual([q["label"] for q in stored["questions"]], ["Why events?", "Timezone"])
+
+        # Editing only what changes keeps the questions and the review channel.
+        edited = _FakeInteraction(user=self.admin, guild=self.guild)
+        await self.mixin.applications_form.callback(
+            self.mixin, edited, name="Event team", allow_multiple=True
+        )
+        stored = applications.find_form(self.bot.config, GUILD_ID, "Event team")
+        self.assertTrue(stored["allow_multiple"])
+        self.assertEqual([q["label"] for q in stored["questions"]], ["Why events?", "Timezone"])
+        self.assertEqual(stored["review_channel_id"], REVIEW_CHANNEL_ID)
+
+        removed = _FakeInteraction(user=self.admin, guild=self.guild)
+        await self.mixin.applications_form.callback(
+            self.mixin, removed, name="Event team", remove=True
+        )
+        self.assertIsNone(applications.find_form(self.bot.config, GUILD_ID, "Event team"))
+        self.assertIsNotNone(applications.find_form(self.bot.config, GUILD_ID, "staff"))
 
     async def test_removing_a_form_leaves_old_submissions_readable(self) -> None:
         application = await self._submitted()

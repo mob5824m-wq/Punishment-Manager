@@ -10,9 +10,15 @@ Everything the bot can do hangs off one top-level group, ``/manage``::
     /manage setup       configure this server (administrators)
     /manage fixcommands clean up duplicated slash commands (administrators)
     /manage rules …     publish rule sets and their acceptance role (admins)
-    /manage tickets …   ticket panel, categories, claim/close (staff)
-    /manage applications … application forms, panels and decisions (staff)
+    /manage tickets panel      set the options and publish the panel (admins)
+    /manage tickets category   list / add / edit / remove a panel button (admins)
+    /manage tickets console    work the ticket queue: claim, close, reopen (staff)
+    /manage applications form    list / create / edit / delete a form (admins)
+    /manage applications panel   publish an Apply panel (admins)
+    /manage applications review  read submissions and approve or deny (staff)
+    /manage applications decide  decide one by id, without the queue (staff)
     /apply              fill in an application form (every member)
+    /ticket             open a ticket (every member)
 
 The group object lives in its own module because two places need it:
 
@@ -28,11 +34,19 @@ tickets and applications commands are mixed into that same cog (see
 :class:`rules.RulesMixin`, :class:`tickets.TicketMixin` and
 :class:`applications.ApplicationsMixin`).
 
-``/apply`` is deliberately *not* a child of this group: it is the one command a
-normal member must be able to see, and all it does is open the application
-modal. Reading or deciding an application always goes through the group (and
-through a permission re-check), which is what keeps "members can apply but not
-view or edit" true.
+The ticket and application surfaces are deliberately *small* — three commands
+each for tickets (``panel``, ``category``, ``console``) and for applications
+(``form``, ``panel``, ``review`` plus ``decide`` by id). Each of them covers
+list/act cases through optional options and a select, so the everyday path is
+one command instead of a family of near-synonyms: the ticket console and the
+application review queue are single ephemeral messages whose selects show the
+records and whose buttons do the work.
+
+``/apply`` and ``/ticket`` are deliberately *not* children of this group: they
+are the commands a normal member must be able to see, and all they do is open a
+modal (or a category picker). Reading or deciding anything always goes through
+the group (and through a permission re-check), which is what keeps "members can
+apply but not view or edit" true.
 
 Discord only honours ``default_member_permissions`` on the *top-level*
 command, so the group is the single permission gate: it is visible to members
