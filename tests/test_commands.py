@@ -448,9 +448,10 @@ class CommandTreeTests(unittest.TestCase):
             "manage rules", "manage rules publish", "manage rules disable",
             "manage rules list",
             "manage tickets", "manage tickets panel", "manage tickets category",
-            "manage tickets console",
+            "manage tickets console", "manage tickets view", "manage tickets claim",
             "manage applications", "manage applications form",
             "manage applications panel", "manage applications review",
+            "manage applications view", "manage applications accept",
             "manage applications decide",
             "apply", "ticket",
         ):

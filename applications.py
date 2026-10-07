@@ -6,21 +6,20 @@ panel``. Members press **Apply** — or run ``/apply`` — answer a short modal,
 and the submission is posted to the form's review channel with **Approve** and
 **Deny** buttons.
 
-Staff work from three commands: ``form`` (list when called bare; create, edit
-and delete with its options), ``panel`` (publish or refresh an Apply button)
-and ``review`` — one ephemeral message that *is* the queue: a summary and a
-select of submissions, and picking one swaps in the answers and the same
-Approve/Deny buttons the review card carries. ``decide`` is the by-id shortcut
-for a submission that is not in the select. The applicant is DM'd the outcome
-and, when the form names one, gets its accept role.
+Staff can work from the queue commands or directly by id. ``review`` opens one
+ephemeral queue; picking a submission shows its answers and the same
+Approve/Deny buttons as the staff-channel card. ``view`` opens one submission
+directly, and ``accept`` approves it without requiring a button. ``decide`` can
+approve or deny by id. The applicant is DM'd the outcome and, when the form
+names one, gets its accept role.
 
 Normal members can *submit* an application and nothing else. There is no
 command, button or panel that lets them list, read, edit or withdraw somebody
 else's — or even their own — submission: every read path (``/manage
-applications form``, ``review``, ``decide``, the dashboard pages) sits behind
-the staff check in :func:`is_application_staff`, and the dashboard itself
-requires the dashboard token. `/apply` is the only member-facing command, and
-all it does is open the modal.
+applications form``, ``review``, ``view``, ``accept``, ``decide``, the
+dashboard pages) sits behind the staff check in :func:`is_application_staff`,
+and the dashboard itself requires the dashboard token. `/apply` is the only
+member-facing command, and all it does is open the modal.
 
 Forms are stored per guild in ``config["applications"]``::
 
@@ -1481,6 +1480,88 @@ class ApplicationsMixin:
             embed=review_queue_embed(interaction.guild, submissions),
             view=review_queue_view(submissions),
             ephemeral=True,
+        )
+
+    @applications_group.command(
+        name="view",
+        description="View one application's answers and review controls. (staff)",
+    )
+    @app_commands.describe(
+        application="Submission id shown in /manage applications review.",
+    )
+    async def applications_view(
+        self, interaction: discord.Interaction, application: str
+    ) -> None:
+        """Show one submission's complete review card in a private reply."""
+        await self._defer(interaction)
+        record = get_application(application)
+        if record is None or int(record["guild_id"]) != interaction.guild_id:
+            if not is_application_staff(
+                interaction.user, self.bot.config, interaction.guild_id
+            ):
+                await self._respond(interaction, "Only staff can view applications.")
+            else:
+                await self._respond(interaction, "No application matches that id.")
+            return
+        form = find_form(self.bot.config, interaction.guild_id, record.get("form_id"))
+        if not is_application_staff(
+            interaction.user, self.bot.config, interaction.guild_id, form
+        ):
+            await self._respond(interaction, "Only staff can view applications.")
+            return
+        await interaction.followup.send(
+            embed=review_embed(interaction.guild, record),
+            view=review_view(record),
+            ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    @applications_group.command(
+        name="accept",
+        description="Approve one pending application directly by id. (staff)",
+    )
+    @app_commands.describe(
+        application="Submission id shown in /manage applications review.",
+        note="Optional note sent to the applicant and stored with the decision.",
+    )
+    async def applications_accept(
+        self,
+        interaction: discord.Interaction,
+        application: str,
+        note: Optional[str] = None,
+    ) -> None:
+        """Approve a pending submission directly from a slash command."""
+        await self._defer(interaction)
+        record = get_application(application)
+        if record is None or int(record["guild_id"]) != interaction.guild_id:
+            if not is_application_staff(
+                interaction.user, self.bot.config, interaction.guild_id
+            ):
+                await self._respond(interaction, "Only staff can accept applications.")
+            else:
+                await self._respond(interaction, "No application matches that id.")
+            return
+        form = find_form(self.bot.config, interaction.guild_id, record.get("form_id"))
+        if not is_application_staff(
+            interaction.user, self.bot.config, interaction.guild_id, form
+        ):
+            await self._respond(interaction, "Only staff can accept applications.")
+            return
+        try:
+            decided = await decide_application(
+                self.bot,
+                interaction.guild,
+                record,
+                interaction.user,
+                DECISION_APPROVE,
+                note,
+            )
+        except ApplicationError as exc:
+            await self._respond(interaction, str(exc))
+            return
+        await self._respond(
+            interaction,
+            f"Application `#{decided['id']}` was approved.",
         )
 
     @applications_group.command(

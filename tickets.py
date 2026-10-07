@@ -4,7 +4,7 @@ Members open a ticket by pressing a button on a *panel* an administrator
 published, or with ``/ticket``. Staff get notified, can **claim** the ticket,
 and close it; the whole conversation stays between the opener and staff.
 
-The command surface is three sub-commands, not nine:
+The command surface keeps setup and day-to-day ticket work together:
 
 ``/manage tickets panel``
     Sets the options (mode, log channel, channel-ticket category) and posts or
@@ -18,6 +18,10 @@ The command surface is three sub-commands, not nine:
     One ephemeral message that *is* the staff queue: a summary embed and a
     select of tickets. Picking one swaps in the ticket's card and its
     Claim/Close/Reopen buttons — the same handlers the in-ticket buttons use.
+
+``/manage tickets view`` and ``/manage tickets claim``
+    Open one ticket's details directly by its number or channel id, or claim
+    it from the command line (which also adds the staff member to a thread).
 
 ``/ticket``
     The member-facing way in: a category select, then the subject modal. It can
@@ -45,10 +49,10 @@ Normal members can open a ticket and then *only* see their own ticket. They
 cannot list, search, view or edit anybody else's, cannot claim, and cannot
 reopen a closed one; there is no slash command or button that exposes a ticket
 list to a non-staff member. Every management command lives under
-``/manage tickets`` (hidden from members by the group's
-``default_member_permissions``) and re-checks permission when it runs, and the
-dashboard — which can list and act on every ticket — requires the dashboard
-token.
+``/manage tickets`` and re-checks permission when it runs. Discord cannot hide
+the group based on a role, so it remains visible and refuses non-staff callers
+ephemerally. The dashboard — which can list and act on every ticket — requires
+the dashboard token.
 
 Configuration lives per guild in ``config["tickets"]``::
 
@@ -2125,6 +2129,94 @@ class TicketMixin:
             ephemeral=True,
         )
 
+    @tickets_group.command(
+        name="view",
+        description="View one ticket's details by number or channel id. (staff)",
+    )
+    @app_commands.describe(
+        ticket="Ticket number or channel id, for example #12.",
+    )
+    async def tickets_view(
+        self, interaction: discord.Interaction, ticket: str
+    ) -> None:
+        """Show one ticket's staff card without opening the ticket queue.
+
+        Ticket numbers, database ids and channel ids are accepted. The card is
+        private to the staff caller and includes the ordinary permission-checked
+        ticket controls.
+        """
+        await self._defer(interaction)
+        record = find_ticket(interaction.guild_id, ticket)
+        if record is None:
+            if not is_ticket_staff(
+                interaction.user, self.bot.config, interaction.guild_id
+            ):
+                await self._respond(interaction, "Only staff can view tickets.")
+            else:
+                await self._respond(interaction, "No ticket matches that number, id or channel.")
+            return
+        category = self._category_for_record(interaction, record)
+        if not is_ticket_staff(
+            interaction.user, self.bot.config, interaction.guild_id, category
+        ):
+            await self._respond(interaction, "Only staff can view tickets.")
+            return
+
+        embed = ticket_embed(interaction.guild, record)
+        embed.add_field(
+            name="Ticket channel",
+            value=_ticket_mention(interaction.guild, record),
+            inline=False,
+        )
+        await interaction.followup.send(
+            embed=embed,
+            view=console_ticket_view(record),
+            ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    @tickets_group.command(
+        name="claim",
+        description="Accept responsibility for a ticket; join its private thread or channel. (staff)",
+    )
+    @app_commands.describe(
+        ticket="Ticket number or channel id, for example #12.",
+    )
+    async def tickets_claim(
+        self, interaction: discord.Interaction, ticket: str
+    ) -> None:
+        """Claim a ticket directly, without using a button or queue select."""
+        await self._defer(interaction)
+        record = find_ticket(interaction.guild_id, ticket)
+        if record is None:
+            if not is_ticket_staff(
+                interaction.user, self.bot.config, interaction.guild_id
+            ):
+                await self._respond(interaction, "Only staff can claim tickets.")
+            else:
+                await self._respond(interaction, "No ticket matches that number, id or channel.")
+            return
+        category = self._category_for_record(interaction, record)
+        if not is_ticket_staff(
+            interaction.user, self.bot.config, interaction.guild_id, category
+        ):
+            await self._respond(interaction, "Only staff can claim tickets.")
+            return
+        try:
+            claimed = await claim_ticket(
+                self.bot,
+                interaction.guild,
+                record,
+                interaction.user,  # type: ignore[arg-type]
+            )
+        except TicketError as exc:
+            await self._respond(interaction, str(exc))
+            return
+        await self._respond(
+            interaction,
+            f"Ticket **#{int(claimed['number']):04d}** is now claimed by you.",
+        )
+
     # ---- Member command: /ticket --------------------------------------- #
     async def _start_ticket(
         self,
@@ -2465,11 +2557,11 @@ class TicketMixin:
     async def _require_ticket_staff(self, interaction: discord.Interaction) -> bool:
         """Refuse non-staff callers of the staff-facing ticket commands.
 
-        The commands live under ``/manage`` (hidden from members), but a server
-        can relax that per integration, and this is the check that decides what
-        a caller may see — so it runs for every ticket command that lists,
-        views or changes someone else's ticket. The refusal is sent here so a
-        caller cannot forget to answer.
+        ``/manage`` is visible to everyone because Discord cannot gate a group
+        by role. This runtime check decides who can see the queue; the direct
+        view/claim commands and component handlers perform equivalent checks
+        for the selected ticket. The refusal is sent here so the caller always
+        gets an ephemeral answer.
         """
         if is_ticket_staff(interaction.user, self.bot.config, interaction.guild_id):
             return True

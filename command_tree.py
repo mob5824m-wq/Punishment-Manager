@@ -13,10 +13,14 @@ Everything the bot can do hangs off one top-level group, ``/manage``::
     /manage tickets panel      set the options and publish the panel (admins)
     /manage tickets category   list / add / edit / remove a panel button (admins)
     /manage tickets console    work the ticket queue: claim, close, reopen (staff)
+    /manage tickets view       view one ticket by number or channel id (staff)
+    /manage tickets claim      accept responsibility for one ticket (staff)
     /manage applications form    list / create / edit / delete a form (admins)
     /manage applications panel   publish an Apply panel (admins)
     /manage applications review  read submissions and approve or deny (staff)
-    /manage applications decide  decide one by id, without the queue (staff)
+    /manage applications view    view one submission's answers (staff)
+    /manage applications accept  approve one submission directly (staff)
+    /manage applications decide  approve or deny one by id (staff)
     /apply              fill in an application form (every member)
     /ticket             open a ticket (every member)
 
@@ -34,13 +38,12 @@ tickets and applications commands are mixed into that same cog (see
 :class:`rules.RulesMixin`, :class:`tickets.TicketMixin` and
 :class:`applications.ApplicationsMixin`).
 
-The ticket and application surfaces are deliberately *small* — three commands
-each for tickets (``panel``, ``category``, ``console``) and for applications
-(``form``, ``panel``, ``review`` plus ``decide`` by id). Each of them covers
-list/act cases through optional options and a select, so the everyday path is
-one command instead of a family of near-synonyms: the ticket console and the
-application review queue are single ephemeral messages whose selects show the
-records and whose buttons do the work.
+The ticket and application commands support both queue workflows and direct
+lookups: ``/manage tickets console`` or ``view`` to read tickets, ``claim`` to
+take one, ``/manage applications review`` or ``view`` to read submissions,
+and ``accept`` or ``decide`` to record an outcome. Queue messages are ephemeral
+and their selects and buttons call the same permission-checked handlers as the
+direct commands.
 
 ``/apply`` and ``/ticket`` are deliberately *not* children of this group: they
 are the commands a normal member must be able to see, and all they do is open a
