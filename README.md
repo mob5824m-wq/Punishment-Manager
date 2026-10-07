@@ -618,9 +618,13 @@ since they need a message box, a live preview, and one role picker per emoji.
 | `/manage tickets panel`     | Server administrators           | Sets the options (mode, log channel, ticket category) and posts or refreshes the panel. |
 | `/manage tickets category`  | Server administrators           | Lists the panel buttons when called bare; with a `label` it adds or edits one, and `remove:true` deletes it. |
 | `/manage tickets console`   | Staff (staff role or moderation permissions) | The ticket queue: a summary and a select. Pick a ticket to read it and claim, close or reopen it. |
+| `/manage tickets view`      | Staff                           | Shows one ticket's details and controls by ticket number or channel id. |
+| `/manage tickets claim`     | Staff                           | Accepts responsibility for a ticket, joins its private thread or channel, and updates its status. |
 | `/manage applications form` | Server administrators           | Lists the forms when called bare; with a `name` it creates or edits one, and `remove:true` deletes it. |
 | `/manage applications panel` | Server administrators          | Posts (or refreshes) an Apply panel for one form. |
 | `/manage applications review` | Staff                          | The review queue: a summary and a select. Pick a submission to read the answers and approve or deny it. |
+| `/manage applications view` | Staff                           | Shows one application's full answers and review controls by submission id. |
+| `/manage applications accept` | Staff                         | Approves one pending application by id, with an optional note. |
 | `/manage applications decide` | Staff                          | Approves or denies one submission by id, with an optional note. |
 | `/manage setup`             | Server administrators           | Configures the punishment roles, staff channel, and DM behavior. |
 | `/manage fixcommands`       | Server administrators           | Removes duplicated slash commands (e.g. doubled `/manage` entries) and re-syncs this server. |
@@ -629,17 +633,17 @@ since they need a message box, a live preview, and one role picker per emoji.
 
 ### A small command surface, on purpose
 
-Both new systems keep to **three staff sub-commands each** — tickets are
-`panel`, `category`, `console`; applications are `form`, `panel`, `review`
-(plus `decide` for a submission that is not in the queue). Everything else
-happens where the work is:
+Staff can work either from the queues or directly by id:
 
-* **Where you look is where you act.** `/manage tickets console` and
-  `/manage applications review` are single ephemeral messages that *are* the
-  queue: a summary, then a select of the records. Picking one swaps the message
-  for its details and its buttons (Claim / Close / Reopen, or Approve / Deny),
-  and those buttons run the same permission-checked handlers as the ones in the
-  ticket or the staff channel.
+* **Browse a queue.** `/manage tickets console` and
+  `/manage applications review` return private queue messages. Picking a record
+  shows its details and controls (Claim / Close / Reopen, or Approve / Deny).
+* **Use direct commands.** `/manage tickets view` shows a ticket card, and
+  `/manage tickets claim` accepts responsibility for it. `/manage applications view`
+  shows a submission's full answers, while `/manage applications accept`
+  approves it directly. Use `/manage applications decide` when you need to deny
+  an application or choose the decision by id. These commands use the same
+  permission-checked ticket/application handlers.
 * **List and edit share a command.** `/manage tickets category` with no options
   lists the categories; naming one adds or edits it, and anything left out is
   kept — so `/manage applications form name:"Staff" allow_multiple:true` changes
@@ -740,6 +744,18 @@ it with only a mode changes that setting and leaves the panel where it is.
   `/manage tickets console` still lists one whose thread has been renamed,
   archived or deleted by hand.
 
+Staff can either browse the queue or use an individual ticket number directly:
+
+```text
+/manage tickets console
+/manage tickets view ticket:#0007
+/manage tickets claim ticket:#0007
+```
+
+`view` returns a private ticket card with a link to its channel and staff
+controls. `claim` accepts the ticket for the caller, adds them to a private
+thread when needed, and records who took it.
+
 #### What a normal member can do
 
 | | Member who opened it | Other members | Staff |
@@ -751,10 +767,11 @@ it with only a mode changes that setting and leaves the panel where it is.
 | List or view **any** ticket | ❌ — there is no command or button that shows a ticket list to a member | | ✅ |
 
 Members never see a ticket they did not open, and nothing lets them edit,
-search or browse tickets. `/ticket` only creates one; reading is
-`/manage tickets console`, which Discord hides from anyone without **Moderate
-Members** and which re-checks staff permission when it runs (as does every
-button it shows). The dashboard can list and act on every ticket, and it
+search or browse tickets. `/ticket` only creates one; staff can read from
+`/manage tickets console` or `/manage tickets view`, and accept responsibility
+with `/manage tickets claim`. These commands are visible in the `/manage` tree
+but re-check staff permission whenever they run; non-staff callers only receive
+an ephemeral refusal. The dashboard can list and act on every ticket, and it
 requires the dashboard token.
 
 ### Applications
@@ -773,6 +790,19 @@ or edits it when it already exists — and editing only changes what you pass, s
 flips one setting and leaves the questions, the review channel and the roles
 exactly as they were. `remove:true` deletes a form (submissions already
 received stay readable).
+
+Staff can browse the review queue or work directly with a submission id:
+
+```text
+/manage applications review
+/manage applications view application:12
+/manage applications accept application:12 note:"Welcome aboard!"
+```
+
+`view` shows the full answers privately. `accept` approves the pending
+submission, records the note, grants the configured accept role when possible,
+and sends the applicant the outcome. Use `/manage applications decide` to deny
+by id instead.
 
 * **Questions** — one to five (Discord's modal limit), each a one-line box or a
   paragraph. In the slash command, separate them with ` | ` and prefix
@@ -796,11 +826,11 @@ received stay readable).
 #### What a normal member can do
 
 Members can **submit** an application and nothing else. `/apply` (and the panel
-button) opens the modal; the only commands that can read or decide a submission
-are `/manage applications form`, `review` and `decide`, which re-check staff
-permission when they run. There is no command, button or dashboard page that
-shows a member their own — or anyone else's — answers back, and the dashboard
-itself is behind the staff token.
+button) opens the modal; `/manage applications review`, `view`, `accept` and
+`decide` read or decide submissions and re-check staff permission whenever
+they run. There is no command, button or dashboard page that shows a member
+their own — or anyone else's — answers back, and the dashboard itself is behind
+the staff token.
 
 ---
 

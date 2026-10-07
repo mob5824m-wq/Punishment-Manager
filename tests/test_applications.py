@@ -695,6 +695,14 @@ class ComponentTests(_IsolatedStoreMixin, unittest.IsolatedAsyncioTestCase):
         for handler, kwargs in (
             (self.mixin.applications_review.callback, {}),
             (
+                self.mixin.applications_view.callback,
+                {"application": str(application["id"])},
+            ),
+            (
+                self.mixin.applications_accept.callback,
+                {"application": str(application["id"])},
+            ),
+            (
                 self.mixin.applications_decide.callback,
                 {
                     "application": str(application["id"]),
@@ -711,6 +719,35 @@ class ComponentTests(_IsolatedStoreMixin, unittest.IsolatedAsyncioTestCase):
                     "only staff" in reply or "only server administrators" in reply,
                     interaction.replies(),
                 )
+
+    async def test_staff_can_view_one_application_by_id(self) -> None:
+        application = await self._submitted()
+        interaction = _FakeInteraction(user=self.staff, guild=self.guild)
+        await self.mixin.applications_view.callback(
+            self.mixin, interaction, application=str(application["id"])
+        )
+        self.assertEqual(len(interaction.followup.embeds), 1)
+        embed = interaction.followup.embeds[0]
+        self.assertIn(f"Application #{application['id']:04d}", embed.title)
+        self.assertEqual(embed.fields[0].value, "I want to help")
+        self.assertEqual(
+            [child.label for child in interaction.followup.views[0].children],
+            ["Approve", "Deny"],
+        )
+
+    async def test_staff_can_accept_one_application_by_id(self) -> None:
+        application = await self._submitted()
+        interaction = _FakeInteraction(user=self.staff, guild=self.guild)
+        await self.mixin.applications_accept.callback(
+            self.mixin,
+            interaction,
+            application=str(application["id"]),
+            note="Welcome aboard!",
+        )
+        accepted = applications.get_application(application["id"])
+        self.assertEqual(accepted["status"], applications.STATUS_APPROVED)
+        self.assertEqual(accepted["decision_note"], "Welcome aboard!")
+        self.assertIn("approved", " ".join(interaction.replies()).lower())
 
     async def test_staff_review_queue_shows_answers_and_decides(self) -> None:
         application = await self._submitted()

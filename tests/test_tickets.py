@@ -728,12 +728,11 @@ class TicketFlowTests(_IsolatedStoreMixin, unittest.IsolatedAsyncioTestCase):
 
 
 class TicketCommandTests(_IsolatedStoreMixin, unittest.IsolatedAsyncioTestCase):
-    """The three staff commands, and what a normal member is refused.
+    """Staff queue and direct ticket commands, plus the member refusal checks.
 
-    The surface is deliberately small: ``panel`` configures and publishes,
-    ``category`` lists/adds/edits/removes, ``console`` is where staff work the
-    queue. Reading or acting on a ticket that is not yours is refused on every
-    one of them.
+    ``panel`` and ``category`` configure, ``console`` browses the queue, and
+    ``view`` / ``claim`` work with a ticket directly. Reading or acting on a
+    ticket that is not yours is refused for every non-staff caller.
     """
 
     def setUp(self) -> None:
@@ -782,6 +781,8 @@ class TicketCommandTests(_IsolatedStoreMixin, unittest.IsolatedAsyncioTestCase):
         await self._open_ticket()
         for handler, kwargs in (
             (self.mixin.tickets_console.callback, {}),
+            (self.mixin.tickets_view.callback, {"ticket": "#0001"}),
+            (self.mixin.tickets_claim.callback, {"ticket": "#0001"}),
             (self.mixin.tickets_category.callback, {}),
             (self.mixin.tickets_panel.callback, {}),
         ):
@@ -822,6 +823,33 @@ class TicketCommandTests(_IsolatedStoreMixin, unittest.IsolatedAsyncioTestCase):
         self.assertIn("Ticket #0001", card["embed"].title)
         labels = [child.label for child in card["view"].children]
         self.assertEqual(labels, ["Claim", "Close"])
+
+    async def test_staff_can_view_one_ticket_by_number(self) -> None:
+        ticket = await self._open_ticket()
+        interaction = _FakeInteraction(user=self.staff, guild=self.guild)
+        await self.mixin.tickets_view.callback(
+            self.mixin, interaction, ticket=f"#{ticket['number']:04d}"
+        )
+        self.assertEqual(len(interaction.followup.embeds), 1)
+        embed = interaction.followup.embeds[0]
+        self.assertIn("Ticket #0001", embed.title)
+        self.assertEqual(embed.description, "Please help")
+        self.assertIn("Ticket channel", [field.name for field in embed.fields])
+        self.assertEqual(
+            [child.label for child in interaction.followup.views[0].children],
+            ["Claim", "Close"],
+        )
+
+    async def test_staff_can_claim_one_ticket_by_number(self) -> None:
+        ticket = await self._open_ticket()
+        interaction = _FakeInteraction(user=self.staff, guild=self.guild)
+        await self.mixin.tickets_claim.callback(
+            self.mixin, interaction, ticket=f"#{ticket['number']:04d}"
+        )
+        claimed = tickets.get_ticket(ticket["id"])
+        self.assertEqual(claimed["status"], tickets.STATUS_CLAIMED)
+        self.assertEqual(claimed["claimed_by"], STAFF_ID)
+        self.assertIn("claimed by you", " ".join(interaction.replies()).lower())
 
     async def test_console_refuses_a_member_and_hides_closed_tickets_by_default(self) -> None:
         ticket = await self._open_ticket()
